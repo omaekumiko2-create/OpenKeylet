@@ -1318,6 +1318,63 @@ mod tests {
     }
 
     #[test]
+    fn bridge_roles_use_distinct_tokens() {
+        let internal = derive_token("same-local-secret", "internal").unwrap();
+        let extension = derive_token("same-local-secret", "extension").unwrap();
+        assert_ne!(internal, extension);
+    }
+
+    #[test]
+    fn totp_matches_rfc_vector_truncated_to_six_digits() {
+        assert_eq!(
+            totp_at("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", 59).unwrap(),
+            "287082"
+        );
+    }
+
+    #[test]
+    fn otpauth_uses_rfc6238_algorithms_digits_and_period() {
+        let base32 = |bytes: &[u8]| {
+            let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+            let (mut buffer, mut bits, mut result) = (0u32, 0u32, String::new());
+            for byte in bytes {
+                buffer = (buffer << 8) | u32::from(*byte);
+                bits += 8;
+                while bits >= 5 {
+                    bits -= 5;
+                    result.push(alphabet[((buffer >> bits) & 31) as usize] as char);
+                }
+                buffer &= (1 << bits) - 1;
+            }
+            if bits > 0 {
+                result.push(alphabet[((buffer << (5 - bits)) & 31) as usize] as char);
+            }
+            result
+        };
+        for (algorithm, seed, expected) in [
+            ("SHA1", "12345678901234567890", "94287082"),
+            ("SHA256", "12345678901234567890123456789012", "46119246"),
+            (
+                "SHA512",
+                "1234567890123456789012345678901234567890123456789012345678901234",
+                "90693936",
+            ),
+        ] {
+            let uri = format!(
+                "otpauth://totp/Example?secret={}&algorithm={algorithm}&digits=8&period=30",
+                base32(seed.as_bytes())
+            );
+            assert_eq!(totp_at(&uri, 59).unwrap(), expected);
+            assert_eq!(
+                totp_at(&uri.replace("period=30", "period=60"), 119).unwrap(),
+                expected
+            );
+        }
+        assert!(current_totp("otpauth://totp/test?secret=JBSWY3DPEHPK3PXP&period=0").is_err());
+        assert!(current_totp("otpauth://totp/test?secret=JBSWY3DPEHPK3PXP&digits=99").is_err());
+    }
+
+    #[test]
     fn application_identity_is_stable_and_not_a_client_name() {
         let secret = "synthetic-browser-bridge-secret";
         let first = derive_application_id(secret).unwrap();
@@ -1421,9 +1478,18 @@ mod tests {
         });
         let mut headers = HeaderMap::new();
         headers.insert(header::ORIGIN, EXTENSION_ORIGIN.parse().unwrap());
-        let response = claim(State(state), headers).await.unwrap().0;
+        let response = claim(State(state.clone()), headers).await.unwrap().0;
         assert!(!response.token.is_empty());
         assert!(response.port > 0);
+        assert_ne!(response.token, state.internal_token);
+        assert!(state.pairing.lock().await.is_none());
+
+        // A pairing window is single use and cannot be claimed twice.
+        let mut reused = HeaderMap::new();
+        reused.insert(header::ORIGIN, EXTENSION_ORIGIN.parse().unwrap());
+        let denied = claim(State(state.clone()), reused).await;
+        assert_eq!(denied.unwrap_err().0, StatusCode::UNAUTHORIZED);
+        assert!(state.vault.settings().unwrap().browser_paired);
     }
 
     #[tokio::test]

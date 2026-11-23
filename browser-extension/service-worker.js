@@ -398,6 +398,8 @@ async function processCredentialJob(ws, job) {
     if (!currentCredentialConnection(ws, identity, job)) throw new Error("The extension connection changed");
 
     const bindingAcknowledged = waitForCredentialBinding(ws, identity, job.id, fieldToken, expiresAt);
+    // A socket that fails during `prepare` must not surface an unhandled rejection.
+    bindingAcknowledged.catch(() => {});
     ws.send(JSON.stringify({
       type: "prepare",
       operationId: job.id,
