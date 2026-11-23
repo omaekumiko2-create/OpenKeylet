@@ -26,6 +26,8 @@ gui = [
 ]
 desktop-fill = ["dep:enigo", "dep:windows"]
 
+synthetic-browser-tests = []
+
 [[bin]]
 name = "openkeylet"
 path = "src/main.rs"

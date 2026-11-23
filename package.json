@@ -18,7 +18,7 @@
     "release:headless": "npm run build:headless && npm run portable:headless",
     "check": "cargo check --manifest-path src-tauri/Cargo.toml",
     "test": "cargo test --manifest-path src-tauri/Cargo.toml",
-    "test:browser": "cargo build --manifest-path src-tauri/Cargo.toml --example browser_fixture && node scripts/test-browser.mjs",
+    "test:browser": "cargo build --locked --manifest-path src-tauri/Cargo.toml --no-default-features --features synthetic-browser-tests --example browser_fixture && node scripts/test-browser.mjs",
     "test:personal-ui": "node scripts/test-personal-ui.mjs",
     "test:controls": "node scripts/test-inline-editor.mjs",
     "test:autofill": "node scripts/test-autofill.mjs",

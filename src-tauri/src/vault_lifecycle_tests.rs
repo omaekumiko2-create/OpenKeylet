@@ -12,7 +12,9 @@ fn reorder_connections_persists_without_changing_items() {
     let directory = tempfile::tempdir().unwrap();
     let vault = Vault::open(directory.path().into()).unwrap();
     for name in ["First", "Second", "Third"] {
-        vault.save_connection(login(name, "synthetic-password", None)).unwrap();
+        vault
+            .save_connection(login(name, "synthetic-password", None))
+            .unwrap();
     }
     let before = vault.read_document().unwrap();
     let original: Vec<_> = before.connections.iter().map(|item| item.id).collect();
@@ -20,11 +22,32 @@ fn reorder_connections_persists_without_changing_items() {
     vault.reorder_connections(&reordered, &original).unwrap();
     let reopened = Vault::open(directory.path().into()).unwrap();
     let after = reopened.read_document().unwrap();
-    assert_eq!(after.connections.iter().map(|item| item.id).collect::<Vec<_>>(), reordered);
+    assert_eq!(
+        after
+            .connections
+            .iter()
+            .map(|item| item.id)
+            .collect::<Vec<_>>(),
+        reordered
+    );
     for item in &after.connections {
-        let previous = before.connections.iter().find(|old| old.id == item.id).unwrap();
-        assert_eq!(serde_json::to_value(item).unwrap(), serde_json::to_value(previous).unwrap());
-        assert_eq!(reopened.get_connection(item.id).unwrap().secrets.get("password"), Some("synthetic-password"));
+        let previous = before
+            .connections
+            .iter()
+            .find(|old| old.id == item.id)
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(item).unwrap(),
+            serde_json::to_value(previous).unwrap()
+        );
+        assert_eq!(
+            reopened
+                .get_connection(item.id)
+                .unwrap()
+                .secrets
+                .get("password"),
+            Some("synthetic-password")
+        );
     }
 }
 
@@ -37,18 +60,30 @@ fn reorder_connections_rejects_stale_or_invalid_orders_atomically() {
     let original = [first.id, second.id];
     let path = directory.path().join("vault.json");
     let before = std::fs::read(&path).unwrap();
-    for invalid in [vec![first.id], vec![first.id, first.id], vec![first.id, Uuid::new_v4()]] {
+    for invalid in [
+        vec![first.id],
+        vec![first.id, first.id],
+        vec![first.id, Uuid::new_v4()],
+    ] {
         assert!(vault.reorder_connections(&invalid, &original).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), before);
     }
-    vault.reorder_connections(&[second.id, first.id], &original).unwrap();
+    vault
+        .reorder_connections(&[second.id, first.id], &original)
+        .unwrap();
     let reordered = std::fs::read(&path).unwrap();
     assert!(vault.reorder_connections(&original, &original).is_err());
     assert_eq!(std::fs::read(&path).unwrap(), reordered);
     let other_writer = Vault::open(directory.path().into()).unwrap();
-    other_writer.save_connection(login("New item", "new", None)).unwrap();
+    other_writer
+        .save_connection(login("New item", "new", None))
+        .unwrap();
     let with_new_item = std::fs::read(&path).unwrap();
-    assert!(vault.reorder_connections(&original, &[second.id, first.id]).is_err());
+    assert!(
+        vault
+            .reorder_connections(&original, &[second.id, first.id])
+            .is_err()
+    );
     assert_eq!(std::fs::read(&path).unwrap(), with_new_item);
     assert_eq!(vault.list_connections().unwrap().len(), 3);
 }

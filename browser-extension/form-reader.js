@@ -134,3 +134,164 @@ function useLoginForm(mode, expectedOrigin, login, expectedUrl, submittedScope) 
 function readLoginForms(expectedOrigin, expectedUrl, submittedScope) {
   return useLoginForm("read", expectedOrigin, null, expectedUrl, submittedScope);
 }
+
+function prepareCredentialField(expectedOrigin, expectedTopUrl, expectedUrl, operationId, fieldToken, module) {
+  const activeElement = (root = document) => {
+    let element = root.activeElement;
+    while (element?.shadowRoot?.activeElement) element = element.shadowRoot.activeElement;
+    return element;
+  };
+  const expectedDocument = () => {
+    try {
+      return location.origin === expectedOrigin
+        && location.href === expectedUrl
+        && window.top.location.href === expectedTopUrl
+        && new URL(expectedTopUrl).origin === expectedOrigin
+        && document.hasFocus()
+        && (!window.frameElement || window.top.document.activeElement === window.frameElement);
+    } catch {
+      return false;
+    }
+  };
+  const matchesRole = (element, role) => {
+    if (!(element instanceof HTMLInputElement) || !element.isConnected || element.disabled || element.readOnly) return false;
+    if (!element.getClientRects().length || getComputedStyle(element).visibility !== "visible"
+        || element.checkVisibility?.({ checkOpacity: true, checkVisibilityCSS: true }) === false) return false;
+    const type = (element.type || "").toLowerCase();
+    const autocomplete = (element.getAttribute("autocomplete") || "").toLowerCase().split(/\s+/);
+    const hints = [element.id, element.name, element.getAttribute("aria-label"), element.getAttribute("placeholder"),
+      ...(element.labels ? Array.from(element.labels).map(label => label.textContent || "") : [])].join(" ").toLowerCase();
+    if (role === "password") return type === "password" && !autocomplete.includes("new-password")
+      && !/(new|confirm|repeat|verify)[\s_-]*password/.test(hints);
+    if (role === "username") return ["text", "email", "tel"].includes(type)
+      && (autocomplete.includes("username") || /(user(name)?|login|account|e-?mail)/.test(hints));
+    return false;
+  };
+
+  if (!expectedDocument() || !/^[0-9a-f-]{36}$/i.test(operationId || "")
+      || !/^[0-9a-f-]{36}$/i.test(fieldToken || "") || !["username", "password"].includes(module)) {
+    return { ok: false, fieldRole: module };
+  }
+  const element = activeElement(document);
+  if (!matchesRole(element, module)) return { ok: false, fieldRole: module };
+  const tokenKey = "__openkeyletCredentialTarget_" + operationId.replace(/[^a-z0-9]/gi, "")
+    + "_" + fieldToken.replace(/[^a-z0-9]/gi, "");
+  try {
+    Object.defineProperty(element, tokenKey, {
+      value: fieldToken,
+      enumerable: false,
+      configurable: false,
+      writable: false,
+    });
+  } catch {
+    return { ok: false, fieldRole: module };
+  }
+  return { ok: true, fieldRole: module };
+}
+
+function fillCredentialField(expectedOrigin, expectedTopUrl, expectedUrl, operationId, fieldToken, module, value, expiresAt) {
+  const activeElement = (root = document) => {
+    let element = root.activeElement;
+    while (element?.shadowRoot?.activeElement) element = element.shadowRoot.activeElement;
+    return element;
+  };
+  const expectedDocument = () => {
+    try {
+      return location.origin === expectedOrigin
+        && location.href === expectedUrl
+        && window.top.location.href === expectedTopUrl
+        && new URL(expectedTopUrl).origin === expectedOrigin
+        && document.hasFocus()
+        && (!window.frameElement || window.top.document.activeElement === window.frameElement);
+    } catch {
+      return false;
+    }
+  };
+  const matchesRole = (element, role) => {
+    if (!(element instanceof HTMLInputElement) || !element.isConnected || element.disabled || element.readOnly) return false;
+    if (!element.getClientRects().length || getComputedStyle(element).visibility !== "visible"
+        || element.checkVisibility?.({ checkOpacity: true, checkVisibilityCSS: true }) === false) return false;
+    const type = (element.type || "").toLowerCase();
+    const autocomplete = (element.getAttribute("autocomplete") || "").toLowerCase().split(/\s+/);
+    const hints = [element.id, element.name, element.getAttribute("aria-label"), element.getAttribute("placeholder"),
+      ...(element.labels ? Array.from(element.labels).map(label => label.textContent || "") : [])].join(" ").toLowerCase();
+    if (role === "password") return type === "password" && !autocomplete.includes("new-password")
+      && !/(new|confirm|repeat|verify)[\s_-]*password/.test(hints);
+    if (role === "username") return ["text", "email", "tel"].includes(type)
+      && (autocomplete.includes("username") || /(user(name)?|login|account|e-?mail)/.test(hints));
+    return false;
+  };
+
+  if (!expectedDocument() || Date.now() >= expiresAt || typeof value !== "string" || value.length === 0
+      || !/^[0-9a-f-]{36}$/i.test(operationId || "") || !/^[0-9a-f-]{36}$/i.test(fieldToken || "")) {
+    return { delivered: false, fieldRole: module };
+  }
+  const tokenKey = "__openkeyletCredentialTarget_" + operationId.replace(/[^a-z0-9]/gi, "")
+    + "_" + fieldToken.replace(/[^a-z0-9]/gi, "");
+  const element = activeElement(document);
+  if (!matchesRole(element, module) || element[tokenKey] !== fieldToken) {
+    return { delivered: false, fieldRole: module };
+  }
+  const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+  if (!descriptor?.set || !descriptor?.get) return { delivered: false, fieldRole: module };
+  try {
+    descriptor.set.call(element, value);
+    element.dispatchEvent(new InputEvent("input", { bubbles: true, composed: true, inputType: "insertText" }));
+    element.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
+    return {
+      delivered: descriptor.get.call(element) === value && element.isConnected
+        && element[tokenKey] === fieldToken && activeElement(document) === element,
+      fieldRole: module,
+    };
+  } catch {
+    return { delivered: false, fieldRole: module };
+  }
+}
+
+function verifyCredentialField(expectedOrigin, expectedTopUrl, expectedUrl, operationId, fieldToken, module, value, expiresAt) {
+  const activeElement = (root = document) => {
+    let element = root.activeElement;
+    while (element?.shadowRoot?.activeElement) element = element.shadowRoot.activeElement;
+    return element;
+  };
+  const expectedDocument = () => {
+    try {
+      return location.origin === expectedOrigin
+        && location.href === expectedUrl
+        && window.top.location.href === expectedTopUrl
+        && new URL(expectedTopUrl).origin === expectedOrigin
+        && document.hasFocus()
+        && (!window.frameElement || window.top.document.activeElement === window.frameElement);
+    } catch {
+      return false;
+    }
+  };
+  const tokenKey = "__openkeyletCredentialTarget_" + operationId.replace(/[^a-z0-9]/gi, "")
+    + "_" + fieldToken.replace(/[^a-z0-9]/gi, "");
+  if (!expectedDocument() || Date.now() >= expiresAt || typeof value !== "string"
+      || !/^[0-9a-f-]{36}$/i.test(operationId || "") || !/^[0-9a-f-]{36}$/i.test(fieldToken || "")) {
+    return { readback: false, fieldRole: module };
+  }
+  const element = activeElement(document);
+  const type = (element?.type || "").toLowerCase();
+  const autocomplete = (element?.getAttribute("autocomplete") || "").toLowerCase().split(/\s+/);
+  const roleMatches = module === "password"
+    ? type === "password" && !autocomplete.includes("new-password")
+    : module === "username" && ["text", "email", "tel"].includes(type);
+  if (!(element instanceof HTMLInputElement) || !element.isConnected || element.disabled || element.readOnly
+      || !element.getClientRects().length || getComputedStyle(element).visibility !== "visible"
+      || !roleMatches || element[tokenKey] !== fieldToken) {
+    return { readback: false, fieldRole: module };
+  }
+  const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+  if (!descriptor?.get) return { readback: false, fieldRole: module };
+  try {
+    return {
+      readback: descriptor.get.call(element) === value && element.isConnected
+        && element[tokenKey] === fieldToken && activeElement(document) === element,
+      fieldRole: module,
+    };
+  } catch {
+    return { readback: false, fieldRole: module };
+  }
+}

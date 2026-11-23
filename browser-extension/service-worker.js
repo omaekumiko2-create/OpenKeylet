@@ -2,9 +2,13 @@ let socket;
 let reconnectTimer;
 let heartbeatTimer;
 let connectTask;
+let connectionIdentity = null;
 let forceReconnectAfterCurrent = false;
 const focusedFrameByTab = new Map();
+const browserCredentialOperations = new Map();
 const JOB_TIMEOUT_MS = 35_000;
+// The test harness flips this only in its disposable extension copy.
+const SYNTHETIC_HTTP_LOOPBACK_ALLOWED = false;
 // Pairing tokens belong to the worker and extension UI, never content scripts.
 const storageReady = chrome.storage.local.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" });
 
@@ -81,6 +85,8 @@ function requestConnect({ force = false } = {}) {
 function disposeSocket(ws, close = false) {
   if (socket !== ws) return false;
   socket = null;
+  connectionIdentity = null;
+  failBrowserCredentialOperations(ws);
   clearInterval(heartbeatTimer);
   heartbeatTimer = null;
   ws.onopen = null;
@@ -136,10 +142,13 @@ async function connectOnce(force = false) {
   if (socket) {
     disposeSocket(socket, true);
   }
-  const { bridgePort = 39272, bridgeToken = "" } = await chrome.storage.local.get([
+  const { bridgePort = 39272, bridgeToken = "", browserInstanceId: storedBrowserInstanceId = "" } = await chrome.storage.local.get([
     "bridgePort",
     "bridgeToken",
+    "browserInstanceId",
   ]);
+  const browserInstanceId = storedBrowserInstanceId || crypto.randomUUID();
+  if (!storedBrowserInstanceId) await chrome.storage.local.set({ browserInstanceId });
   if (!bridgeToken) {
     await setStatus("waiting", `127.0.0.1:${bridgePort}`);
     if (await claimPairing(bridgePort)) {
@@ -152,7 +161,12 @@ async function connectOnce(force = false) {
   await setStatus("connecting", `127.0.0.1:${bridgePort}`);
   const ws = new WebSocket(`ws://127.0.0.1:${bridgePort}/extension`);
   socket = ws;
-  ws.onopen = () => ws.send(JSON.stringify({ type: "auth", token: bridgeToken }));
+  ws.onopen = () => ws.send(JSON.stringify({
+    type: "auth",
+    token: bridgeToken,
+    extensionId: chrome.runtime.id,
+    browserInstanceId,
+  }));
   ws.onmessage = async (event) => {
     let message;
     try {
@@ -161,7 +175,23 @@ async function connectOnce(force = false) {
       return;
     }
     if (message.type === "rpc-result") { finishBridgeRequest(message); return; }
+    if (message.type === "prepared" || message.type === "prepare-rejected") {
+      finishCredentialBinding(ws, message);
+      return;
+    }
     if (message.type === "ready") {
+      if (!message.applicationId || !message.connectionId
+          || message.browserInstanceId !== browserInstanceId) {
+        disposeSocket(ws, true);
+        await setStatus("disconnected", `127.0.0.1:${bridgePort}`);
+        reconnectAfter();
+        return;
+      }
+      connectionIdentity = {
+        applicationId: message.applicationId,
+        connectionId: message.connectionId,
+        browserInstanceId: message.browserInstanceId,
+      };
       await setStatus("connected", `127.0.0.1:${bridgePort}`);
       startHeartbeat(ws);
       await announceIfFocused();
@@ -176,18 +206,7 @@ async function connectOnce(force = false) {
       return;
     }
     if (message.type === "job") {
-      const expiresAt = jobExpiresAt(message.job);
-      const result = Number.isFinite(expiresAt) && Date.now() >= expiresAt
-        ? { ok: false, message: "The fill task has expired" }
-        : await fillFocused(message.job?.value, expiresAt, Boolean(message.job?.submit));
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({
-          type: "complete",
-          jobId: message.job?.id,
-          ok: result.ok,
-          message: result.message,
-        }));
-      }
+      await processCredentialJob(ws, message.job);
     }
   };
   ws.onerror = () => handleDisconnect(ws);
@@ -202,69 +221,233 @@ function jobExpiresAt(job, now = Date.now()) {
   return Number.isFinite(parsed) ? Math.min(parsed, latest) : latest;
 }
 
-async function fillFocused(value, expiresAt, submit = false) {
-  if (typeof value !== "string") return { ok: false, message: "The fill value is invalid" };
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab?.id) return { ok: false, message: "No active tab" };
-  const frameId = focusedFrameByTab.get(tab.id) ?? 0;
-  try {
-    const [execution] = await chrome.scripting.executeScript({
-      target: { tabId: tab.id, frameIds: [frameId] },
-      func: writeToFocusedControl,
-      args: [value, expiresAt, submit],
-    });
-    return execution?.result || { ok: false, message: "The page did not return a fill result" };
-  } catch {
-    return { ok: false, message: "Cannot fill the focused control; check the page and extension permissions" };
+function failBrowserCredentialOperations(ws) {
+  for (const [operationId, pending] of browserCredentialOperations) {
+    if (pending.ws !== ws) continue;
+    clearTimeout(pending.timer);
+    browserCredentialOperations.delete(operationId);
+    pending.reject(new Error("OpenKeylet disconnected"));
   }
 }
 
-function writeToFocusedControl(value, expiresAt, submit = false) {
-  if (Number.isFinite(expiresAt) && Date.now() >= expiresAt) {
-    return { ok: false, message: "The fill task has expired" };
-  }
-  const findActiveElement = (root) => {
-    const element = root.activeElement;
-    const shadowRoot = element?.shadowRoot;
-    return shadowRoot?.activeElement ? findActiveElement(shadowRoot) : element;
-  };
-  const element = findActiveElement(document);
-  if (!element || element === document.body || element === document.documentElement) {
-    return { ok: false, message: "The current page has no focused input control" };
-  }
-  const tag = element.tagName?.toLowerCase();
-  const editable = element.isContentEditable;
-  if (tag !== "input" && tag !== "textarea" && !editable) {
-    return { ok: false, message: "The focused element is not an input control" };
-  }
+function waitForCredentialBinding(ws, identity, operationId, fieldToken, expiresAt) {
+  if (browserCredentialOperations.has(operationId)) return Promise.reject(new Error("Duplicate credential operation"));
+  return new Promise((resolve, reject) => {
+    const timeoutMs = Math.max(1, Math.min(5000, expiresAt - Date.now()));
+    const timer = setTimeout(() => {
+      browserCredentialOperations.delete(operationId);
+      reject(new Error("Credential target binding was not acknowledged"));
+    }, timeoutMs);
+    browserCredentialOperations.set(operationId, { ws, identity, fieldToken, resolve, reject, timer });
+  });
+}
+
+function finishCredentialBinding(ws, message) {
+  const pending = browserCredentialOperations.get(message.operationId);
+  if (!pending || pending.ws !== ws
+      || message.applicationId !== pending.identity.applicationId
+      || message.connectionId !== pending.identity.connectionId
+      || message.browserInstanceId !== pending.identity.browserInstanceId
+      || message.fieldToken !== pending.fieldToken) return;
+  clearTimeout(pending.timer);
+  browserCredentialOperations.delete(message.operationId);
+  if (message.type === "prepared") pending.resolve(true);
+  else pending.reject(new Error("Credential target binding was rejected"));
+}
+
+function currentCredentialConnection(ws, identity, job) {
+  return socket === ws && ws.readyState === WebSocket.OPEN
+    && connectionIdentity?.applicationId === identity.applicationId
+    && connectionIdentity?.connectionId === identity.connectionId
+    && connectionIdentity?.browserInstanceId === identity.browserInstanceId
+    && job?.applicationId === identity.applicationId
+    && job?.connectionId === identity.connectionId
+    && job?.browserInstanceId === identity.browserInstanceId;
+}
+
+function credentialOriginAllowed(origin) {
   try {
-    element.focus();
-    if (editable) {
-      const selection = window.getSelection();
-      const range = document.createRange();
-      range.selectNodeContents(element);
-      selection.removeAllRanges();
-      selection.addRange(range);
-      document.execCommand("insertText", false, value);
-    } else {
-      const prototype = tag === "textarea" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-      const setter = Object.getOwnPropertyDescriptor(prototype, "value")?.set;
-      if (!setter) return { ok: false, message: "The current control does not support safe filling" };
-      setter.call(element, value);
-    }
-    element.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText" }));
-    element.dispatchEvent(new Event("change", { bubbles: true }));
-    if (submit) {
-      const form = element.form || element.closest?.("form");
-      if (!form || typeof form.requestSubmit !== "function") {
-        return { ok: false, message: "Filled the focused control, but no form was available to submit" };
-      }
-      setTimeout(() => form.requestSubmit(), 0);
-      return { ok: true, message: "Filled and submitted the current form" };
-    }
-    return { ok: true, message: "Filled the focused control" };
+    const url = new URL(origin);
+    if (url.origin !== origin || url.username || url.password || url.search || url.hash) return false;
+    if (url.protocol === "https:") return true;
+    return SYNTHETIC_HTTP_LOOPBACK_ALLOWED && url.protocol === "http:"
+      && ["localhost", "127.0.0.1", "[::1]", "::1"].includes(url.hostname);
   } catch {
-    return { ok: false, message: "The page refused to fill the current control" };
+    return false;
+  }
+}
+
+async function activeCredentialPage() {
+  const { tab, origin } = await activePage();
+  if (!credentialOriginAllowed(origin)) throw new Error("Browser credentials require a secure HTTPS origin");
+  const focusedWindow = await chrome.windows.getLastFocused();
+  const currentTab = await chrome.tabs.get(tab.id);
+  if (!focusedWindow?.focused || focusedWindow.id !== tab.windowId
+      || !currentTab.active || currentTab.windowId !== tab.windowId || currentTab.url !== tab.url) {
+    throw new Error("The active browser tab changed");
+  }
+  const target = await loginPage(currentTab, origin);
+  return {
+    tab: currentTab,
+    origin,
+    frameId: target.frameId,
+    url: target.url,
+    topUrl: target.topUrl,
+    documentId: target.documentId,
+    topDocumentId: target.topDocumentId,
+  };
+}
+
+async function revalidateCredentialPage(ws, identity, job, original, expiresAt) {
+  if (Date.now() >= expiresAt || !currentCredentialConnection(ws, identity, job)) {
+    throw new Error("The credential operation expired or its connection changed");
+  }
+  const { tab, origin } = await activePage();
+  if (tab.id !== original.tab.id || tab.windowId !== original.tab.windowId
+      || tab.url !== original.topUrl || origin !== original.origin) {
+    throw new Error("The active browser tab or origin changed");
+  }
+  const focusedWindow = await chrome.windows.getLastFocused();
+  const currentTab = await chrome.tabs.get(original.tab.id);
+  if (!focusedWindow?.focused || focusedWindow.id !== original.tab.windowId
+      || !currentTab.active || currentTab.windowId !== original.tab.windowId
+      || currentTab.url !== original.topUrl) {
+    throw new Error("The active browser tab changed");
+  }
+  const target = await loginPage(currentTab, original.origin);
+  if (target.frameId !== original.frameId || target.url !== original.url
+      || target.topUrl !== original.topUrl || target.documentId !== original.documentId
+      || target.topDocumentId !== original.topDocumentId) {
+    throw new Error("The browser frame or document changed");
+  }
+  return target;
+}
+
+function sendCredentialCompletion(ws, job, identity, target, fieldToken, ok, delivered, readback) {
+  if (!identity || socket !== ws || ws.readyState !== WebSocket.OPEN) return;
+  const metadata = target || {};
+  try {
+    ws.send(JSON.stringify({
+      type: "complete",
+      operationId: job?.id,
+      applicationId: identity.applicationId,
+      connectionId: identity.connectionId,
+      browserInstanceId: identity.browserInstanceId,
+      origin: metadata.origin || "",
+      tabId: Number.isInteger(metadata.tabId) ? metadata.tabId : -1,
+      windowId: Number.isInteger(metadata.windowId) ? metadata.windowId : -1,
+      frameId: Number.isInteger(metadata.frameId) ? metadata.frameId : -1,
+      documentId: metadata.documentId || "",
+      topDocumentId: metadata.topDocumentId || "",
+      fieldRole: job?.credentialRef?.module || "",
+      fieldToken: fieldToken || "",
+      ok: Boolean(ok),
+      delivered: Boolean(delivered),
+      readback: Boolean(readback),
+      submitted: false,
+    }));
+  } catch {
+    // A disconnected operation is never replayed on another extension socket.
+  }
+}
+
+function injectionMatches(execution, target) {
+  return execution?.frameId === target.frameId && execution?.documentId === target.documentId;
+}
+
+async function processCredentialJob(ws, job) {
+  const identity = connectionIdentity;
+  let target = null;
+  let fieldToken = "";
+  let secretValue = "";
+  let login = null;
+  let delivered = false;
+  let readback = false;
+  try {
+    if (!identity || !currentCredentialConnection(ws, identity, job)
+        || !/^[0-9a-f-]{36}$/i.test(job?.id || "")
+        || !job?.credentialRef || !/^[0-9a-f-]{36}$/i.test(job.credentialRef.itemId || "")
+        || !["username", "password"].includes(job.credentialRef.module)
+        || Object.keys(job).some(key => !["id", "expiresAt", "applicationId", "connectionId", "browserInstanceId", "credentialRef"].includes(key))
+        || Object.keys(job.credentialRef).some(key => !["itemId", "module"].includes(key))) {
+      throw new Error("Invalid reference-only browser credential job");
+    }
+    const expiresAt = jobExpiresAt(job);
+    if (Date.now() >= expiresAt) throw new Error("The credential operation expired");
+    const page = await activeCredentialPage();
+    target = {
+      origin: page.origin,
+      tabId: page.tab.id,
+      windowId: page.tab.windowId,
+      frameId: page.frameId,
+      documentId: page.documentId,
+      topDocumentId: page.topDocumentId,
+      url: page.url,
+      topUrl: page.topUrl,
+      tab: page.tab,
+    };
+    fieldToken = crypto.randomUUID();
+    const [preparedExecution] = await chrome.scripting.executeScript({
+      target: { tabId: page.tab.id, documentIds: [page.documentId] },
+      func: prepareCredentialField,
+      args: [page.origin, page.topUrl, page.url, job.id, fieldToken, job.credentialRef.module],
+    });
+    if (!injectionMatches(preparedExecution, target) || !preparedExecution.result?.ok) {
+      throw new Error("The focused field is not a valid credential target");
+    }
+    if (!currentCredentialConnection(ws, identity, job)) throw new Error("The extension connection changed");
+
+    const bindingAcknowledged = waitForCredentialBinding(ws, identity, job.id, fieldToken, expiresAt);
+    ws.send(JSON.stringify({
+      type: "prepare",
+      operationId: job.id,
+      applicationId: identity.applicationId,
+      connectionId: identity.connectionId,
+      browserInstanceId: identity.browserInstanceId,
+      origin: target.origin,
+      tabId: target.tabId,
+      windowId: target.windowId,
+      frameId: target.frameId,
+      documentId: target.documentId,
+      topDocumentId: target.topDocumentId,
+      fieldRole: job.credentialRef.module,
+      fieldToken,
+    }));
+    await bindingAcknowledged;
+
+    // This is the same origin-bound vault lookup used by the browser popup.
+    login = await bridgeCall("password.get", { origin: target.url, id: job.credentialRef.itemId });
+    secretValue = login?.[job.credentialRef.module];
+    if (typeof secretValue !== "string" || secretValue.length === 0) {
+      throw new Error("The selected credential module is empty");
+    }
+    await revalidateCredentialPage(ws, identity, job, target, expiresAt);
+
+    const [fillExecution] = await chrome.scripting.executeScript({
+      target: { tabId: target.tabId, documentIds: [target.documentId] },
+      func: fillCredentialField,
+      args: [target.origin, target.topUrl, target.url, job.id, fieldToken,
+        job.credentialRef.module, secretValue, expiresAt],
+    });
+    delivered = injectionMatches(fillExecution, target) && fillExecution.result?.delivered === true;
+    if (!delivered) throw new Error("Credential delivery was not confirmed");
+
+    await revalidateCredentialPage(ws, identity, job, target, expiresAt);
+    const [readbackExecution] = await chrome.scripting.executeScript({
+      target: { tabId: target.tabId, documentIds: [target.documentId] },
+      func: verifyCredentialField,
+      args: [target.origin, target.topUrl, target.url, job.id, fieldToken,
+        job.credentialRef.module, secretValue, expiresAt],
+    });
+    readback = injectionMatches(readbackExecution, target) && readbackExecution.result?.readback === true;
+    if (!readback) throw new Error("Independent field readback failed");
+
+    sendCredentialCompletion(ws, job, identity, target, fieldToken, true, true, true);
+  } catch {
+    sendCredentialCompletion(ws, job, identity, target, fieldToken, false, delivered, readback);
+  } finally {
+    secretValue = "";
+    login = null;
   }
 }
 

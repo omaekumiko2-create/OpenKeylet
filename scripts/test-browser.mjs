@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash as createDigest } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -37,16 +38,66 @@ server.listen(0,"127.0.0.1"); await once(server,"listening");
 const origin=`http://localhost:${server.address().port}`;
 const portProbe=net.createServer();portProbe.listen(0,"127.0.0.1");await once(portProbe,"listening");const port=portProbe.address().port;await new Promise(r=>portProbe.close(r));
 await fs.cp(path.join(repo,"browser-extension"),extension,{recursive:true});
-const swPath=path.join(extension,"service-worker.js");await fs.writeFile(swPath,(await fs.readFile(swPath,"utf8")).replaceAll("39272",String(port)));
-const child=spawn(fixture,[root,String(port),origin],{windowsHide:true,stdio:["ignore","pipe","pipe"]});
-let output="", context;
-child.stdout.on("data",d=>{output+=d});child.stderr.on("data",d=>{output+=d});
+const swPath=path.join(extension,"service-worker.js");
+let swSource=(await fs.readFile(swPath,"utf8")).replaceAll("39272",String(port));
+assert.ok(swSource.includes("const SYNTHETIC_HTTP_LOOPBACK_ALLOWED = false;"),"production extension must keep HTTP autofill disabled");
+swSource=swSource.replace("const SYNTHETIC_HTTP_LOOPBACK_ALLOWED = false;","const SYNTHETIC_HTTP_LOOPBACK_ALLOWED = true;");
+assert.ok(swSource.includes("const SYNTHETIC_HTTP_LOOPBACK_ALLOWED = true;"),"only the disposable test copy may enable loopback HTTP");
+await fs.writeFile(swPath,swSource);
+const child=spawn(fixture,[root,String(port),origin],{windowsHide:true,stdio:["pipe","pipe","pipe"]});
+let output="", mcpBuffer="", context, worker;
+let nextMcpId=1;
+const pendingMcp=new Map();
+child.stdout.on("data",chunk=>{
+  mcpBuffer+=chunk.toString();
+  for(;;){
+    const newline=mcpBuffer.indexOf("\n");
+    if(newline<0)break;
+    const line=mcpBuffer.slice(0,newline).trim();mcpBuffer=mcpBuffer.slice(newline+1);
+    if(!line)continue;
+    try{
+      const message=JSON.parse(line);
+      if(message.id!==undefined&&pendingMcp.has(message.id)){
+        const pending=pendingMcp.get(message.id);pendingMcp.delete(message.id);clearTimeout(pending.timer);pending.resolve(message);
+      }
+    }catch{output+=`\nstdout: ${line}`;}
+  }
+});
+child.stderr.on("data",d=>{output+=d.toString()});
+function mcpRequest(method,params={},timeoutMs=60000){
+  const id=nextMcpId++;
+  return new Promise((resolve,reject)=>{
+    const timer=setTimeout(()=>{pendingMcp.delete(id);reject(new Error(`MCP ${method} timed out`));},timeoutMs);
+    pendingMcp.set(id,{resolve,reject,timer});
+    child.stdin.write(JSON.stringify({jsonrpc:"2.0",id,method,params})+"\n",error=>{
+      if(error){clearTimeout(timer);pendingMcp.delete(id);reject(error);}
+    });
+  });
+}
+function mcpNotify(method,params={}){child.stdin.write(JSON.stringify({jsonrpc:"2.0",method,params})+"\n");}
+async function mcpTool(name,args){
+  const response=await mcpRequest("tools/call",{name,arguments:args});
+  if(response.error)throw new Error(response.error.message||JSON.stringify(response.error));
+  return response.result;
+}
+function mcpToolPayload(result){
+  if(result?.structuredContent)return result.structuredContent;
+  const text=(result?.content||[]).filter(block=>block.type==="text").map(block=>block.text).join("\n");
+  try{return JSON.parse(text);}catch{return text;}
+}
 async function until(fn,description,timeout=20000){const end=Date.now()+timeout;while(Date.now()<end){if(await fn())return;await new Promise(r=>setTimeout(r,100));}throw new Error(`Timed out: ${description}. ${output.slice(-1500)}`);}
 try {
   await until(()=>output.includes("READY"),"fixture startup");
   console.log("Browser fixture ready");
+  const initialized=await mcpRequest("initialize",{protocolVersion:"2025-11-25",capabilities:{},clientInfo:{name:"self-asserted-test-client",version:"1.0.0"}});
+  assert.equal(initialized.error,undefined,JSON.stringify(initialized.error));
+  assert.equal(initialized.result.protocolVersion,"2025-11-25");
+  mcpNotify("notifications/initialized");
+  const listedTools=await mcpRequest("tools/list",{});
+  assert.equal(listedTools.error,undefined,JSON.stringify(listedTools.error));
+  assert.ok(listedTools.result.tools.some(tool=>tool.name==="credential_fill"),"MCP credential_fill tool must be registered");
   context=await chromium.launchPersistentContext(path.join(root,"profile"),{channel:"chromium",headless:true,args:[`--disable-extensions-except=${extension}`,`--load-extension=${extension}`]});
-  const worker=context.serviceWorkers()[0] || await context.waitForEvent("serviceworker");
+  worker=context.serviceWorkers()[0] || await context.waitForEvent("serviceworker");
   const extensionId=new URL(worker.url()).host;
   assert.equal(extensionId,"knkjojeijgalhpdkfapohofobfomenmi");
   await until(async()=>await worker.evaluate(async()=> (await chrome.storage.local.get("bridgeStatus")).bridgeStatus === "connected"),"automatic pairing");
@@ -83,6 +134,136 @@ try {
   await site.bringToFront();await popup.getByRole("button",{name:/Fixture login/}).click();
   await until(async()=>await site.locator("#password").inputValue()==="fixture-initial-password","password autofill");
   console.log("Password filled");
+
+  // The MCP caller label is deliberately self-asserted; only the paired extension/vault connection authorizes delivery.
+  async function trackFormSubmission(){
+    await site.evaluate(()=>{
+      window.__mcpFormSubmitted=false;
+      document.querySelector("form").addEventListener("submit",event=>{window.__mcpFormSubmitted=true;event.preventDefault();});
+    });
+  }
+  await trackFormSubmission();
+  await site.locator("#password").fill("");
+  const mcpPasswordFill=await mcpTool("credential_fill",{item:"Fixture login",module:"password",target:"browser"});
+  const mcpPasswordPayload=mcpToolPayload(mcpPasswordFill);
+  assert.notEqual(mcpPasswordFill.isError,true,JSON.stringify(mcpPasswordFill));
+  assert.equal(mcpPasswordPayload.target,"browser");
+  assert.equal(mcpPasswordPayload.module,"password");
+  assert.equal(mcpPasswordPayload.origin,origin);
+  assert.equal(typeof mcpPasswordPayload.operationId,"string");
+  assert.equal(typeof mcpPasswordPayload.tabId,"number");
+  assert.equal(typeof mcpPasswordPayload.documentId,"string");
+  assert.equal(mcpPasswordPayload.delivered,true);
+  assert.equal(mcpPasswordPayload.readback,true);
+  assert.equal(mcpPasswordPayload.submitted,false,"MCP credential fill must never submit the form by default");
+  for(const key of ["value","password","passwordHash","hash","secret"])assert.equal(Object.hasOwn(mcpPasswordPayload,key),false,`MCP result must not expose ${key}`);
+  assert.equal(await site.locator("#password").inputValue(),"fixture-initial-password");
+  assert.equal(await site.evaluate(()=>window.__mcpFormSubmitted),false);
+  const mcpPasswordSerialized=JSON.stringify(mcpPasswordFill);
+  assert.equal(mcpPasswordSerialized.includes("fixture-initial-password"),false,"MCP output must not disclose the credential");
+  assert.equal(mcpPasswordSerialized.includes(createDigest("sha256").update("fixture-initial-password").digest("hex")),false,"MCP output must not disclose a password hash");
+  await site.locator("#username").fill("");
+  const mcpUsernameFill=await mcpTool("credential_fill",{item:"Fixture login",module:"username",target:"browser"});
+  assert.notEqual(mcpUsernameFill.isError,true,JSON.stringify(mcpUsernameFill));
+  assert.equal(mcpToolPayload(mcpUsernameFill).readback,true);
+  assert.equal(await site.locator("#username").inputValue(),"alice");
+  const mcpUsernameSerialized=JSON.stringify(mcpUsernameFill);
+  assert.equal(mcpUsernameSerialized.includes("fixture-initial-password"),false,"username fill output must not disclose the password");
+  assert.equal(mcpUsernameSerialized.includes(createDigest("sha256").update("fixture-initial-password").digest("hex")),false,"username fill output must not disclose the password hash");
+
+  async function gatedCredentialFill(action){
+    await worker.evaluate(()=>{
+      const original=bridgeCall;
+      globalThis.__credentialLookupOriginal=original;
+      globalThis.__credentialLookupGate={enabled:true,ready:false,release:null};
+      bridgeCall=async(method,params)=>{
+        const result=await original(method,params);
+        if(method==="password.get"&&globalThis.__credentialLookupGate?.enabled){
+          const gate=globalThis.__credentialLookupGate;gate.ready=true;
+          await new Promise(resolve=>gate.release=resolve);
+        }
+        return result;
+      };
+    });
+    const pending=mcpTool("credential_fill",{item:"Fixture login",module:"password",target:"browser"});
+    try{
+      await until(()=>worker.evaluate(()=>globalThis.__credentialLookupGate?.ready===true),"credential lookup interlock");
+      await action();
+    }finally{
+      await worker.evaluate(()=>{
+        const gate=globalThis.__credentialLookupGate;
+        if(gate){gate.enabled=false;gate.release?.();}
+        if(globalThis.__credentialLookupOriginal)bridgeCall=globalThis.__credentialLookupOriginal;
+        delete globalThis.__credentialLookupGate;delete globalThis.__credentialLookupOriginal;
+      });
+    }
+    return pending;
+  }
+
+  await site.locator("#password").fill("");
+  const wrongOriginPage=await context.newPage();
+  await wrongOriginPage.goto(`http://127.0.0.1:${server.address().port}/`);
+  await wrongOriginPage.locator("#password").focus();
+  const wrongOriginFill=await mcpTool("credential_fill",{item:"Fixture login",module:"password",target:"browser"});
+  assert.equal(wrongOriginFill.isError,true,"A credential must not cross its saved origin boundary");
+  assert.equal(await wrongOriginPage.locator("#password").inputValue(),"");
+  await wrongOriginPage.close();await site.bringToFront();
+
+  await site.evaluate(url=>{const iframe=document.createElement("iframe");iframe.src=url;document.body.append(iframe);},`http://127.0.0.1:${server.address().port}/`);
+  await until(()=>site.frames().length===2,"cross-origin MCP frame");
+  const mcpCrossFrame=site.frames()[1];await mcpCrossFrame.locator("#password").focus();
+  await until(()=>worker.evaluate(async()=>{
+    const [active]=await chrome.tabs.query({active:true,lastFocusedWindow:true});
+    return Boolean(active&&(focusedFrameByTab.get(active.id)??0)!==0);
+  }),"cross-origin MCP frame focus");
+  const crossOriginFill=await mcpTool("credential_fill",{item:"Fixture login",module:"password",target:"browser"});
+  assert.equal(crossOriginFill.isError,true,"Cross-origin iframe credentials must be rejected");
+  assert.equal(await mcpCrossFrame.locator("#password").inputValue(),"");
+  await site.evaluate(()=>document.querySelector("iframe").remove());await site.locator("#password").focus();
+
+  await site.locator("#password").fill("");
+  const switchedTabFill=await gatedCredentialFill(async()=>{
+    const other=await context.newPage();await other.goto(origin+"/other");await other.bringToFront();
+    globalThis.__mcpOtherTab=other;
+  });
+  assert.equal(switchedTabFill.isError,true,"An active-tab switch during lookup must abort the fill");
+  await site.bringToFront();assert.equal(await site.locator("#password").inputValue(),"");
+  await context.pages().find(page=>page.url().endsWith("/other"))?.close();
+
+  await site.locator("#password").fill("");
+  const navigationFill=await gatedCredentialFill(async()=>{
+    await site.reload();await site.locator("#password").waitFor();await site.locator("#password").focus();
+    await trackFormSubmission();
+  });
+  assert.equal(navigationFill.isError,true,"A same-URL document replacement during lookup must abort the fill");
+  assert.equal(await site.locator("#password").inputValue(),"");
+
+  await site.locator("#password").focus();
+  await site.evaluate(url=>{const iframe=document.createElement("iframe");iframe.src=url;document.body.append(iframe);},origin);
+  await until(()=>site.frames().length===2,"same-origin MCP frame");
+  const frameMismatchFill=await gatedCredentialFill(async()=>{await site.frames()[1].locator("#password").focus();});
+  assert.equal(frameMismatchFill.isError,true,"A focused-frame switch during lookup must abort the fill");
+  assert.equal(await site.locator("#password").inputValue(),"");
+  await site.evaluate(()=>document.querySelector("iframe").remove());await site.locator("#password").focus();
+
+  await site.locator("#password").fill("");
+  const replacedFieldFill=await gatedCredentialFill(async()=>{
+    await site.evaluate(()=>{const old=document.querySelector("#password");const replacement=old.cloneNode();old.replaceWith(replacement);replacement.focus();});
+  });
+  assert.equal(replacedFieldFill.isError,true,"A replaced target field must not inherit the prepared identity");
+  assert.equal(await site.locator("#password").inputValue(),"");
+  await site.locator("#password").focus();
+
+  await site.locator("#password").fill("");
+  const submitAttempt=await mcpTool("credential_fill",{item:"Fixture login",module:"password",target:"browser",submit:true});
+  assert.equal(submitAttempt.isError,true,"MCP credential filling must reject requested form submission");
+  assert.equal(await site.locator("#password").inputValue(),"");
+  assert.equal(await site.evaluate(()=>window.__mcpFormSubmitted),false);
+  console.log("Secure MCP autofill verified: origin, tab, navigation, frame/document, exact field, readback, non-submission and secret non-disclosure");
+
+  // The checks above cleared the fixture form and reloaded it, so restore the saved login before the update flow.
+  await site.bringToFront();await popup.getByRole("button",{name:/Fixture login/}).click();
+  await until(async()=>await site.locator("#username").inputValue()==="alice","username autofill before save");
   await site.locator("#password").fill("browser-update-secret");await site.bringToFront();await popup.locator("#read-form").click();
   await popup.locator("#save-form").waitFor({state:"visible"});
   await site.bringToFront();await popup.locator('#save-form button[type="submit"]').click();
@@ -292,9 +473,9 @@ try {
   const auth=Buffer.from(assertion.response.authenticatorData,"base64url");
   const client=Buffer.from(assertion.response.clientDataJSON,"base64url");
   assert.equal(JSON.parse(client).origin,origin);assert.equal(auth[32]&5,5);
-  assert.ok(verify("sha256",Buffer.concat([auth,createHash("sha256").update(client).digest()]),publicKey,Buffer.from(assertion.response.signature,"base64url")));
+  assert.ok(verify("sha256",Buffer.concat([auth,createDigest("sha256").update(client).digest()]),publicKey,Buffer.from(assertion.response.signature,"base64url")));
   assert.equal(JSON.parse(client).challenge,Buffer.alloc(32,10).toString("base64url"));
-  assert.deepEqual(auth.subarray(0,32),createHash("sha256").update("localhost").digest());
+  assert.deepEqual(auth.subarray(0,32),createDigest("sha256").update("localhost").digest());
   await webauthn("get"); // Discoverable login without allowCredentials.
   // Cancelling a real extension prompt must reject, rather than silently authenticating.
   const cancelPage=context.waitForEvent("page");
@@ -324,6 +505,12 @@ try {
   throw error;
 } finally {
   await context?.close(); await fs.writeFile(path.join(root,"stop"),"").catch(()=>{});
-  if(child.exitCode===null){await Promise.race([once(child,"exit"),new Promise(r=>setTimeout(r,2000))]);if(child.exitCode===null)child.kill();}
+  if(child.exitCode===null){
+    try{await mcpRequest("shutdown",{},3000);}catch{}
+    mcpNotify("exit");
+    child.stdin.end();
+    await Promise.race([once(child,"exit"),new Promise(r=>setTimeout(r,5000))]);
+    if(child.exitCode===null)child.kill();
+  }
   server.close();
 }

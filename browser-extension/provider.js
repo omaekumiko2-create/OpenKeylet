@@ -41,9 +41,26 @@ async function pageStillMatches(tabId, origin) {
 
 async function loginPage(tab, origin) {
   const frameId = focusedFrameByTab.get(tab.id) ?? 0;
-  const [result] = await chrome.scripting.executeScript({target:{tabId:tab.id,frameIds:[frameId]},func:()=>location.href});
-  if (!result?.result || new URL(result.result).origin !== origin) throw new Error("Cannot use credentials in a different-origin frame");
-  return {frameId,url:result.result};
+  const [topResult] = await chrome.scripting.executeScript({
+    target: { tabId: tab.id, frameIds: [0] },
+    func: () => ({ url: location.href, origin: location.origin }),
+  });
+  const [frameResult] = frameId === 0 ? [topResult] : await chrome.scripting.executeScript({
+    target: { tabId: tab.id, frameIds: [frameId] },
+    func: () => ({ url: location.href, origin: location.origin }),
+  });
+  if (!topResult?.result?.url || !frameResult?.result?.url
+      || topResult.result.origin !== origin || frameResult.result.origin !== origin
+      || topResult.result.url !== tab.url || !topResult.documentId || !frameResult.documentId) {
+    throw new Error("Cannot use credentials in a different-origin or changed frame");
+  }
+  return {
+    frameId,
+    url: frameResult.result.url,
+    topUrl: topResult.result.url,
+    documentId: frameResult.documentId,
+    topDocumentId: topResult.documentId,
+  };
 }
 async function formAction(tab, origin, mode, login, target) {
   target ||= await loginPage(tab, origin);

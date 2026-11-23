@@ -886,6 +886,20 @@ struct CredentialFillOutput {
     target: String,
     module: String,
     submitted: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    operation_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    origin: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tab_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    frame_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    document_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    delivered: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    readback: Option<bool>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -1159,7 +1173,7 @@ struct CredentialFillInput {
     module: String,
     #[serde(default)]
     #[schemars(
-        description = "Optional write target: browser, desktop, or terminal. Omit it to use the current running OpenKeylet terminal when one exists, otherwise a connected browser extension, otherwise the real operating-system foreground control."
+        description = "Optional write target: browser, desktop, or terminal. Omit it to use the current running OpenKeylet terminal when one exists, otherwise a connected browser extension, otherwise the real operating-system foreground control. Browser fills are bound to the active HTTPS origin, tab, frame, document, and exact focused field; HTTP is accepted only for isolated loopback synthetic tests."
     )]
     target: String,
     #[serde(default)]
@@ -1169,7 +1183,7 @@ struct CredentialFillInput {
     session_id: Option<String>,
     #[serde(default)]
     #[schemars(
-        description = "Submit after filling. For terminal and desktop targets this presses Enter; for browser targets it submits the focused field's form when one exists. Defaults to false."
+        description = "Optional submission request. Defaults to false. Browser credential fills reject submit=true and never submit forms; terminal and desktop targets may press Enter."
     )]
     submit: bool,
 }
@@ -1314,7 +1328,7 @@ impl VaultMcp {
 
     #[tool(
         name = "credential_fill",
-        description = "Use one stored module without returning hidden plaintext. Omit item when this MCP session or terminal already selected a compatible project, or when exactly one enabled project supports filling; otherwise pass its name or a natural phrase containing it. OpenKeylet infers a sole secret module and understands module names or common phrases such as password, API key, private key, and verification code in either module or item. Omit target to use the current running OpenKeylet terminal, otherwise try a connected browser extension and immediately fall back to the real operating-system foreground control; common target aliases are accepted. sessionId is only needed to switch among multiple terminals. Set submit=true to complete the focused form or press Enter in the same call. Call items_search only when discovery or genuine ambiguity remains.",
+        description = "Use one stored module without returning hidden plaintext. Omit item when this MCP session or terminal already selected a compatible project, or when exactly one enabled project supports filling; otherwise pass its name or a natural phrase containing it. OpenKeylet infers a sole secret module and understands module names or common phrases such as password, API key, private key, and verification code in either module or item. Omit target to use the current running OpenKeylet terminal, otherwise use Browser Bridge whenever enabled (fail closed if it is not paired or connected), and use the real operating-system foreground control only when Browser Bridge is disabled. Browser credential filling is limited to username/password modules, resolves the credential inside the extension's authorized vault route, requires an exact secure origin and revalidated tab/frame/document/field identity, verifies field readback, and never submits a form. HTTP is allowed only for isolated loopback synthetic tests. submit=true is rejected for browser targets. sessionId is only needed to switch among multiple terminals. Call items_search only when discovery or genuine ambiguity remains.",
         output_schema = rmcp::handler::server::tool::schema_for_type::<CredentialFillOutput>(),
         annotations(title = "Fill a credential", read_only_hint = false, destructive_hint = false, idempotent_hint = false, open_world_hint = true)
     )]
@@ -1325,10 +1339,7 @@ impl VaultMcp {
         let result: Result<CredentialFillOutput, String> = async {
             let requested_target = normalize_search_text(&input.target);
             let automatic_target = matches!(requested_target.as_str(), "" | "auto" | "default");
-            let terminal_target = matches!(
-                requested_target.as_str(),
-                "terminal" | "term" | "pty" | "shell"
-            );
+            let terminal_target = matches!(requested_target.as_str(), "terminal" | "term" | "pty" | "shell");
             let terminal_session_id = if automatic_target || terminal_target {
                 if let Some(session_id) = input.session_id.as_deref() {
                     Some(self.resolve_terminal_session_id(session_id, true)?)
@@ -1355,89 +1366,91 @@ impl VaultMcp {
             let target = match requested_target.as_str() {
                 "" | "auto" | "default" if terminal_session_id.is_some() => "terminal".to_owned(),
                 "" | "auto" | "default" => {
-                    if self.browser.fill_configured() {
-                        "browser".to_owned()
-                    } else {
-                        "desktop".to_owned()
-                    }
+                    if self.browser.fill_enabled().map_err(|error| error.to_string())? { "browser".to_owned() } else { "desktop".to_owned() }
                 }
                 "browser" | "web" | "chromium" => "browser".to_owned(),
-                "desktop" | "foreground" | "system" | "os" => {
-                    "desktop".to_owned()
-                }
+                "desktop" | "foreground" | "system" | "os" => "desktop".to_owned(),
                 "terminal" | "term" | "pty" | "shell" => "terminal".to_owned(),
-                _ => {
-                    return Err(
-                        "target can be browser, desktop, terminal, or a common synonym, and may also be omitted directly"
-                            .to_owned(),
-                    );
-                }
+                _ => return Err("target can be browser, desktop, terminal, or a common synonym, and may also be omitted directly".to_owned()),
             };
             let module = resolve_secret_module(&connection, &input.module, &input.item)?;
             let submit = input.submit;
+            if target == "browser" && submit {
+                return Err("Browser form submission is disabled for MCP credential fills; submit the form separately in the browser".to_owned());
+            }
+            if target == "browser" && !matches!(module.as_str(), "password" | "username") {
+                return Err("Browser credential filling supports only password and username modules".to_owned());
+            }
             let action_target = if automatic_target { "auto" } else { &target };
-            let actual_target = self
-                .track(
-                    item_id,
-                    format!("to {action_target} fill in module {module}"),
-                    async {
-                        let (_, kind, mut value) = self
-                            .vault
-                            .get_secret_value(item_id, &module)
-                            .map_err(|error| anyhow::anyhow!(error))?;
-                        if kind == "totp" {
-                            value = current_totp(&value)?;
+            self.track(
+                item_id,
+                format!("to {action_target} fill in module {module}"),
+                async {
+                    match target.as_str() {
+                        "browser" => {
+                            // The MCP process passes only a credential reference. The
+                            // extension resolves the secret through password.get.
+                            let result = self.browser.fill_credential(item_id, &module).await?;
+                            if !result.ok || !result.delivered || !result.readback || result.submitted {
+                                bail!("Browser credential delivery could not be independently verified");
+                            }
+                            Ok(CredentialFillOutput {
+                                target: "browser".to_owned(),
+                                module: module.clone(),
+                                submitted: false,
+                                operation_id: Some(result.operation_id.to_string()),
+                                origin: Some(result.origin),
+                                tab_id: Some(result.tab_id),
+                                frame_id: Some(result.frame_id),
+                                document_id: Some(result.document_id),
+                                delivered: Some(result.delivered),
+                                readback: Some(result.readback),
+                            })
                         }
-                        match target.as_str() {
-                            "browser" => {
-                                let browser_failure =
-                                    match self.browser.fill_value(value.clone(), submit).await {
-                                        Ok(result) if result.status == "ok" => {
-                                            return Ok("browser".to_owned());
-                                        }
-                                        Ok(result) => result.message,
-                                        Err(error) => error.to_string(),
-                                    };
-                                if !automatic_target {
-                                    bail!("{browser_failure}");
-                                }
-                                tokio::task::spawn_blocking(move || {
-                                    desktop::fill_focused(&value, submit)
-                                })
-                                .await
-                                .context("Desktop input task failed")?
-                                .with_context(|| {
-                                    format!("Browser fill failed ({browser_failure}); desktop fallback also failed")
-                                })?;
-                                Ok("desktop".to_owned())
-                            }
-                            "desktop" => {
-                                tokio::task::spawn_blocking(move || {
-                                    desktop::fill_focused(&value, submit)
-                                })
-                                .await
-                                .context("Desktop input task failed")??;
-                                Ok("desktop".to_owned())
-                            }
-                            "terminal" => {
-                                let session_id = terminal_session_id
-                                    .context("No current terminal session; call terminal_start first")?;
-                                self.terminal.fill_value(session_id, &value, submit)?;
-                                self.bind_terminal_item(session_id, item_id);
-                                Ok("terminal".to_owned())
-                            }
-                            _ => unreachable!(),
+                        "desktop" => {
+                            let (_, kind, mut value) = self.vault.get_secret_value(item_id, &module)
+                                .map_err(|error| anyhow::anyhow!(error))?;
+                            if kind == "totp" { value = current_totp(&value)?; }
+                            tokio::task::spawn_blocking(move || desktop::fill_focused(&value, submit))
+                                .await.context("Desktop input task failed")??;
+                            Ok(CredentialFillOutput {
+                                target: "desktop".to_owned(),
+                                module: module.clone(),
+                                submitted: submit,
+                                operation_id: None,
+                                origin: None,
+                                tab_id: None,
+                                frame_id: None,
+                                document_id: None,
+                                delivered: None,
+                                readback: None,
+                            })
                         }
-                    },
-                )
-                .await?;
-            Ok(CredentialFillOutput {
-                target: actual_target,
-                module,
-                submitted: submit,
-            })
-        }
-        .await;
+                        "terminal" => {
+                            let (_, kind, mut value) = self.vault.get_secret_value(item_id, &module)
+                                .map_err(|error| anyhow::anyhow!(error))?;
+                            if kind == "totp" { value = current_totp(&value)?; }
+                            let session_id = terminal_session_id.context("No current terminal session; call terminal_start first")?;
+                            self.terminal.fill_value(session_id, &value, submit)?;
+                            self.bind_terminal_item(session_id, item_id);
+                            Ok(CredentialFillOutput {
+                                target: "terminal".to_owned(),
+                                module: module.clone(),
+                                submitted: submit,
+                                operation_id: None,
+                                origin: None,
+                                tab_id: None,
+                                frame_id: None,
+                                document_id: None,
+                                delivered: None,
+                                readback: None,
+                            })
+                        }
+                        _ => unreachable!(),
+                    }
+                },
+            ).await
+        }.await;
         into_tool_result(result)
     }
 
@@ -2005,7 +2018,7 @@ impl ServerHandler for VaultMcp {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("openkeylet", env!("CARGO_PKG_VERSION")).with_title("OpenKeylet"))
             .with_instructions(
-            "OpenKeylet lets agents use locally saved credentials without receiving hidden plaintext. An explicit item or unique items_search result becomes the current project; later compatible actions may omit item, and a terminal keeps its own binding. When the user names a project and the action is clear, call it directly. Use items_search only for discovery, selection, inspection, or genuine ambiguity. credential_fill understands common module phrases and may infer a sole secret; omit target to use the current running OpenKeylet terminal, otherwise a connected browser or foreground control, and use submit=true to complete the login. terminal_start makes the opened PTY current, so terminal_write, terminal_read, terminal_stop, and terminal credential fills should omit sessionId unless deliberately switching among multiple terminals. Use terminal_run for one-shot local commands and PTY tools only for persistent interaction. Direct {{openkeylet:module}} placeholders work in commands, stdin, paths, terminal input, SSH, and HTTP values; OpenKeylet substitutes and redacts them locally. terminal_run.stdin and ssh_run.stdin pass scripts, JSON, or other text without shell escaping or temporary files. A password or private-key project can use SSH without saved target metadata: pass host, optional port, and username at runtime; saved values are defaults and port 22 is the fallback. Use secretEnv only when a program needs an environment variable, and HTTP secretBindings only for aliases. Never ask the user to reveal a hidden value. terminal_read.until waits without polling and has no deadline unless waitSeconds is supplied. OpenKeylet has no observation, diagnostic, restricted, or execution modes.",
+            "OpenKeylet lets agents use locally saved credentials without receiving hidden plaintext. An explicit item or unique items_search result becomes the current project; later compatible actions may omit item, and a terminal keeps its own binding. When the user names a project and the action is clear, call it directly. Use items_search only for discovery, selection, inspection, or genuine ambiguity. credential_fill understands common module phrases and may infer a sole secret; omit target to use the current running OpenKeylet terminal, otherwise use Browser Bridge whenever enabled (fail closed if it is not paired or connected), and use the foreground control only when Browser Bridge is disabled. Browser fills resolve credentials inside the extension, bind to the active secure origin and exact tab/frame/document/field, verify readback, and never submit forms; submit=true is rejected for browser targets. terminal_start makes the opened PTY current, so terminal_write, terminal_read, terminal_stop, and terminal credential fills should omit sessionId unless deliberately switching among multiple terminals. Use terminal_run for one-shot local commands and PTY tools only for persistent interaction. Direct {{openkeylet:module}} placeholders work in commands, stdin, paths, terminal input, SSH, and HTTP values; OpenKeylet substitutes and redacts them locally. terminal_run.stdin and ssh_run.stdin pass scripts, JSON, or other text without shell escaping or temporary files. A password or private-key project can use SSH without saved target metadata: pass host, optional port, and username at runtime; saved values are defaults and port 22 is the fallback. Use secretEnv only when a program needs an environment variable, and HTTP secretBindings only for aliases. Never ask the user to reveal a hidden value. terminal_read.until waits without polling and has no deadline unless waitSeconds is supplied. OpenKeylet has no observation, diagnostic, restricted, or execution modes.",
         )
     }
 
@@ -2014,6 +2027,7 @@ impl ServerHandler for VaultMcp {
         context: NotificationContext<RoleServer>,
     ) -> impl std::future::Future<Output = ()> + MaybeSendFuture + '_ {
         if let Some(info) = context.peer.peer_info() {
+            // MCP clientInfo.name is a self-asserted display label for audit only; it is never an authentication factor.
             let client_name = display_client_name(&info.client_info.name);
             if let Ok(mut stored_name) = self.client_name.write() {
                 *stored_name = client_name;
