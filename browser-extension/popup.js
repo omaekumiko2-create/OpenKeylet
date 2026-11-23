@@ -171,7 +171,7 @@ $("#save-form").addEventListener("submit",async e=>{
   }
   catch(e){showError(e);} finally {saving=false;refresh();}
 });
-$("#pair-form").addEventListener("submit",async e=>{ e.preventDefault(); const port=Number($("#port").value); if(!Number.isInteger(port)||port<1024||port>65535){showError("Invalid port");return;} await chrome.storage.local.set({bridgePort:port}); await chrome.runtime.sendMessage({type:"bridge-config-updated"}); showError("在 OpenKeylet 安装指引中点击“打开扩展页” / Click Open extensions page in OpenKeylet"); });
+$("#pair-form").addEventListener("submit",async e=>{ e.preventDefault(); const port=Number($("#port").value); if(!Number.isInteger(port)||port<1024||port>65535){showError("Invalid port");return;} await chrome.storage.local.set({bridgePort:port}); await chrome.runtime.sendMessage({type:"bridge-config-updated"}); showError("在 OpenKeylet 安装指引中点击“打开浏览器并复制地址” / Click Open Chrome & copy address in OpenKeylet"); });
 const PERSONAL_LABELS = {
   secureNote: { secureNote:"安全笔记 / Secure note" },
   card: { cardholderName:"持卡人 / Cardholder", cardNumber:"卡号 / Number", cardBrand:"卡组织 / Brand", cardExpMonth:"到期月 / Expiry month", cardExpYear:"到期年 / Expiry year", cardSecurityCode:"安全码 / Security code" },

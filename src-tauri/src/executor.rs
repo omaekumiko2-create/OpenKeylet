@@ -1563,16 +1563,14 @@ pub async fn test_connection(vault: &Vault, connection: &DecryptedConnection) ->
         let result = execute_ssh(
             vault,
             &testable,
-            "printf 'mcp-vault-ok'",
+            "echo mcp-vault-ok",
             None,
             Some(30),
             &HashMap::new(),
             None,
         )
         .await?;
-        if result.stdout != "mcp-vault-ok" {
-            bail!("VPS returned an unexpected result:{}", result.stderr);
-        }
+        validate_ssh_connection_test(&result)?;
         Ok("SSH connection successful".to_owned())
     } else if connection.stored.test_target(&connection.secrets) == Some("http") {
         let mut base = Url::parse(&connection.stored.base_url).context("Invalid API URL")?;
@@ -1603,6 +1601,16 @@ pub async fn test_connection(vault: &Vault, connection: &DecryptedConnection) ->
     } else {
         bail!("This project has no connection target that can be tested automatically")
     }
+}
+
+fn validate_ssh_connection_test(result: &SshResponse) -> Result<()> {
+    if result.exit_code.is_some_and(|code| code != 0)
+        || result.signal.is_some()
+        || result.stdout.trim_end_matches(['\r', '\n']) != "mcp-vault-ok"
+    {
+        bail!("SSH connection test failed: {}", result.stderr.trim());
+    }
+    Ok(())
 }
 
 fn build_api_url(
@@ -1828,6 +1836,26 @@ mod tests {
     use chrono::Utc;
     use tempfile::tempdir;
     use uuid::Uuid;
+
+    #[test]
+    fn ssh_connection_test_accepts_windows_and_unix_line_endings() {
+        let mut result = SshResponse {
+            exit_code: Some(0),
+            signal: None,
+            stdout: "mcp-vault-ok\r\n".into(),
+            stderr: String::new(),
+            stdout_truncated: false,
+            stderr_truncated: false,
+        };
+        assert!(validate_ssh_connection_test(&result).is_ok());
+        result.stdout = "mcp-vault-ok\n".into();
+        assert!(validate_ssh_connection_test(&result).is_ok());
+        result.exit_code = Some(1);
+        assert!(validate_ssh_connection_test(&result).is_err());
+        result.exit_code = Some(0);
+        result.stdout = "unexpected\n".into();
+        assert!(validate_ssh_connection_test(&result).is_err());
+    }
 
     fn stored(base_url: String) -> StoredConnection {
         StoredConnection {

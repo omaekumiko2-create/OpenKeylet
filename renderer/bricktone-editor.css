@@ -171,35 +171,3 @@
 .module-menu button { height: 28px; min-height: 28px; font-size: 10px; }
 html[data-theme="light"] .modal-header::after { box-shadow: inset 0 2px 2px #25372f38; }
 @media (max-height: 520px) { #connection-modal { padding-top: 8px; } }
-
-/* Existing items expand into their own row; the list owns scrolling. */
-#connection-modal.inline-editor {
-  position: relative; inset: auto; z-index: auto; display: block;
-  grid-column: 1 / -1; grid-row: 2; min-width: 0; width: 100%;
-  padding: 0; background: transparent; backdrop-filter: none;
-}
-#connection-modal.inline-editor .modal-card {
-  width: 100%; height: auto; max-height: none; overflow: visible;
-  border: 0; background: transparent; box-shadow: none;
-}
-#connection-modal.inline-editor .modal-header { display: none; }
-#connection-modal.inline-editor form { flex: none; border-radius: var(--radius); background: transparent; }
-#connection-modal.inline-editor .form-scroll { flex: none; overflow: visible; padding: 6px 0; background: transparent; }
-#connection-modal.inline-editor .modal-footer { min-height: 40px; padding: 4px 0; }
-/* Expanded controls belong to the track's existing plane, without another tray. */
-#connection-modal.inline-editor { border-top: 1px solid var(--line-soft); }
-#connection-modal.inline-editor.is-folding { overflow: clip; }
-#connection-modal.inline-editor .module-row {
-  grid-template-columns: 14px var(--module-switch-width) minmax(0, 1fr) var(--module-actions-width);
-  padding: 4px 0; gap: 4px 6px; border: 0; border-radius: 0;
-  background: transparent; box-shadow: none;
-}
-#connection-modal.inline-editor .module-row + .module-row { border-top: 1px solid var(--line-soft); }
-#connection-modal.inline-editor :is(.module-list, .module-add-wrap, .module-actions, .login-websites, .template-grid) {
-  background: transparent; box-shadow: none;
-}
-#connection-modal.inline-editor .module-add-wrap { padding: 0; }
-#connection-modal.inline-editor .module-actions { height: var(--module-action-size); padding: 0; }
-#connection-modal.inline-editor :is(.input:not(.textarea), .secret-input-control:not(.multiline), .module-key-control) { height: var(--compact-control-height); min-height: var(--compact-control-height); }
-#connection-modal.inline-editor .input { background: var(--ui-well-face); box-shadow: var(--ui-well-shadow); }
-#connection-modal.inline-editor .login-websites { padding: 0; border-top: 1px solid var(--line-soft); border-radius: 0; }

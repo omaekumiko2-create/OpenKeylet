@@ -206,6 +206,9 @@ summary:is(:hover, :focus-visible) {
   filter: drop-shadow(0 0 1px color-mix(in srgb, var(--light-accent) 50%, transparent))
     drop-shadow(0 0 4px color-mix(in srgb, var(--light-accent) 24%, transparent));
 }
+/* WebKitGTK can clear a rectangle at the viewport origin when a filtered
+   item icon scrolls out of view. Give each icon its own compositing layer. */
+html.platform-linux .connection-type svg { transform: translateZ(0); }
 .connection-name:hover {
   color: var(--state-active-ink);
   --lettering-light: 0 0 2px color-mix(in srgb, var(--light-accent) 50%, transparent),

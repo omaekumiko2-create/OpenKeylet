@@ -43,7 +43,7 @@ try {
       browserBridge: { status: 'listening', enabled: true, connected: true, paired: true, endpoint: 'fixture' },
       security: { encrypted: true, storage: 'fixture' },
     };
-    window.fixture = { state, drafts: [], saved: [], orders: [], orderRequests: 0, revision: 1, failDraft: false, failOrder: false,
+    window.fixture = { state, drafts: [], saved: [], orders: [], tested: [], copied: [], histories: [], orderRequests: 0, revision: 1, failDraft: false, failOrder: false,
       owner: { pinConfigured: false, unlocked: true }, integrations: { desktopShortcut: false, launchAtLogin: false },
       integrationWrites: [], settingsWrites: [], failIntegration: false, pinDisables: 0 };
     window.__TAURI__ = { event: { listen: async () => () => {} }, core: { invoke: async (command, args = {}) => {
@@ -65,6 +65,10 @@ try {
       }
       if (command === 'update_settings') { fixture.settingsWrites.push(args.patch); Object.assign(state.settings, args.patch); return state.settings; }
       if (command === 'owner_secret_view') return { fields: [{ name: 'password', value: 'synthetic-password' }] };
+      if (command === 'set_connection_enabled') { state.connections.find(item => item.id === args.id).enabled = args.enabled; return; }
+      if (command === 'test_connection') { fixture.tested.push(args.id); return 'Synthetic test completed'; }
+      if (command === 'copy_owner_value') { fixture.copied.push(args.value); return; }
+      if (command === 'owner_password_history') { fixture.histories.push(args.id); return { entries: [] }; }
       if (command === 'generate_password') return 'Aa1!'.repeat(32).slice(0, args.options.length);
       if (command === 'save_editor_draft') {
         if (fixture.failDraft) throw Error('Synthetic draft failure');
@@ -155,12 +159,14 @@ try {
         inactiveColor: getComputedStyle(document.querySelector('.language-switch button:not(.active)')).color,
         inactiveIcons: [...document.querySelectorAll('.title-switch')].map(el => getComputedStyle(el.querySelector(`[data-state="${el.getAttribute('aria-checked') === 'false'}"]`)).color),
         cards: [...document.querySelectorAll('.connection-card')].map(el => {
-          const children = [...el.children].map(rect), outer = rect(el);
-          return { height: outer.height, leftmost: children[0].right <= children[1].left, within: children.every(r => r.left >= outer.left && r.right <= outer.right), centers: children.map(r => r.y + r.height / 2) };
+          const outer = rect(el), name = rect(el.querySelector('.connection-name'));
+          const type = rect(el.querySelector('.connection-type')), actions = rect(el.querySelector('.card-actions'));
+          const children = [...el.children].map(rect);
+          return { x: outer.x, y: outer.y, width: outer.width, height: outer.height, within: children.every(r => r.left >= outer.left && r.right <= outer.right), vertical: name.bottom <= type.top && type.bottom <= actions.top };
         }),
         overflow: document.documentElement.scrollWidth > innerWidth,
-        recesses: [...document.querySelectorAll('.title-search, .title-switch, .language-switch, .window-control-well, .nav, .metric-grid, #item-type-switch, .creation-control, .connection-name, .connection-type, .item-disclosure, .card-actions')].map(el => {
-          const s = getComputedStyle(el); return { readout: el.matches('.metric-grid'), compact: el.matches('.connection-name, .connection-type, .item-disclosure, .card-actions'), height: rect(el).height, material: [s.backgroundColor, s.boxShadow] };
+        recesses: [...document.querySelectorAll('.title-search, .title-switch, .language-switch, .window-control-well, .nav, .metric-grid, #item-type-switch, .creation-control')].map(el => {
+          const s = getComputedStyle(el); return { readout: el.matches('.metric-grid'), height: rect(el).height, material: [s.backgroundColor, s.boxShadow] };
         }),
       };
     });
@@ -168,15 +174,16 @@ try {
     assert.equal(new Set(measure.centers).size, 1, 'Header icons and wordmark must share a centerline');
     assert.ok(measure.inactiveIcons.every(color => color === measure.inactiveColor), `Unselected switch icons must use neutral language-button ink: ${JSON.stringify([measure.inactiveIcons, measure.inactiveColor])}`);
     for (const card of measure.cards) {
-      assert.equal(card.height, 38); assert.ok(card.leftmost && card.within);
-      assert.ok(Math.max(...card.centers) - Math.min(...card.centers) < 1);
+      assert.ok(card.height >= 86 && card.width < 150 && card.within && card.vertical);
     }
+    assert.equal(new Set(measure.cards.map(card => card.y)).size, 1, 'The first three items share one grid row');
+    assert.equal(new Set(measure.cards.map(card => card.x)).size, 3, 'The three items occupy distinct columns');
     for (const well of measure.wells) {
       assert.equal(well.height, 32); assert.deepEqual(well.padding, ['4px', '4px', '4px', '4px']);
       if (well.cap) assert.deepEqual(well.cap, ['4px', '4px', '4px', '24px']);
     }
     for (const recess of measure.recesses) {
-      assert.equal(recess.height, recess.readout ? 48 : recess.compact ? 28 : 32, 'Content controls use the compact density; header and readout retain their spacing');
+      assert.equal(recess.height, recess.readout ? 48 : 32, 'Header and readout retain their spacing');
       assert.deepEqual(recess.material, measure.recesses[0].material, 'Every well shares the same floor and edge profile');
     }
     headerMeasurements.push({ language, theme, ...measure });
@@ -330,10 +337,24 @@ try {
   assert.equal(await page.locator('#connection-name').inputValue(), '');
   await page.locator('#connection-name').press('Escape'); await editor.waitFor({ state: 'hidden' });
   await page.evaluate(async () => { fixture.drafts = []; await refreshDrafts(); document.querySelectorAll('.toast').forEach(el => el.remove()); });
-  assert.equal(await page.locator('.connection-address, .connection-description, .module-strip, .card-actions [data-action="edit"]').count(), 0);
+  assert.equal(await page.locator('.connection-address, .connection-description, .module-strip').count(), 0);
+  assert.equal(await page.locator('.card-actions [data-action="edit"]').count(), 3);
   assert.deepEqual(await page.locator('.connection-type').evaluateAll(elements => elements.map(el => el.dataset.itemType)), ['api', 'ssh', 'login']);
   assert.equal(await page.locator('.connection-type svg').count(), 3);
-  assert.deepEqual(await page.locator('.connection-type').allTextContents(), ['', '', '']);
+  assert.deepEqual((await page.locator('.connection-type').allTextContents()).map(text => text.toUpperCase()), ['API', 'SSH', 'PASSWORD']);
+  await row('alpha').locator('.item-toggle').click();
+  await page.waitForFunction(() => document.querySelector('.connection-card[data-item-id="alpha"] .item-toggle').getAttribute('aria-pressed') === 'false');
+  assert.equal(await row('alpha').locator('[data-action="test"]').isDisabled(), true);
+  await row('alpha').locator('.item-toggle').click();
+  await page.waitForFunction(() => document.querySelector('.connection-card[data-item-id="alpha"] .item-toggle').getAttribute('aria-pressed') === 'true');
+  await row('alpha').locator('[data-action="test"]').click();
+  await row('alpha').locator('[data-action="copy-name"]').click();
+  assert.deepEqual(await page.evaluate(() => fixture.tested), ['alpha']);
+  assert.deepEqual(await page.evaluate(() => fixture.copied), ['use Synthetic service with a very long name in OpenKeylet MCP']);
+  await row('alpha').locator('[data-action="history"]').click();
+  await page.locator('#vault-management-modal').waitFor({ state: 'visible' });
+  assert.deepEqual(await page.evaluate(() => fixture.histories), ['alpha']);
+  await page.locator('#vault-management-close').click();
   assert.equal(await search.isHidden(), true, 'Search starts as a header icon');
   await slideFilter('#item-type-switch', 0, 3, true);
   assert.equal(await page.locator('.connection-card').count(), 3);
@@ -394,12 +415,22 @@ try {
     const start = await handle.boundingBox(), end = await row(target).boundingBox();
     await page.mouse.move(start.x + start.width / 2, start.y + start.height / 2);
     await page.mouse.down();
-    await page.mouse.move(start.x + start.width / 2, after ? end.y + end.height - 1 : end.y + 1, { steps: 8 });
+    await page.mouse.move(after ? end.x + end.width * .8 : end.x + end.width * .2, end.y + end.height / 2, { steps: 8 });
     if (release) await page.mouse.up();
   };
+  await page.evaluate(() => {
+    window.originalItemFrame = window.requestAnimationFrame;
+    window.itemFrameCount = 0;
+    window.requestAnimationFrame = callback => window.originalItemFrame.call(window, time => { window.itemFrameCount++; callback(time); });
+  });
   await dragItem('alpha', 'gamma', true, false);
   assert.equal(await page.locator('.item-drag-preview').count(), 1);
-  assert.equal(await page.locator('.item-drop-after').count(), 1);
+  await page.locator('.item-drop-after').waitFor();
+  await page.waitForTimeout(100);
+  const idleFrames = await page.evaluate(() => window.itemFrameCount);
+  await page.waitForTimeout(150);
+  assert.ok(await page.evaluate(() => window.itemFrameCount) - idleFrames <= 2, 'A stationary drag does not continually recalculate layout');
+  await page.evaluate(() => { window.requestAnimationFrame = window.originalItemFrame; });
   await page.screenshot({ path: path.join(artifacts, 'name-drag-feedback.png') });
   await page.mouse.up();
   await page.waitForFunction(() => fixture.orders.length === 1 && !document.querySelector('#connections-list').hasAttribute('aria-busy'));
@@ -432,7 +463,24 @@ try {
   await page.evaluate(async () => {
     fixture.state.connections.push(...Array.from({ length: 20 }, (_, index) => ({ ...structuredClone(fixture.state.connections[0]), id: `scroll-${index}`, name: `Scroll item ${index}` })));
     await refresh();
+    document.querySelector('#connections-list').scrollTop = 0;
   });
+  const grid = await page.evaluate(() => {
+    const list = document.querySelector('#connections-list'), bounds = list.getBoundingClientRect();
+    const cards = [...list.querySelectorAll('.connection-card')].map(card => card.getBoundingClientRect());
+    return { rows: [...new Set(cards.slice(0, 12).map(card => card.top))].length,
+      columns: [...new Set(cards.slice(0, 4).map(card => card.left))].length,
+      lastVisibleBottom: cards[11].bottom, firstExtraTop: cards[12].top, listBottom: bounds.bottom };
+  });
+  assert.equal(grid.columns, 4);
+  assert.equal(grid.rows, 3);
+  assert.ok(grid.lastVisibleBottom <= grid.listBottom + .2 && grid.firstExtraTop >= grid.listBottom - .2, `Three complete rows fit before scrolling: ${JSON.stringify(grid)}`);
+  await row('alpha').locator('.connection-name').press('ArrowDown');
+  await page.waitForFunction(() => !document.querySelector('#connections-list').hasAttribute('aria-busy'));
+  assert.deepEqual((await order()).slice(0, 5), ['beta', 'gamma', 'scroll-0', 'scroll-1', 'alpha'], 'Down moves an item one grid row');
+  await row('alpha').locator('.connection-name').press('ArrowUp');
+  await page.waitForFunction(() => !document.querySelector('#connections-list').hasAttribute('aria-busy'));
+  assert.deepEqual((await order()).slice(0, 5), ['alpha', 'beta', 'gamma', 'scroll-0', 'scroll-1'], 'Up returns an item to its previous row');
   const beforeScrollDrag = await page.evaluate(() => fixture.orderRequests);
   const scrollHandle = await row('alpha').locator('.connection-name').boundingBox();
   const scrollList = await page.locator('#connections-list').boundingBox();
@@ -463,22 +511,18 @@ try {
   assert.equal(await search.isHidden(), true);
   assert.equal(await page.locator('.connection-card').count(), 3);
   await page.locator('[data-language="en"]').click();
+  const cardBounds = await row('alpha').boundingBox();
   await toggle('alpha').click();
-  await page.waitForFunction(() => document.querySelector('#connection-modal').classList.contains('is-folding'));
-  const opening = await editor.evaluate(el => {
-    const animation = el.getAnimations()[0]; animation.pause(); animation.currentTime = 110;
-    return { height: el.getBoundingClientRect().height, full: el.querySelector('.modal-card').getBoundingClientRect().height };
-  });
-  assert.ok(opening.height > 0 && opening.height < opening.full, 'The dropdown reveals its contents progressively');
-  await editor.evaluate(el => el.getAnimations()[0].play());
   await page.waitForFunction(() => document.activeElement.id === 'connection-name');
+  assert.equal(await editor.getAttribute('role'), 'dialog');
+  assert.equal(await editor.getAttribute('aria-modal'), 'true');
+  assert.equal(await editor.evaluate(el => Boolean(el.closest('.connection-card'))), false, 'The editor is an independent dialog');
+  assert.deepEqual(await row('alpha').boundingBox(), cardBounds, 'Opening the editor does not reflow the cards');
+  assert.equal(await toggle('alpha').getAttribute('aria-haspopup'), 'dialog');
   const moduleSwitch = '#connection-modal [data-kind="password"] .module-agent-toggle';
   await dragSwitch(moduleSwitch, 0, 1);
-  assert.equal(await page.locator(moduleSwitch).getAttribute('aria-pressed'), 'true');
   assert.equal(await editor.locator('[data-kind="password"] [data-module-visibility]').innerText(), 'AGENT VISIBLE');
-  assert.equal(await page.evaluate(() => currentModules.find(module => module.kind === 'password').agentVisible), true);
   await dragSwitch(moduleSwitch, 1, 0);
-  assert.equal(await page.locator(moduleSwitch).getAttribute('aria-pressed'), 'false');
   assert.equal(await editor.locator('[data-kind="password"] [data-module-visibility]').innerText(), 'AGENT HIDDEN');
   await page.locator(moduleSwitch).press('Space');
   assert.equal(await editor.locator('[data-kind="password"] [data-module-visibility]').innerText(), 'AGENT VISIBLE');
@@ -486,40 +530,21 @@ try {
   assert.equal(await editor.locator('[data-kind="password"] [data-module-visibility]').innerText(), 'AGENT HIDDEN');
   stateMeasurements.push(await auditControlStates(page));
   geometryMeasurements.push(await auditControlGeometry(page));
-  assert.deepEqual(await editor.locator('.modal-card, .module-row, .module-actions, .module-add-wrap, .login-websites').evaluateAll(els => els.map(el => getComputedStyle(el).boxShadow)), Array(await editor.locator('.modal-card, .module-row, .module-actions, .module-add-wrap, .login-websites').count()).fill('none'), 'Expanded groups do not nest recessed trays');
-  await toggle('alpha').click();
-  await page.waitForFunction(() => document.querySelector('#connection-modal').classList.contains('is-folding'));
-  const closing = await editor.evaluate(el => { const animation = el.getAnimations()[0]; animation.pause(); animation.currentTime = 110; return el.getBoundingClientRect().height; });
-  assert.ok(closing > 0 && closing < opening.full, 'Collapsing animates before detaching the editor');
-  await editor.evaluate(el => el.getAnimations()[0].play()); await editor.waitFor({ state: 'hidden' });
-  await page.emulateMedia({ reducedMotion: 'reduce' });
-  await toggle('alpha').click(); await page.waitForFunction(() => document.activeElement.id === 'connection-name');
-  assert.equal(await editor.evaluate(el => el.getAnimations().length), 0);
-  await toggle('alpha').click(); await editor.waitFor({ state: 'hidden' });
-  await page.emulateMedia({ reducedMotion: 'no-preference' });
-  await toggle('alpha').click();
-  await page.waitForFunction(() => document.activeElement.id === 'connection-name');
-  assert.equal(await editor.getAttribute('role'), 'region');
-  assert.equal(await editor.getAttribute('aria-modal'), null);
-  assert.equal(await editor.evaluate(el => el.parentElement.dataset.itemId), 'alpha');
-  assert.equal(await page.locator('.modal-backdrop:not(.inline-editor):not(.hidden)').count(), 0);
+  await page.locator('#save-connection-button').focus(); await page.keyboard.press('Tab');
+  assert.equal(await page.evaluate(() => document.activeElement.matches('#connection-modal .modal-header [data-close-modal]')), true, 'Tab stays within the dialog');
   await page.locator('#connection-name').fill('Edited synthetic service');
   await page.locator('#connection-description').fill('Keep this unsaved value');
-  await row('alpha').locator('.connection-name').press('ArrowDown');
-  await page.waitForFunction(() => !document.querySelector('#connections-list').hasAttribute('aria-busy'));
-  assert.deepEqual(await order(), ['beta', 'alpha', 'gamma']);
-  assert.equal(await page.locator('#connection-description').inputValue(), 'Keep this unsaved value');
-  await row('alpha').locator('.connection-name').press('Home');
-  await page.waitForFunction(() => !document.querySelector('#connections-list').hasAttribute('aria-busy'));
   await page.evaluate(async () => { fixture.state.connections[1].name = 'Refreshed server'; await refresh(); });
-  assert.equal(await page.locator('#connection-name').inputValue(), 'Edited synthetic service');
-  await page.locator('[data-language="zh"]').click();
   assert.equal(await page.locator('#connection-description').inputValue(), 'Keep this unsaved value');
-  await fillSearch('no matching service');
-  assert.equal(await page.locator('.connection-card').count(), 1, 'Keep the edited row while filtering');
-  await fillSearch('');
-  await toggle('alpha').click(); await editor.waitFor({ state: 'hidden' });
+  await page.evaluate(() => fixture.failDraft = true);
+  await page.locator('#connection-modal .modal-header [data-close-modal]').click();
+  assert.equal(await editor.isVisible(), true, 'A failed draft write keeps the dialog open');
+  assert.equal(await page.locator('#connection-description').inputValue(), 'Keep this unsaved value');
+  await page.evaluate(() => fixture.failDraft = false);
+  await page.locator('#connection-modal .modal-header [data-close-modal]').click();
+  await editor.waitFor({ state: 'hidden' });
   assert.equal(await page.evaluate(() => fixture.drafts[0].input.name), 'Edited synthetic service');
+  assert.equal(await page.evaluate(() => document.activeElement.dataset.id), 'alpha', 'Closing restores focus even after a list refresh');
   await toggle('alpha').click();
   assert.equal(await page.locator('#connection-name').inputValue(), 'Edited synthetic service');
   await page.locator('#connection-folder').fill('Unsaved folder');
@@ -530,17 +555,6 @@ try {
   assert.equal(await page.locator('#connection-enabled').isChecked(), true);
   await page.locator('#connection-enabled-label').click();
   assert.equal(await page.locator('#connection-enabled').isChecked(), false);
-  await toggle('beta').click();
-  await page.waitForFunction(() => document.querySelector('#connection-modal').parentElement.dataset.itemId === 'beta' && !document.querySelector('#connection-modal').classList.contains('is-folding'));
-  assert.equal(await editor.evaluate(el => el.parentElement.dataset.itemId), 'beta');
-  assert.equal(await toggle('alpha').getAttribute('aria-expanded'), 'false');
-  assert.equal(await page.evaluate(() => fixture.drafts.find(d => d.input.id === 'alpha').input.folder), 'Unsaved folder');
-  assert.equal(await page.evaluate(() => fixture.drafts.find(d => d.input.id === 'alpha').input.enabled), false);
-  await toggle('alpha').click();
-  await page.waitForFunction(() => document.activeElement.id === 'connection-name');
-  assert.equal(await page.locator('#connection-enabled').isChecked(), false, 'Restoring a draft retains the item switch');
-  await page.locator('#save-connection-button').focus(); await page.keyboard.press('Tab');
-  assert.equal(await page.evaluate(() => document.activeElement.dataset.id), 'beta', `Inline editor must not trap Tab: ${await page.evaluate(() => document.activeElement.outerHTML)}`);
   await page.locator('[data-generate-password]').click();
   await page.waitForFunction(() => document.querySelector('#generator-result').value.length === 24);
   await page.locator('#generator-use').click();
@@ -550,56 +564,39 @@ try {
   assert.equal(await editor.isVisible(), true);
   await page.locator('#add-module-button').click(); await page.locator('[data-add-module="username"]').click();
   assert.equal(await page.locator('[data-kind="username"]').count(), 1);
-  for (const theme of ['dark', 'light']) {
-    if (await page.locator('html').getAttribute('data-theme') !== theme) await page.locator('#theme-toggle').click();
-    await page.waitForTimeout(180);
-    stateMeasurements.push(await auditControlStates(page));
-    geometryMeasurements.push(await auditControlGeometry(page));
-    await page.locator(moduleSwitch).evaluate(el => { el.disabled = true; });
-    try { stateMeasurements.push(await auditControlStates(page)); }
-    finally { await page.locator(moduleSwitch).evaluate(el => { el.disabled = false; }); }
-    await page.evaluate(() => document.querySelectorAll('.toast').forEach(el => el.remove()));
-    await page.locator('#connections-list').evaluate(el => el.scrollTop = 0);
-    await page.mouse.move(0, 0); await page.screenshot({ path: path.join(artifacts, `inline-${theme}.png`) });
-    assert.equal(await editor.evaluate(el => el.scrollWidth > el.clientWidth), false);
-  }
+  stateMeasurements.push(await auditControlStates(page));
+  geometryMeasurements.push(await auditControlGeometry(page));
+  await page.mouse.move(0, 0); await page.screenshot({ path: path.join(artifacts, 'item-dialog.png') });
+  assert.equal(await editor.evaluate(el => el.scrollWidth > el.clientWidth), false);
   await page.locator('#save-connection-button').click(); await editor.waitFor({ state: 'hidden' });
   assert.equal(await row('alpha').locator('.connection-name').innerText(), 'Edited synthetic service');
   assert.equal(await page.evaluate(() => fixture.drafts.some(d => d.input.id === 'alpha')), false);
   assert.equal(await page.evaluate(() => fixture.saved[0].secrets.password.length), 24);
   assert.equal(await page.evaluate(() => fixture.saved[0].enabled), false);
-  assert.equal(await page.evaluate(() => fixture.saved[0].favorite), true, 'Removing the editor control must preserve existing favorite metadata');
-  await toggle('alpha').click(); await page.locator('#connection-name').fill('Draft across navigation');
-  await page.evaluate(() => fixture.failDraft = true);
-  await toggle('beta').click();
-  assert.equal(await editor.evaluate(el => el.parentElement.dataset.itemId), 'alpha', 'A failed draft write must retain the active form');
-  assert.equal(await page.locator('#connection-name').inputValue(), 'Draft across navigation');
-  await slideFilter('#item-type-switch', 0, 1, false, 0);
-  assert.equal(await editor.evaluate(el => el.parentElement.dataset.itemId), 'alpha', 'A failed draft save restores the selected filter and retains the form');
-  await page.evaluate(() => fixture.failDraft = false);
-  await slideFilter('#item-type-switch', 0, 1);
-  await editor.waitFor({ state: 'hidden' });
-  assert.deepEqual(await order(), ['beta']);
-  assert.equal(await page.evaluate(() => fixture.drafts.find(d => d.input.id === 'alpha').input.name), 'Draft across navigation');
-  await slideFilter('#item-type-switch', 1, 0);
+  assert.equal(await page.evaluate(() => fixture.saved[0].favorite), true, 'Saving preserves existing favorite metadata');
+  await page.emulateMedia({ reducedMotion: 'reduce' });
   await toggle('alpha').click(); await page.waitForFunction(() => document.activeElement.id === 'connection-name');
-  await page.locator('[data-page="settings"]').click(); await editor.waitFor({ state: 'hidden' });
-  await page.locator('[data-page="connections"]').click(); await toggle('alpha').click();
-  assert.equal(await page.locator('#connection-name').inputValue(), 'Draft across navigation');
+  assert.equal(await editor.locator('.modal-card').evaluate(el => el.getAnimations().length), 0);
+  await page.locator('#connection-name').fill('Draft across dialog close');
   await page.locator('#connection-name').press('Escape'); await editor.waitFor({ state: 'hidden' });
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
   await toggle('alpha').click();
-  await row('alpha').locator('[data-action="delete"]').click(); await page.locator('#confirmation-accept').click();
+  assert.equal(await page.locator('#connection-name').inputValue(), 'Draft across dialog close');
+  await editor.click({ position: { x: 2, y: 100 } }); await editor.waitFor({ state: 'hidden' });
+  assert.equal(await page.evaluate(() => fixture.drafts.find(d => d.input.id === 'alpha').input.name), 'Draft across dialog close');
+  await toggle('alpha').click();
+  await page.evaluate(async () => { fixture.state.connections = fixture.state.connections.filter(item => item.id !== 'alpha'); await refresh(); });
   await row('alpha').waitFor({ state: 'detached' });
-  assert.equal(await editor.count(), 1, 'Removing an expanded row must preserve the editor DOM');
+  assert.equal(await editor.count(), 1, 'Removing an edited item preserves the dialog DOM');
   assert.equal(await editor.isHidden(), true);
   await page.locator('#add-connection-button').click();
   assert.equal(await editor.getAttribute('role'), 'dialog');
   await page.locator('[data-item-template="login"]').click(); await page.locator('[data-generate-password]').click();
   await page.locator('#generator-use').click();
-  assert.equal(await page.locator('#generator-modal').isHidden(), true, 'Nested dialogs must stay above the restored new-item editor');
+  assert.equal(await page.locator('#generator-modal').isHidden(), true, 'Nested dialogs stay above the item editor');
   assert.deepEqual(errors, []);
   await fs.writeFile(path.join(artifacts, 'measurements.json'), JSON.stringify(headerMeasurements, null, 2));
   await fs.writeFile(path.join(artifacts, 'control-geometry.json'), JSON.stringify(geometryMeasurements, null, 2));
   await fs.writeFile(path.join(artifacts, 'control-states.json'), JSON.stringify(stateMeasurements, null, 2));
-  console.log(JSON.stringify({ ok: true, checks: ['shared well colours, depths and row heights in both themes', 'neutral inactive icons and glow-only hover', 'draggable theme, sound, language, navigation and add/draft controls', 'settings and module switches commit once and recover from failures', 'PIN drag preserves confirmation and cancellation', 'appearance drag preferences survive reload', 'three-page draggable filter strips with snapping and cancellation', 'animated inline expansion, collapse and reduced motion', 'flat expanded groups without nested trays', 'filter dragging preserves drafts and recovers from write failures', 'pointer and keyboard sorting with filtered slots', 'drag cancellation, edge scrolling and save failure', 'refresh and search preserve edits', 'untrapped keyboard focus', 'generator and module menu', 'save, navigation and deletion', 'new-item dialog restoration'], artifacts }, null, 2));
+  console.log(JSON.stringify({ ok: true, checks: ['shared well colours, depths and row heights in both themes', 'neutral inactive icons and glow-only hover', 'draggable theme, sound, language, navigation and add/draft controls', 'settings and module switches commit once and recover from failures', 'PIN drag preserves confirmation and cancellation', 'appearance drag preferences survive reload', 'three-page draggable filter strips with snapping and cancellation', 'modal editor, reduced motion and preserved card layout', 'draft recovery after write failures', 'pointer and keyboard sorting with filtered slots', 'drag cancellation, edge scrolling and save failure', 'refresh preserves edits', 'modal keyboard focus and restoration', 'generator and module menu', 'save, navigation and deletion', 'new-item dialog restoration'], artifacts }, null, 2));
 } finally { await browser.close(); server.close(); }

@@ -174,13 +174,13 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: non
   letter-spacing: .15em;
 }
 
-html.platform-macos .title-drag-region,
-html.platform-macos .title-drag-region * {
+.title-drag-region,
+.title-drag-region * {
   -webkit-user-select: none;
   user-select: none;
 }
 
-html.platform-macos .app-mark > * {
+.app-mark > * {
   pointer-events: none;
   -webkit-user-drag: none;
 }
@@ -1535,7 +1535,7 @@ html.platform-macos .nav-item small { line-height: 7px; }
 .browser-step-body { min-width:0; }
 .browser-step-body h3 { margin:2px 0 5px; color:var(--ink); font-size:12px; font-weight:600; }
 .browser-step-body p, .browser-install-fallback p { margin:0 0 9px; color:var(--muted); font-size:11px; line-height:1.6; overflow-wrap:anywhere; }
-.browser-step-body #browser-open-help { margin:9px 0 0; color:var(--danger, var(--orange-dark)); }
+.browser-step-body #browser-open-help { margin:9px 0 0; color:var(--muted); }
 #browser-open-help[hidden] { display:none; }
 .browser-install-fallback { margin-top:12px; padding-top:10px; border-top:1px solid var(--line-soft); }
 .browser-install-fallback summary { color:var(--muted); font-size:11px; cursor:pointer; }

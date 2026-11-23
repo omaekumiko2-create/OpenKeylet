@@ -6,7 +6,7 @@ OpenKeylet is a companion to a local desktop vault. It has no OpenKeylet cloud a
 
 1. Download the compatible desktop release from https://github.com/omaekumiko2-create/OpenKeylet/releases/latest. The publisher must confirm this release includes the features in the submitted extension before submission.
 2. Run OpenKeylet on a supported desktop platform. Enable Browser Bridge in Settings. The default loopback port is 39272.
-3. Install the submitted store extension. In the desktop Browser Bridge settings, use “Open extensions page” to start the pairing window, then open the extension. Do not also install the bundled development extension.
+3. Install the submitted store extension. In the desktop Browser Bridge settings, use “Open Chrome & copy address” to start the pairing window, then open the extension. Do not also install the bundled development extension.
 4. Confirm the extension shows CONNECTED. If the port was changed, enter it in the extension's Connection section. If pairing fails, the publisher must check that the desktop's allowed extension Origin matches the submitted store ID.
 5. For PIN tests, configure a six-digit owner PIN in this isolated desktop vault. Otherwise owner vault features are available without a PIN. No special production access is needed.
 

@@ -55,6 +55,8 @@ pub struct AgentRegistry {
     executable: PathBuf,
     home: PathBuf,
     codex_home: PathBuf,
+    claude_config: PathBuf,
+    claude_config_dir: PathBuf,
     opencode_config: PathBuf,
     opencode_config_explicit: bool,
     opencode_instruction_dir: PathBuf,
@@ -75,6 +77,8 @@ impl AgentRegistry {
             .map(PathBuf::from)
             .unwrap_or_else(|| home.join("AppData").join("Local"));
         let codex_home = resolve_codex_home(&home, env::var_os("CODEX_HOME").map(PathBuf::from));
+        let (claude_config, claude_config_dir) =
+            resolve_claude_config(&home, env_path("CLAUDE_CONFIG_DIR"));
         let opencode_config_directory = env_path("OPENCODE_CONFIG_DIR");
         let xdg_config_home = env_path("XDG_CONFIG_HOME");
         let (opencode_config, opencode_config_explicit) = resolve_opencode_config(
@@ -93,6 +97,8 @@ impl AgentRegistry {
             executable: normalize_path(executable),
             home,
             codex_home,
+            claude_config,
+            claude_config_dir,
             opencode_config,
             opencode_config_explicit,
             opencode_instruction_dir,
@@ -125,6 +131,8 @@ impl AgentRegistry {
             app_data: home.join("AppData").join("Roaming"),
             local_app_data: home.join("AppData").join("Local"),
             codex_home: home.join(".codex"),
+            claude_config: home.join(".claude.json"),
+            claude_config_dir: home.join(".claude"),
             opencode_config,
             opencode_config_explicit,
             opencode_instruction_dir: home.join(".config").join("opencode"),
@@ -227,8 +235,8 @@ impl AgentRegistry {
     async fn mutate_mcp_client(&self, client_id: &str, action: &str) -> Result<()> {
         match client_id {
             "codex" => self.mutate_codex(action),
-            "cursor" | "opencode" => self.mutate_json_client(client_id, action),
-            "claude-code" | "openclaw" => self.mutate_cli_client(client_id, action).await,
+            "claude-code" | "cursor" | "opencode" => self.mutate_json_client(client_id, action),
+            "openclaw" => self.mutate_cli_client(client_id, action).await,
             _ => unreachable!(),
         }
     }
@@ -268,8 +276,10 @@ impl AgentRegistry {
 
         let inspected = match client_id {
             "codex" => self.inspect_codex(),
-            "cursor" | "opencode" => self.inspect_json_client(client_id),
-            "claude-code" | "openclaw" => {
+            // Claude's `mcp get` performs a health check and may fetch remote
+            // connectors. Inspect the user scope we manage without starting it.
+            "claude-code" | "cursor" | "opencode" => self.inspect_json_client(client_id),
+            "openclaw" => {
                 let Some(executable) = executable else {
                     status.state = "error".to_owned();
                     status.can_register = false;
@@ -277,7 +287,7 @@ impl AgentRegistry {
                         "Configuration detected, but no callable CLI was found".to_owned();
                     return status;
                 };
-                self.inspect_cli_client(client_id, &executable).await
+                self.inspect_cli_client(&executable).await
             }
             _ => Ok(EntryState::Available),
         };
@@ -395,7 +405,7 @@ impl AgentRegistry {
                 }
             }
             "claude-code" => {
-                let rules = self.home.join(".claude").join("rules");
+                let rules = self.claude_config_dir.join("rules");
                 let current = rules.join("openkeylet.md");
                 let legacy = rules.join("kru.md");
                 // Reuse an existing managed rule file rather than install a duplicate.
@@ -412,7 +422,7 @@ impl AgentRegistry {
 
     fn instruction_paths(&self, client_id: &str) -> Result<Vec<PathBuf>> {
         if client_id == "claude-code" {
-            let rules = self.home.join(".claude").join("rules");
+            let rules = self.claude_config_dir.join("rules");
             return Ok(vec![rules.join("openkeylet.md"), rules.join("kru.md")]);
         }
         if client_id == "codex" {
@@ -473,12 +483,13 @@ impl AgentRegistry {
         let text = fs::read_to_string(&path).context("Unable to read Agent JSON configuration")?;
         let document: JsonValue = parse_to_serde_value(&text, &ParseOptions::default())
             .context("Invalid Agent JSON/JSONC configuration")?;
+        validate_json_client_config(client_id, &document)?;
         let has_legacy = legacy_json_paths(client_id).iter().any(|path| {
             document
                 .pointer(path)
                 .is_some_and(|entry| owned_json_entry(entry, &self.executable))
         });
-        if client_id == "cursor" {
+        if uses_mcp_servers(client_id) {
             let Some(entry) = document.pointer("/mcpServers/openkeylet") else {
                 return Ok(if has_legacy {
                     EntryState::Stale
@@ -492,6 +503,9 @@ impl AgentRegistry {
                 .unwrap_or_default()
                 .to_owned();
             let args = json_array_strings(entry.get("args"));
+            if client_id == "claude-code" && entry.get("type").is_some_and(|kind| kind != "stdio") {
+                return Ok(EntryState::Conflict);
+            }
             return Ok(with_legacy_state(
                 classify_command(&command, &args, &self.executable),
                 has_legacy,
@@ -546,13 +560,11 @@ impl AgentRegistry {
         Ok(with_legacy_state(state?, has_legacy))
     }
 
-    async fn inspect_cli_client(&self, client_id: &str, executable: &Path) -> Result<EntryState> {
+    async fn inspect_cli_client(&self, executable: &Path) -> Result<EntryState> {
         let current = self
-            .inspect_named_cli_entry(client_id, executable, "openkeylet")
+            .inspect_named_cli_entry(executable, "openkeylet")
             .await?;
-        let legacy = self
-            .inspect_named_cli_entry(client_id, executable, "kru")
-            .await?;
+        let legacy = self.inspect_named_cli_entry(executable, "kru").await?;
         Ok(with_legacy_state(
             current.unwrap_or(EntryState::Available),
             matches!(legacy, Some(EntryState::Registered | EntryState::Stale)),
@@ -561,15 +573,10 @@ impl AgentRegistry {
 
     async fn inspect_named_cli_entry(
         &self,
-        client_id: &str,
         executable: &Path,
         name: &str,
     ) -> Result<Option<EntryState>> {
-        let args = if client_id == "claude-code" {
-            vec!["mcp", "get", name]
-        } else {
-            vec!["mcp", "show", name, "--json"]
-        };
+        let args = vec!["mcp", "show", name, "--json"];
         let output = self.run_cli_status(executable, &args).await?;
         let text = output_text(&output);
         if !output.status.success() {
@@ -647,11 +654,12 @@ impl AgentRegistry {
         let original = read_or(&path, "{}\n")?;
         let root = CstRootNode::parse(&original, &ParseOptions::default())
             .context("Invalid Agent JSON/JSONC configuration; no changes were made")?;
-        let root_object = root.object_value_or_set();
         let original_value: JsonValue =
             parse_to_serde_value(&original, &ParseOptions::default())
                 .context("Invalid Agent JSON/JSONC configuration; no changes were made")?;
-        let current_paths: &[&str] = if client_id == "cursor" {
+        validate_json_client_config(client_id, &original_value)?;
+        let root_object = root.object_value_or_set();
+        let current_paths: &[&str] = if uses_mcp_servers(client_id) {
             &["/mcpServers/openkeylet"]
         } else {
             &["/mcp/servers/openkeylet", "/mcp/openkeylet"]
@@ -679,7 +687,7 @@ impl AgentRegistry {
             {
                 continue;
             }
-            let container = if client_id == "cursor" {
+            let container = if uses_mcp_servers(client_id) {
                 root_object.object_value("mcpServers")
             } else if *pointer == "/mcp/servers/kru" {
                 root_object
@@ -692,7 +700,7 @@ impl AgentRegistry {
                 entry.remove();
             }
         }
-        if client_id == "cursor" {
+        if uses_mcp_servers(client_id) {
             if action == "remove" {
                 if let Some(container) = root_object.object_value("mcpServers") {
                     if let Some(entry) = container.get("openkeylet") {
@@ -711,6 +719,9 @@ impl AgentRegistry {
                     ),
                     ("args".to_owned(), vec!["mcp", "stdio"].into()),
                 ];
+                if client_id == "claude-code" {
+                    fields.push(("type".to_owned(), "stdio".into()));
+                }
                 fields.extend(preserved_fields);
                 let entry = CstInputValue::Object(fields);
                 if let Some(current) = container.get("openkeylet") {
@@ -781,66 +792,41 @@ impl AgentRegistry {
             .find_client_executable(client_id)
             .context("Agent CLI not found")?;
         if action == "remove" || action == "repair" {
-            let args = if client_id == "claude-code" {
-                vec!["mcp", "remove", "--scope", "user", "openkeylet"]
-            } else {
-                vec!["mcp", "unset", "openkeylet"]
-            };
+            let args = vec!["mcp", "unset", "openkeylet"];
             let output = self.run_cli_action(&executable, &args).await?;
             if !(output.status.success() || is_missing_entry(&output_text(&output))) {
                 bail!("{}", clean_process_error(&output_text(&output)));
             }
             if action == "remove" {
-                return self.remove_legacy_cli_entry(client_id, &executable).await;
+                return self.remove_legacy_cli_entry(&executable).await;
             }
         }
         let exe = self.executable.to_string_lossy().into_owned();
-        let args = if client_id == "claude-code" {
-            vec![
-                "mcp".to_owned(),
-                "add".to_owned(),
-                "--scope".to_owned(),
-                "user".to_owned(),
-                "--transport".to_owned(),
-                "stdio".to_owned(),
-                "openkeylet".to_owned(),
-                "--".to_owned(),
-                exe,
-                "mcp".to_owned(),
-                "stdio".to_owned(),
-            ]
-        } else {
-            vec![
-                "mcp".to_owned(),
-                "add".to_owned(),
-                "openkeylet".to_owned(),
-                "--command".to_owned(),
-                exe,
-                "--arg".to_owned(),
-                "mcp".to_owned(),
-                "--arg".to_owned(),
-                "stdio".to_owned(),
-            ]
-        };
+        let args = vec![
+            "mcp".to_owned(),
+            "add".to_owned(),
+            "openkeylet".to_owned(),
+            "--command".to_owned(),
+            exe,
+            "--arg".to_owned(),
+            "mcp".to_owned(),
+            "--arg".to_owned(),
+            "stdio".to_owned(),
+        ];
         let refs: Vec<&str> = args.iter().map(String::as_str).collect();
         let output = self.run_cli_action(&executable, &refs).await?;
         if !output.status.success() {
             bail!("{}", clean_process_error(&output_text(&output)));
         }
-        self.remove_legacy_cli_entry(client_id, &executable).await
+        self.remove_legacy_cli_entry(&executable).await
     }
 
-    async fn remove_legacy_cli_entry(&self, client_id: &str, executable: &Path) -> Result<()> {
+    async fn remove_legacy_cli_entry(&self, executable: &Path) -> Result<()> {
         if matches!(
-            self.inspect_named_cli_entry(client_id, executable, "kru")
-                .await?,
+            self.inspect_named_cli_entry(executable, "kru").await?,
             Some(EntryState::Registered | EntryState::Stale)
         ) {
-            let args = if client_id == "claude-code" {
-                vec!["mcp", "remove", "--scope", "user", "kru"]
-            } else {
-                vec!["mcp", "unset", "kru"]
-            };
+            let args = vec!["mcp", "unset", "kru"];
             let output = self.run_cli_action(executable, &args).await?;
             if !(output.status.success() || is_missing_entry(&output_text(&output))) {
                 bail!("{}", clean_process_error(&output_text(&output)));
@@ -919,7 +905,7 @@ impl AgentRegistry {
     fn config_path(&self, client_id: &str) -> PathBuf {
         match client_id {
             "codex" => self.codex_home.join("config.toml"),
-            "claude-code" => self.home.join(".claude.json"),
+            "claude-code" => self.claude_config.clone(),
             "cursor" => self.home.join(".cursor").join("mcp.json"),
             "opencode" => self.opencode_config_path(),
             "openclaw" => self.openclaw_config.clone(),
@@ -1156,11 +1142,29 @@ fn owned_json_entry(entry: &JsonValue, executable: &Path) -> bool {
 }
 
 fn legacy_json_paths(client_id: &str) -> &'static [&'static str] {
-    if client_id == "cursor" {
+    if uses_mcp_servers(client_id) {
         &["/mcpServers/kru"]
     } else {
         &["/mcp/kru", "/mcp/servers/kru"]
     }
+}
+
+fn uses_mcp_servers(client_id: &str) -> bool {
+    matches!(client_id, "claude-code" | "cursor")
+}
+
+fn validate_json_client_config(client_id: &str, document: &JsonValue) -> Result<()> {
+    if !document.is_object() {
+        bail!("Agent JSON configuration must be an object; no changes were made");
+    }
+    if uses_mcp_servers(client_id)
+        && document
+            .get("mcpServers")
+            .is_some_and(|servers| !servers.is_object())
+    {
+        bail!("Agent mcpServers configuration must be an object; no changes were made");
+    }
+    Ok(())
 }
 
 fn json_to_cst(value: &JsonValue) -> CstInputValue {
@@ -1285,6 +1289,14 @@ fn resolve_codex_home(home: &Path, configured: Option<PathBuf>) -> PathBuf {
     configured
         .filter(|path| !path.as_os_str().is_empty())
         .unwrap_or_else(|| home.join(".codex"))
+}
+
+fn resolve_claude_config(home: &Path, configured: Option<PathBuf>) -> (PathBuf, PathBuf) {
+    if let Some(directory) = configured.filter(|path| !path.as_os_str().is_empty()) {
+        (directory.join(".claude.json"), directory)
+    } else {
+        (home.join(".claude.json"), home.join(".claude"))
+    }
 }
 
 fn resolve_opencode_config(
@@ -1539,6 +1551,154 @@ mod tests {
         fs::write(&exe, b"test").unwrap();
         let registry = AgentRegistry::isolated(exe, temp.path().to_path_buf(), vec![]);
         (temp, registry)
+    }
+
+    #[tokio::test]
+    async fn claude_registration_works_without_a_callable_cli_and_preserves_user_config() {
+        let (_temp, registry) = registry();
+        let path = registry.config_path("claude-code");
+        let original = serde_json::json!({
+            "theme": "dark",
+            "oauthAccount": {"accountUuid": "test-account"},
+            "projects": {"/workspace": {"mcpServers": {
+                "openkeylet": {"command": "/project/openkeylet", "args": ["mcp", "stdio"]}
+            }}},
+            "mcpServers": {"other": {"type": "http", "url": "https://example.test/mcp"}}
+        });
+        fs::write(&path, serde_json::to_string_pretty(&original).unwrap()).unwrap();
+
+        let before = registry.status("claude-code").await;
+        assert_eq!(before.state, "available");
+        assert!(before.can_register);
+        let first = registry.mutate("claude-code", "register").await;
+        assert!(first.ok, "{}", first.client.message);
+        assert_eq!(first.client.state, "registered");
+        let registered = fs::read_to_string(&path).unwrap();
+        let value: JsonValue = serde_json::from_str(&registered).unwrap();
+        assert_eq!(
+            value["mcpServers"]["openkeylet"],
+            serde_json::json!({
+                "type": "stdio", "command": registry.executable, "args": ["mcp", "stdio"]
+            })
+        );
+        for field in ["theme", "oauthAccount", "projects"] {
+            assert_eq!(value[field], original[field]);
+        }
+        assert_eq!(
+            value["mcpServers"]["other"],
+            original["mcpServers"]["other"]
+        );
+        let rules = registry.claude_config_dir.join("rules/openkeylet.md");
+        assert!(
+            fs::read_to_string(&rules)
+                .unwrap()
+                .contains(OPENKEYLET_INSTRUCTION_BLOCK)
+        );
+        // A repeated registration is rejected without changing a working entry.
+        assert!(!registry.mutate("claude-code", "register").await.ok);
+        assert_eq!(fs::read_to_string(&path).unwrap(), registered);
+        assert!(registry.mutate("claude-code", "remove").await.ok);
+        let removed: JsonValue = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(removed, original);
+        assert!(!rules.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn claude_status_and_registration_never_start_the_cli() {
+        let (temp, registry) = registry();
+        let cli = temp.path().join(".local/bin/claude");
+        fs::create_dir_all(cli.parent().unwrap()).unwrap();
+        let marker = temp.path().join("cli-was-started");
+        fs::write(
+            &cli,
+            format!("#!/bin/sh\ntouch '{}'\nexit 1\n", marker.display()),
+        )
+        .unwrap();
+        make_test_executable(&cli);
+        assert!(registry.find_client_executable("claude-code").is_some());
+        assert!(registry.status("claude-code").await.can_register);
+        let result = registry.mutate("claude-code", "register").await;
+        assert!(result.ok, "{}", result.client.message);
+        assert_eq!(result.client.state, "registered");
+        assert!(!marker.exists());
+    }
+
+    #[tokio::test]
+    async fn claude_repair_migrates_legacy_entry_and_preserves_its_environment() {
+        let (_temp, registry) = registry();
+        let path = registry.config_path("claude-code");
+        fs::write(&path, r#"{"mcpServers":{"kru":{"command":"/old/kru","args":[],"env":{"OPENKEYLET_DATA_DIR":"/custom/vault"}},"other":{"command":"other"}}}"#).unwrap();
+        assert_eq!(registry.status("claude-code").await.state, "stale");
+        let result = registry.mutate("claude-code", "repair").await;
+        assert!(result.ok, "{}", result.client.message);
+        assert_eq!(result.client.state, "registered");
+        let value: JsonValue = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(value.pointer("/mcpServers/kru").is_none());
+        assert_eq!(
+            value["mcpServers"]["openkeylet"]["env"]["OPENKEYLET_DATA_DIR"],
+            "/custom/vault"
+        );
+        assert_eq!(value["mcpServers"]["other"]["command"], "other");
+    }
+
+    #[tokio::test]
+    async fn claude_repair_checks_arguments_and_preserves_unrelated_legacy_name() {
+        let (_temp, registry) = registry();
+        let path = registry.config_path("claude-code");
+        let original = serde_json::json!({"mcpServers": {
+            "openkeylet": {"command": registry.executable, "args": ["gui"]},
+            "kru": {"command": "unrelated-tool"}
+        }});
+        fs::write(&path, serde_json::to_string(&original).unwrap()).unwrap();
+        assert_eq!(registry.status("claude-code").await.state, "stale");
+        assert!(registry.mutate("claude-code", "repair").await.ok);
+        assert!(registry.mutate("claude-code", "remove").await.ok);
+        let value: JsonValue = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(value["mcpServers"]["kru"], original["mcpServers"]["kru"]);
+    }
+
+    #[tokio::test]
+    async fn claude_invalid_config_is_never_replaced() {
+        let (_temp, registry) = registry();
+        let path = registry.config_path("claude-code");
+        for original in ["{broken", "[]", r#"{"mcpServers":[]}"#] {
+            fs::write(&path, original).unwrap();
+            assert_eq!(registry.status("claude-code").await.state, "error");
+            assert!(!registry.mutate("claude-code", "register").await.ok);
+            assert!(
+                registry
+                    .mutate_json_client("claude-code", "repair")
+                    .is_err()
+            );
+            assert_eq!(fs::read_to_string(&path).unwrap(), original);
+        }
+    }
+
+    #[tokio::test]
+    async fn claude_custom_directory_contains_both_user_config_and_rules() {
+        let (temp, mut registry) = registry();
+        assert_eq!(
+            resolve_claude_config(temp.path(), None),
+            (
+                temp.path().join(".claude.json"),
+                temp.path().join(".claude")
+            )
+        );
+        assert_eq!(
+            resolve_claude_config(temp.path(), Some(PathBuf::new())),
+            resolve_claude_config(temp.path(), None)
+        );
+        let custom = temp.path().join("custom-claude");
+        (registry.claude_config, registry.claude_config_dir) =
+            resolve_claude_config(temp.path(), Some(custom.clone()));
+        fs::create_dir_all(&custom).unwrap();
+        fs::write(custom.join(".claude.json"), "{}\n").unwrap();
+        assert!(registry.mutate("claude-code", "register").await.ok);
+        assert_eq!(registry.status("claude-code").await.state, "registered");
+        assert!(custom.join("rules/openkeylet.md").is_file());
+        assert!(!temp.path().join(".claude.json").exists());
+        assert!(!temp.path().join(".claude/rules/openkeylet.md").exists());
     }
 
     #[test]

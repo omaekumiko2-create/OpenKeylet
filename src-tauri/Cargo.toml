@@ -15,6 +15,7 @@ path = "src/lib.rs"
 default = ["gui"]
 gui = [
     "dep:drag",
+    "dep:glib",
     "desktop-fill",
     "dep:jsonc-parser",
     "dep:tauri",
@@ -84,6 +85,9 @@ windows = { version = "0.62", optional = true, features = ["Win32_Foundation", "
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3.7"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+glib = { version = "0.18", optional = true }
 
 [dev-dependencies]
 tempfile = "3"

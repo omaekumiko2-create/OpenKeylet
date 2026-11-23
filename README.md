@@ -124,7 +124,7 @@ Reorder modules using the drag handle on the left, or focus a handle and press t
 
 ### Browser filling
 
-The bundled Chromium extension shares the desktop application's local encrypted vault. In **Settings → Browser Bridge**, follow the two numbered steps: **1. Open the extensions page** and turn on Developer mode; **2. Drag in the extension** by dropping the OpenKeylet icon onto an empty area of that page. If the page does not open automatically, enter `chrome://extensions` in Chrome's address bar. The **Can't install by dragging?** section offers a folder button for **Load unpacked**. Keep the `browser-extension` directory in place. Pairing is automatic. This version pins the extension ID; reload older installations, or remove and load them again if necessary, then pair again.
+The bundled Chromium extension shares the desktop application's local encrypted vault. In **Settings → Browser Bridge**, follow the two numbered steps: **1. Open the extensions page** by clicking **Open Chrome & copy address**, pasting it into Chrome's address bar, and turning on Developer mode; **2. Drag in the extension** by dropping the OpenKeylet icon onto an empty area of that page. The **Can't install by dragging?** section offers a folder button for **Load unpacked**. Keep the `browser-extension` directory in place. Pairing is automatic. This version pins the extension ID; reload older installations, or remove and load them again if necessary, then pair again.
 
 Open the toolbar popup to select a login for the current website and fill its username and password. Logins without explicit website rules use the exact scheme, host and port. The desktop editor also supports multiple websites with origin, base-domain, host, exact-URL, prefix, regex and never-match rules. URL rules validate the actual target frame URL, and filling rechecks it before writing. Forms are not automatically submitted. **Save login** reads the current form and lets you confirm a new item or update an existing one. Both interfaces refresh the same vault, with stale-write detection. If a PIN is configured, the extension requires an unlock lasting five minutes. OpenKeylet and Browser Bridge must remain running.
 
@@ -156,6 +156,8 @@ The Settings page includes:
 - Agent connection and repair;
 - Browser Bridge pairing;
 - encrypted backup import/export and direct access to the local data folder.
+
+On Linux, opening the GUI registers the current executable in the application menu and installs its icon. Desktop shortcuts and launch at login are opt-in.
 
 Replacing or upgrading the executable does not remove your vault. OpenKeylet intentionally reuses the current OS user's data directory:
 

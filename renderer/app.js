@@ -6,7 +6,7 @@ const HAN_TEXT = /[\u3400-\u9fff]/;
 const isMacOS = navigator.platform.startsWith('Mac') || navigator.userAgent.includes('Macintosh');
 document.documentElement.classList.toggle('platform-macos', isMacOS);
 
-if (isMacOS) {
+{
   const titleDragRegion = document.querySelector('.title-drag-region');
   const isTitleControl = (target) => Boolean(target.closest?.('button, input, select, textarea, a, [role="button"]'));
   titleDragRegion.addEventListener('mousedown', (event) => {
@@ -82,8 +82,8 @@ const staticCopy = [
   ['#save-browser-settings-button', 'text', '保存', 'SAVE'],
   ['#browser-install-heading', 'text', '安装插件 · 只需两步', 'INSTALL IN TWO STEPS'],
   ['#browser-step-open-title', 'text', '打开扩展页', 'Open the extensions page'],
-  ['#browser-step-open-description', 'text', '点击下方按钮，然后开启扩展页右上角的“开发者模式”。', 'Click below, then turn on Developer mode in the top-right corner of the extensions page.'],
-  ['#browser-open-help', 'text', '未能自动打开。请在 Chrome 地址栏输入 chrome://extensions，再开启“开发者模式”。', "Could not open it automatically. Enter chrome://extensions in Chrome's address bar, then turn on Developer mode."],
+  ['#browser-step-open-description', 'text', '打开 Chrome 并复制扩展页地址，粘贴后开启右上角的“开发者模式”。', 'Open Chrome and copy the extensions page address. Paste it into the address bar, then turn on Developer mode.'],
+  ['#browser-open-help', 'text', '地址已复制。请粘贴到 Chrome 地址栏并按回车，然后开启“开发者模式”。', "Address copied. Paste it into Chrome's address bar and press Enter, then turn on Developer mode."],
   ['#browser-step-drag-title', 'text', '拖入插件', 'Drag in the extension'],
   ['#browser-step-drag-description', 'text', '按住下方标识，拖到扩展页的空白区域，松开即可安装。', 'Hold the icon below, drag it onto an empty area of the extensions page, and release to install.'],
   ['#browser-install-complete', 'text', '安装后会自动连接，请保持 OpenKeylet 运行。', 'Once installed, the extension connects automatically. Keep OpenKeylet running.'],
@@ -91,7 +91,7 @@ const staticCopy = [
   ['#browser-fallback-description', 'text', '打开下方扩展目录，然后在扩展页点击“加载已解压的扩展程序”，选择该目录。', 'Open the extension folder below. On the extensions page, click Load unpacked and select that folder.'],
   ['#drag-extension-label', 'text', '按住此处，拖入扩展页', 'Hold and drag to the extensions page'],
   ['#drag-extension-button', 'aria-label', '拖动插件到 Chrome 扩展页；也可按回车打开扩展目录', 'Drag the extension to Chrome Extensions, or press Enter to open its folder'],
-  ['#quick-pairing-button', 'text', '打开扩展页', 'OPEN EXTENSIONS PAGE'],
+  ['#quick-pairing-button', 'text', '打开浏览器并复制地址', 'OPEN CHROME & COPY ADDRESS'],
   ['#open-extension-button', 'text', '扩展目录', 'EXTENSION FOLDER'],
   ['#reset-pairing-button', 'text', '重置', 'RESET'],
   ['[data-module="SAFE / 05"] .settings-heading h2', 'text', '本地数据', 'LOCAL DATA'],
@@ -216,6 +216,7 @@ const api = {
   removeAgent: (clientId) => invoke('agent_mcp_remove', { clientId }),
   chooseKey: () => invoke('choose_private_key'),
   quickPair: (port) => invoke('quick_pair_browser', { port }),
+  openChrome: () => invoke('open_chrome_browser'),
   resetPair: () => invoke('reset_browser_pairing'),
   extensionFolder: () => invoke('open_browser_extension_folder'),
   exportBackup: (password) => invoke('export_backup', { password }),
@@ -247,19 +248,15 @@ let editorSourceInput = null;
 let editorOpenedFromDraft = false;
 let editorInitialSnapshot = '';
 let editorReturnFocus = null;
-let inlineEditorItemId = null;
+let editorItemId = null;
 let editorOpening = false;
 let editorClosing = null;
-let editorFoldAnimation = null;
 let switchPointerDrag = null;
 let switchSelectionPending = false;
 let suppressSwitchClick = null;
 let itemPointerDrag = null;
 let itemOrderSaving = false;
 let suppressItemClick = false;
-// Keep the editor below its nested dialogs in the original stacking order.
-const editorHome = document.createComment('Item editor home');
-$('#connection-modal').before(editorHome);
 let agentClients = [];
 let agentRestartRequired = false;
 let renderedConnectionsSignature = '';
@@ -637,7 +634,7 @@ async function selectFilterButton(button) {
 
 async function setItemTypeFilter(kind) {
   if (!itemTypeFilterOrder.includes(kind) || kind === currentItemTypeFilter) return;
-  const edited = state.connections.find(item => item.id === inlineEditorItemId);
+  const edited = state.connections.find(item => item.id === editorItemId);
   if (edited && kind !== 'all' && itemDisplayKind(edited) !== kind && !await closeEditorWithDraft()) return;
   currentItemTypeFilter = kind;
   syncItemTypeFilter();
@@ -645,7 +642,7 @@ async function setItemTypeFilter(kind) {
 }
 
 async function selectPage(page) {
-  if (inlineEditorItemId && page !== 'connections' && !await closeEditorWithDraft()) return;
+  if (editorItemId && page !== 'connections' && !await closeEditorWithDraft()) return;
   activePage = page;
   syncTitleSearch();
   $('.nav').dataset.active = page;
@@ -853,22 +850,18 @@ function syncActivityFilterControl() {
 function renderConnections() {
   if (itemPointerDrag || itemOrderSaving) return;
   const query = normalizeSearch(pageSearch.connections);
-  const signature = JSON.stringify([state.connections, query, language, inlineEditorItemId, currentItemTypeFilter]);
+  const signature = JSON.stringify([state.connections, query, language, editorItemId, currentItemTypeFilter]);
   if (signature === renderedConnectionsSignature) return;
   renderedConnectionsSignature = signature;
   const items = state.connections.filter((item) => {
-    if (item.id === inlineEditorItemId) return true;
+    if (item.id === editorItemId) return true;
     if (currentItemTypeFilter !== 'all' && itemDisplayKind(item) !== currentItemTypeFilter) return false;
     if (!query) return true;
     const fields = (item.secret?.fields || []).map((field) => field.name).join(' ');
     return normalizeSearch([item.name, item.description, item.folder, itemTypeLabel(item.itemType), itemDisplayType(item), itemCapabilities(item).join(' '), itemDetail(item), itemPermission(item), fields].join(' ')).includes(query);
   });
   const container = $('#connections-list');
-  const editor = $('#connection-modal');
-  const focusedEditorControl = editor.contains(document.activeElement) ? document.activeElement : null;
-  // Preserve the live form (and unsaved values) when language or list data refreshes.
-  if (container.contains(editor)) editorHome.after(editor);
-  if (inlineEditorItemId && !state.connections.some(item => item.id === inlineEditorItemId)) closeEditor();
+  if (editorItemId && !state.connections.some(item => item.id === editorItemId)) closeEditor();
   if (!items.length) {
     const hasItems = state.connections.length > 0;
     container.innerHTML = `<div class="empty-state"><div><div class="empty-code">LOCAL VAULT</div><h3>${hasItems ? localized('没有匹配项目', 'NO MATCHING ITEMS') : localized('还没有秘密项目', 'NO VAULT ITEMS')}</h3><p>${hasItems ? localized('当前筛选没有结果。', 'No items match the current filters.') : localized('保存密码、Passkey、信用卡、身份资料和安全笔记，在需要时使用。', 'Keep passwords, passkeys, cards, identities and secure notes together.')}</p><button class="button primary" data-action="${hasItems ? 'clear-connection-filters' : 'add'}">${hasItems ? localized('清除筛选', 'CLEAR FILTERS') : localized('添加项目', 'ADD ITEM')}</button></div></div>`;
@@ -878,24 +871,20 @@ function renderConnections() {
     const type = itemDisplayType(item);
     const canTest = item.enabled && item.canTest;
     const agentActions = itemCapabilities(item).length > 0;
-    const reorderLabel = localized(`${item.name}：拖动排序，或按上/下方向键`, `${item.name}: drag to reorder, or use the Up/Down arrow keys`);
+    const reorderLabel = localized(`${item.name}：拖动排序，或按方向键`, `${item.name}: drag to reorder, or use the arrow keys`);
     const toggleLabel = item.enabled
       ? localized('停用此项目；Agent 将无法使用其中的秘密', 'Disable this item; agents will no longer be able to use its secrets')
       : localized('启用此项目；Agent 将可以使用其中的秘密', 'Enable this item so agents can use its secrets');
     return `<article class="connection-card ${itemCapabilities(item).includes('ssh') ? 'ssh' : itemCapabilities(item).includes('http') ? 'http' : 'fill'} ${item.enabled ? '' : 'disabled'}" data-item-id="${escapeHtml(item.id)}">
-      <div class="item-disclosure-well"><button class="item-disclosure" type="button" data-action="edit" data-id="${item.id}" aria-expanded="false" aria-controls="connection-modal" aria-label="${escapeHtml(localized(`展开编辑 ${item.name}`, `Expand editor for ${item.name}`))}" title="${localized('展开编辑', 'Expand editor')}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button></div>
-      <span class="connection-type" role="img" data-item-type="${itemDisplayKind(item)}" aria-label="${escapeHtml(type)}" title="${escapeHtml(type)}">${itemTypeIcon(itemDisplayKind(item))}</span>
-      <button class="connection-name" type="button" draggable="false" data-item-reorder="${escapeHtml(item.id)}" aria-label="${escapeHtml(reorderLabel)}" aria-keyshortcuts="ArrowUp ArrowDown Home End" title="${escapeHtml(reorderLabel)}"><span class="lettering-ink">${escapeHtml(item.name)}</span></button>
+      <button class="connection-name" type="button" draggable="false" data-item-reorder="${escapeHtml(item.id)}" aria-label="${escapeHtml(reorderLabel)}" aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight Home End" title="${escapeHtml(reorderLabel)}"><span class="lettering-ink">${escapeHtml(item.name)}</span></button>
+      <button class="module-state item-toggle" type="button" data-action="toggle-enabled" data-id="${item.id}" aria-pressed="${item.enabled}" title="${toggleLabel}" aria-label="${toggleLabel}"><i class="status-dot ${item.enabled ? '' : 'off'}" aria-hidden="true"></i></button>
+      <span class="connection-type" role="img" data-item-type="${itemDisplayKind(item)}" aria-label="${escapeHtml(type)}" title="${escapeHtml(type)}">${itemTypeIcon(itemDisplayKind(item))}<small aria-hidden="true">${escapeHtml(type)}</small></span>
       <div class="card-actions" role="group" aria-label="${escapeHtml(item.name)}">
-        <button class="module-state item-toggle" type="button" data-action="toggle-enabled" data-id="${item.id}" aria-pressed="${item.enabled}" title="${toggleLabel}" aria-label="${toggleLabel}"><i class="status-dot ${item.enabled ? '' : 'off'}" aria-hidden="true"></i></button>
-        ${agentActions ? `<button class="small-button" type="button" data-action="test" data-id="${item.id}" ${canTest ? '' : 'disabled'}>CHECK</button><button class="small-button" type="button" data-action="copy-name" data-id="${item.id}" title="${localized('复制 OpenKeylet MCP 使用提示', 'Copy OpenKeylet MCP use prompt')}" aria-label="${localized('复制 OpenKeylet MCP 使用提示', 'Copy OpenKeylet MCP use prompt')}">USE</button>` : ''}${item.passwordHistoryCount ? `<button class="small-button" type="button" data-action="history" data-id="${item.id}">HISTORY</button>` : ''}<button class="small-button delete" type="button" data-action="delete" data-id="${item.id}">DEL</button>
+        <div class="item-disclosure-well"><button class="item-disclosure" type="button" data-action="edit" data-id="${item.id}" aria-haspopup="dialog" aria-controls="connection-modal" aria-label="${escapeHtml(localized(`编辑 ${item.name}`, `Edit ${item.name}`))}" title="${localized('编辑项目', 'Edit item')}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 19 3.5-.7L19 7.8 16.2 5 5.7 15.5 5 19Zm9.8-12.6 2.8 2.8"/></svg></button></div>
+        ${agentActions ? `<button class="small-button" type="button" data-action="test" data-id="${item.id}" ${canTest ? '' : 'disabled'}>CHECK</button><button class="small-button" type="button" data-action="copy-name" data-id="${item.id}" title="${localized('复制 OpenKeylet MCP 使用提示', 'Copy OpenKeylet MCP use prompt')}" aria-label="${localized('复制 OpenKeylet MCP 使用提示', 'Copy OpenKeylet MCP use prompt')}">USE</button>` : ''}${item.passwordHistoryCount ? `<button class="small-button" type="button" data-action="history" data-id="${item.id}" title="${localized('密码历史', 'Password history')}" aria-label="${localized('密码历史', 'Password history')}">HIS</button>` : ''}<button class="small-button delete" type="button" data-action="delete" data-id="${item.id}">DEL</button>
       </div>
     </article>`;
   }).join('');
-  if (inlineEditorItemId) {
-    placeItemEditor();
-    if (focusedEditorControl?.isConnected) focusedEditorControl.focus({ preventScroll: true });
-  }
 }
 
 function draftSecretValues(secrets = {}) {
@@ -1275,54 +1264,12 @@ function updateEditorTitle() {
     : (editorExistingItem ? localized('编辑项目', 'EDIT ITEM') : localized('添加项目', 'ADD ITEM'));
 }
 
-function placeItemEditor() {
-  const editor = $('#connection-modal');
-  const card = $$('.connection-card').find(card => card.dataset.itemId === inlineEditorItemId);
-  if (card) {
-    card.appendChild(editor);
-    card.classList.add('is-editing');
-    const trigger = $('.item-disclosure', card);
-    trigger.setAttribute('aria-expanded', 'true');
-    trigger.setAttribute('aria-label', localized(`收起编辑 ${editorExistingItem.name}`, `Collapse editor for ${editorExistingItem.name}`));
-    trigger.title = localized('收起编辑', 'Collapse editor');
-    editorReturnFocus = trigger;
-  } else editorHome.after(editor);
-  editor.classList.toggle('inline-editor', Boolean(card));
-  editor.setAttribute('role', card ? 'region' : 'dialog');
-  if (card) editor.removeAttribute('aria-modal');
-  else editor.setAttribute('aria-modal', 'true');
-}
-
-async function animateInlineEditor(open) {
-  const editor = $('#connection-modal');
-  if (!inlineEditorItemId || editor.classList.contains('hidden') || matchMedia('(prefers-reduced-motion: reduce)').matches) return true;
-  const height = editor.getBoundingClientRect().height;
-  editorFoldAnimation?.cancel();
-  editor.classList.add('is-folding');
-  // Animate the real content height: modules and multiline fields need no cap.
-  const animation = editor.animate([
-    { height: `${open ? 0 : height}px`, opacity: open ? 0 : 1 },
-    { height: `${open ? height : 0}px`, opacity: open ? 1 : 0 },
-  ], { duration: 220, easing: 'cubic-bezier(.2,.8,.2,1)', fill: 'both' });
-  editorFoldAnimation = animation;
-  let completed = true;
-  try { await animation.finished; } catch (_) { completed = false; }
-  if (editorFoldAnimation === animation) {
-    animation.cancel();
-    editorFoldAnimation = null;
-    editor.classList.remove('is-folding');
-  }
-  return completed;
-}
-
 async function openEditor(item = null, draft = null) {
   if (editorOpening) return false;
   editorOpening = true;
   try {
     const launcher = document.activeElement;
-    const collapseCurrent = inlineEditorItemId && inlineEditorItemId === item?.id && !draft;
     if (!$('#connection-modal').classList.contains('hidden') && !await closeEditorWithDraft()) return false;
-    if (collapseCurrent) return true;
     if (!draft && item) draft = editorDrafts.find((candidate) => candidate.input?.id === item.id) || null;
     if (!item && draft?.input?.id) item = state.connections.find((candidate) => candidate.id === draft.input.id) || null;
     let ownerValues = {};
@@ -1361,48 +1308,31 @@ async function openEditor(item = null, draft = null) {
     });
     renderModules();
     editorReturnFocus = launcher;
-    inlineEditorItemId = item?.id || null;
-    if (inlineEditorItemId) renderConnections();
-    placeItemEditor();
+    editorItemId = item?.id || null;
     $('#connection-modal').classList.remove('hidden');
     $('#passkey-list').innerHTML = (item?.passkeys || []).map(key => `<div class="passkey-summary"><strong>PASSKEY · ${escapeHtml(key.rpId)}</strong><span>${escapeHtml(key.displayName || key.userName)}</span><small>${localized('私钥加密保存在本地；在浏览器中使用。移入回收站会停用 Passkey，恢复后可继续使用。', 'Private key encrypted locally. Moving this item to trash disables its passkeys; restore it to use them again.')}</small></div>`).join('');
     $('.form-scroll', $('#connection-modal')).scrollTop = 0;
     editorInitialSnapshot = JSON.stringify(serializeItem(false));
-    void animateInlineEditor(true).then(completed => {
-      if (!completed) return;
-      requestAnimationFrame(() => {
-        if (!$('#connection-modal').classList.contains('hidden') && editorExistingItem === item) {
-          if ($('#connection-modal').contains(document.activeElement)) return;
-          if (inlineEditorItemId) $('#connection-name').scrollIntoView({ block: 'nearest' });
-          $('#connection-name').focus({ preventScroll: true });
-        }
-      });
+    requestAnimationFrame(() => {
+      if (!$('#connection-modal').classList.contains('hidden') && editorExistingItem === item && !$('#connection-modal').contains(document.activeElement)) {
+        $('#connection-name').focus({ preventScroll: true });
+      }
     });
     return true;
   } finally { editorOpening = false; }
 }
 
 function closeEditor() {
-  editorFoldAnimation?.cancel();
-  editorFoldAnimation = null;
-  $('#connection-modal').classList.remove('is-folding');
   finishModulePointerDrag(false);
   $('#connection-modal').classList.add('hidden');
   setModuleMenu(false);
-  const card = $$('.connection-card').find(card => card.dataset.itemId === inlineEditorItemId);
-  if (card) {
-    card.classList.remove('is-editing');
-    const trigger = $('.item-disclosure', card);
-    trigger.setAttribute('aria-expanded', 'false');
-    trigger.setAttribute('aria-label', localized(`展开编辑 ${editorExistingItem.name}`, `Expand editor for ${editorExistingItem.name}`));
-    trigger.title = localized('展开编辑', 'Expand editor');
-    editorReturnFocus = trigger;
-  }
-  inlineEditorItemId = null;
-  placeItemEditor();
+  editorItemId = null;
   editorSourceInput = null;
   editorOpenedFromDraft = false;
   editorInitialSnapshot = '';
+  if (!editorReturnFocus?.isConnected && editorReturnFocus?.dataset.action && editorReturnFocus?.dataset.id) {
+    editorReturnFocus = $$('[data-action][data-id]').find(button => button.dataset.action === editorReturnFocus.dataset.action && button.dataset.id === editorReturnFocus.dataset.id);
+  }
   if (editorReturnFocus?.isConnected && !editorReturnFocus.closest('.hidden')) editorReturnFocus.focus({ preventScroll: true });
   editorReturnFocus = null;
 }
@@ -1481,19 +1411,18 @@ async function saveDraftAndCloseEditor() {
   try {
     const input = serializeItem(false);
     const changed = JSON.stringify(input) !== editorInitialSnapshot;
+    let draftsChanged = false;
     if (!editorHasDraftContent() && !editorExistingItem) {
-      if (currentDraftId) await api.deleteDraft(currentDraftId);
+      if (currentDraftId) { await api.deleteDraft(currentDraftId); draftsChanged = true; }
     } else if (changed || editorOpenedFromDraft || !editorExistingItem) {
       const saved = await api.saveDraft(currentDraftId || null, input);
       currentDraftId = saved.id;
+      draftsChanged = true;
       toast(editorExistingItem
         ? localized('未保存修改已保留，可随时继续', 'Unsaved changes kept for later')
         : localized('草稿已加密保存', 'Draft saved and encrypted'));
     }
-    await refreshDrafts();
-    const trigger = $(`.connection-card[data-item-id="${inlineEditorItemId}"] .item-disclosure`);
-    trigger?.setAttribute('aria-expanded', 'false');
-    await animateInlineEditor(false);
+    if (draftsChanged) await refreshDrafts();
     closeEditor();
     return true;
   } catch (error) {
@@ -1817,7 +1746,7 @@ document.addEventListener('click', async (event) => {
   if (event.target.closest('#add-connection-button') || event.target.closest('[data-action="add"]')) {
     await selectCreationMode('add');
   }
-  if (event.target === $('#connection-modal') && !inlineEditorItemId) await closeEditorWithDraft();
+  if (event.target === $('#connection-modal')) await closeEditorWithDraft();
   if (event.target.closest('[data-close-modal]')) await closeEditorWithDraft();
   const copyInput = event.target.closest('[data-copy-input]');
   const copyModule = event.target.closest('[data-copy-module-secret], [data-copy-module-value]');
@@ -1980,6 +1909,15 @@ document.addEventListener('input', (event) => {
 
 const itemList = $('#connections-list');
 
+function updateItemGridRowHeight() {
+  if (!itemList.clientHeight) return;
+  const style = getComputedStyle(itemList);
+  const gap = parseFloat(style.rowGap) || 0;
+  const padding = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+  itemList.style.setProperty('--item-row-height', `${Math.max(86, (itemList.clientHeight - padding - 2 * gap) / 3)}px`);
+}
+new ResizeObserver(updateItemGridRowHeight).observe(itemList);
+
 function visibleItemIds() { return $$('.connection-card', itemList).map(row => row.dataset.itemId); }
 
 async function saveItemOrder(visibleOrder, expectedOrder, focusedId) {
@@ -2016,33 +1954,49 @@ function clearItemDropSeam() {
 function updateItemDropSeam() {
   const drag = itemPointerDrag;
   if (!drag?.started) return;
-  clearItemDropSeam();
   const bounds = itemList.getBoundingClientRect();
   drag.valid = drag.x >= bounds.left && drag.x <= bounds.right && drag.y >= bounds.top && drag.y <= bounds.bottom;
+  const original = drag.row.getBoundingClientRect();
+  const overOriginal = drag.x >= original.left && drag.x <= original.right && drag.y >= original.top && drag.y <= original.bottom;
+  let target = null;
+  if (drag.valid && !overOriginal) {
+    for (const row of $$('.connection-card', itemList)) {
+      if (row === drag.row) continue;
+      const rect = row.getBoundingClientRect();
+      const dx = Math.max(rect.left - drag.x, 0, drag.x - rect.right);
+      const dy = Math.max(rect.top - drag.y, 0, drag.y - rect.bottom);
+      const centerX = rect.left + rect.width / 2, centerY = rect.top + rect.height / 2;
+      const candidate = { row, after: drag.x >= centerX, distance: dx * dx + dy * dy, centerDistance: (drag.x - centerX) ** 2 + (drag.y - centerY) ** 2 };
+      if (!target || candidate.distance < target.distance || (candidate.distance === target.distance && candidate.centerDistance < target.centerDistance)) target = candidate;
+    }
+  }
+  if (drag.target?.row !== target?.row || drag.target?.after !== target?.after) {
+    drag.target?.row.classList.remove('item-drop-before', 'item-drop-after');
+    target?.row.classList.add(target.after ? 'item-drop-after' : 'item-drop-before');
+  }
+  drag.target = target;
   drag.preview.style.opacity = drag.valid ? '1' : '.5';
-  drag.target = null;
-  if (!drag.valid) return;
-  const others = $$('.connection-card', itemList).filter(row => row !== drag.row);
-  if (!others.length) return;
-  const seams = others.map(row => ({ row, after: false, y: row.getBoundingClientRect().top }));
-  seams.push({ row: others.at(-1), after: true, y: others.at(-1).getBoundingClientRect().bottom });
-  drag.target = seams.reduce((nearest, seam) => Math.abs(drag.y - seam.y) < Math.abs(drag.y - nearest.y) ? seam : nearest);
-  drag.target.row.classList.add(drag.target.after ? 'item-drop-after' : 'item-drop-before');
+}
+
+function scheduleItemDragFrame() {
+  const drag = itemPointerDrag;
+  if (drag?.started && !drag.frame) drag.frame = requestAnimationFrame(itemDragFrame);
 }
 
 function itemDragFrame() {
   const drag = itemPointerDrag;
   if (!drag?.started) return;
-  const bounds = itemList.getBoundingClientRect();
+  drag.frame = 0;
+  const bounds = itemList.getBoundingClientRect(), previousScroll = itemList.scrollTop;
   if (drag.x >= bounds.left && drag.x <= bounds.right && drag.y >= bounds.top && drag.y <= bounds.bottom) {
     if (drag.y < bounds.top + 32) itemList.scrollTop -= Math.ceil((bounds.top + 32 - drag.y) / 3);
     else if (drag.y > bounds.bottom - 32) itemList.scrollTop += Math.ceil((drag.y - bounds.bottom + 32) / 3);
   }
   updateItemDropSeam();
-  const x = Math.max(8, Math.min(drag.x + 14, innerWidth - drag.preview.offsetWidth - 8));
-  const y = Math.max(8, Math.min(drag.y + 14, innerHeight - drag.preview.offsetHeight - 8));
+  const x = Math.max(8, Math.min(drag.x + 14, innerWidth - drag.previewWidth - 8));
+  const y = Math.max(8, Math.min(drag.y + 14, innerHeight - drag.previewHeight - 8));
   drag.preview.style.transform = `translate3d(${x}px, ${y}px, 0)`;
-  drag.frame = requestAnimationFrame(itemDragFrame);
+  if (itemList.scrollTop !== previousScroll) scheduleItemDragFrame();
 }
 
 function finishItemPointerDrag(commit) {
@@ -2096,9 +2050,10 @@ document.addEventListener('pointermove', event => {
     drag.preview.innerHTML = `${itemTypeIcon(itemDisplayKind(item))}<span>${escapeHtml(item.name)}</span>`;
     document.body.appendChild(drag.preview);
     try { itemList.setPointerCapture(event.pointerId); } catch (_) { /* Document tracking remains active. */ }
-    itemDragFrame();
+    drag.previewWidth = drag.preview.offsetWidth;
+    drag.previewHeight = drag.preview.offsetHeight;
   }
-  updateItemDropSeam();
+  scheduleItemDragFrame();
 }, { passive: false });
 document.addEventListener('pointerup', event => {
   if (itemPointerDrag?.pointerId !== event.pointerId) return;
@@ -2115,10 +2070,11 @@ document.addEventListener('click', event => {
 }, true);
 itemList.addEventListener('keydown', event => {
   const handle = event.target.closest?.('[data-item-reorder]');
-  if (!handle || itemPointerDrag || itemOrderSaving || confirmationResolver || !ownerLockState.unlocked || event.altKey || event.ctrlKey || event.metaKey || !['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
+  if (!handle || itemPointerDrag || itemOrderSaving || confirmationResolver || !ownerLockState.unlocked || event.altKey || event.ctrlKey || event.metaKey || !['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
   event.preventDefault(); event.stopPropagation();
   const ids = visibleItemIds(), id = handle.dataset.itemReorder, from = ids.indexOf(id);
-  const to = event.key === 'Home' ? 0 : event.key === 'End' ? ids.length - 1 : Math.max(0, Math.min(ids.length - 1, from + (event.key === 'ArrowUp' ? -1 : 1)));
+  const step = { ArrowUp: -4, ArrowDown: 4, ArrowLeft: -1, ArrowRight: 1 }[event.key];
+  const to = event.key === 'Home' ? 0 : event.key === 'End' ? ids.length - 1 : Math.max(0, Math.min(ids.length - 1, from + step));
   ids.splice(from, 1); ids.splice(to, 0, id);
   void saveItemOrder(ids, state.connections.map(item => item.id), id);
 });
@@ -2168,7 +2124,7 @@ function positionModuleDragPreview(clientX, clientY) {
 }
 
 function autoScrollModuleEditor(clientY) {
-  const scroller = inlineEditorItemId ? $('#connections-list') : $('.form-scroll', $('#connection-modal'));
+  const scroller = $('.form-scroll', $('#connection-modal'));
   if (!scroller) return;
   const bounds = scroller.getBoundingClientRect();
   if (clientY < bounds.top + 34) scroller.scrollTop -= 12;
@@ -2308,8 +2264,7 @@ document.addEventListener('keydown', (event) => {
   const editor = $('#connection-modal');
   const editorIsTopmost = !editor.classList.contains('hidden') &&
     !$$('.modal-backdrop:not(.hidden)').some(modal => modal !== editor);
-  const editorOwnsKey = !inlineEditorItemId || event.key === 'Escape' && (editor.contains(event.target) || $('#module-menu').contains(event.target));
-  if (editorIsTopmost && editorOwnsKey && ['Tab', 'Escape'].includes(event.key) && !event.defaultPrevented) {
+  if (editorIsTopmost && ['Tab', 'Escape'].includes(event.key) && !event.defaultPrevented) {
     const menu = $('#module-menu');
     if (event.key === 'Escape') {
       event.preventDefault();
@@ -2387,7 +2342,6 @@ $('#connection-form').addEventListener('submit', async (event) => {
     await api.save(input);
     if (currentDraftId) await api.deleteDraft(currentDraftId);
     currentDraftId = '';
-    await animateInlineEditor(false);
     closeEditor();
     toast(localized('项目已加密保存', 'Item saved and encrypted'));
     await refresh();
@@ -2459,13 +2413,25 @@ $('#quick-pairing-button').addEventListener('click', async event => {
   const button = event.currentTarget;
   button.disabled = true;
   try {
-    const opened = await api.quickPair(Number($('#browser-port').value));
-    $('#browser-enabled').checked = true;
-    $('#browser-open-help').hidden = opened;
-    toast(opened
-      ? localized('已打开扩展页：开启开发者模式后，完成第 2 步。', 'Extensions page opened. Enable Developer mode, then complete step 2.')
-      : localized('请手动打开 chrome://extensions，配对已准备。', 'Open chrome://extensions manually. Pairing is ready.'));
-    await refresh();
+    $('#browser-open-help').hidden = true;
+    let copyError = null;
+    try {
+      await api.copyOwnerValue('chrome://extensions/');
+      $('#browser-open-help').hidden = false;
+    } catch (error) { copyError = error; }
+    let pairingError = null;
+    try {
+      await api.quickPair(Number($('#browser-port').value));
+      $('#browser-enabled').checked = true;
+    } catch (error) { pairingError = error; }
+    let browserError = null;
+    try { await api.openChrome(); } catch (error) { browserError = error; }
+    if (copyError) toast(cleanError(copyError), 'error');
+    else if (pairingError && browserError) toast(localized('配对失败，且无法打开 Chrome。请检查 Browser Bridge 并手动打开 Chrome。', 'Pairing failed and Chrome could not be opened. Check Browser Bridge and open Chrome manually.'), 'error');
+    else if (pairingError) toast(cleanError(pairingError), 'error');
+    else if (browserError) toast(localized('地址已复制，请手动打开 Chrome 并粘贴。', 'Address copied. Open Chrome and paste it manually.'), 'error');
+    else toast(localized('地址已复制，配对已准备。', 'Address copied. Pairing is ready.'));
+    await refresh(false);
   } catch (error) {
     toast(cleanError(error), 'error');
   } finally {

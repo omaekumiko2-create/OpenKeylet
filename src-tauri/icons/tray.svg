@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="44" height="44" viewBox="0 0 32 32">
+  <title>OpenKeylet tray icon</title>
+  <rect x="1" y="1" width="30" height="30" rx="5" fill="#f4f2ed" stroke="#93908b" stroke-width="0.75"/>
+  <image x="0" y="0" width="32" height="32" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYAAADDPmHLAAABQElEQVR42u3dsQ2CUBiF0R9ChRtYMBBTu5CJjbSyAI1GyfPdcwYwhvsFmidWAQAAAADQueHbH3iZ55fLeuy5bUNr32k0frbR+AIwvgCMLwDjC8D4AjC+AIwvAOMLAAEgAASAABAAAkAACAABIAAEgAAQAAJAAPytqfyC5jRnHah55/q5A3gEIAAEgAAQAAJAAAgAASAABIAAEAACQAAIgHIi6Ofu67XLV9Est4c7AAJAAAgAASAABIAAEAACQAAIAAEgAASAABAA1c6/h7f4jpvyjiDvCMIjAAEgAASAABAAAkAACAABIAAEgAAQAAJAANRnJ4Kqs5MzvXIiCI8ABIAAEAACQAAIAAEgAASAABAAAkAAAnAJBEBlHgYRQPj4AggfXwDh4wsgfHwBhI8vgPDxBRA+vgDCxwcAAAAAIMIOwtE/1qMnedYAAAAASUVORK5CYII="/>
+</svg>

@@ -531,7 +531,7 @@ async fn quick_pair_browser(
     app: AppHandle,
     runtime: State<'_, AppRuntime>,
     port: u16,
-) -> Result<bool, String> {
+) -> Result<(), String> {
     runtime
         .vault
         .update_settings_patch(SettingsPatch {
@@ -547,10 +547,49 @@ async fn quick_pair_browser(
         .await
         .map_err(command_error)?;
 
-    let browser_opened = open_chromium_extensions_page();
     emit_changed(&app);
 
-    Ok(browser_opened)
+    Ok(())
+}
+
+#[tauri::command]
+fn open_chrome_browser() -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let mut candidates = Vec::new();
+        for root in ["LOCALAPPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)"] {
+            if let Some(root) = std::env::var_os(root) {
+                candidates.push(PathBuf::from(root).join("Google/Chrome/Application/chrome.exe"));
+            }
+        }
+        candidates.push(PathBuf::from("chrome.exe"));
+        if candidates.into_iter().any(|candidate| {
+            (candidate.components().count() == 1 || candidate.is_file())
+                && Command::new(candidate).arg("--new-tab").spawn().is_ok()
+        }) {
+            return Ok(());
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if Command::new("open")
+            .args(["-a", "Google Chrome"])
+            .status()
+            .is_ok_and(|status| status.success())
+        {
+            return Ok(());
+        }
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"]
+            .into_iter()
+            .any(|browser| Command::new(browser).arg("--new-tab").spawn().is_ok())
+        {
+            return Ok(());
+        }
+    }
+    Err("Unable to open Chrome; open it manually and paste the copied address".to_owned())
 }
 
 #[tauri::command]
@@ -624,60 +663,6 @@ fn browser_extension_path(app: &AppHandle) -> Result<PathBuf, String> {
         "browser-extension directory not found; use the complete portable ZIP".to_owned()
     })?;
     Ok(path)
-}
-
-#[cfg(windows)]
-fn open_chromium_extensions_page() -> bool {
-    let mut candidates = Vec::new();
-    for root in ["LOCALAPPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)"] {
-        let Some(root) = std::env::var_os(root) else {
-            continue;
-        };
-        let root = PathBuf::from(root);
-        candidates.push(root.join("Google/Chrome/Application/chrome.exe"));
-        candidates.push(root.join("Microsoft/Edge/Application/msedge.exe"));
-        candidates.push(root.join("BraveSoftware/Brave-Browser/Application/brave.exe"));
-    }
-    candidates.extend(["chrome.exe", "msedge.exe", "brave.exe"].map(PathBuf::from));
-    candidates.into_iter().any(|candidate| {
-        if candidate.components().count() > 1 && !candidate.is_file() {
-            return false;
-        }
-        Command::new(candidate)
-            .arg("--new-tab")
-            .arg("chrome://extensions")
-            .spawn()
-            .is_ok()
-    })
-}
-
-#[cfg(target_os = "macos")]
-fn open_chromium_extensions_page() -> bool {
-    ["Google Chrome", "Microsoft Edge", "Brave Browser"]
-        .into_iter()
-        .any(|browser| {
-            Command::new("open")
-                .args(["-a", browser, "chrome://extensions"])
-                .spawn()
-                .is_ok()
-        })
-}
-
-#[cfg(all(unix, not(target_os = "macos")))]
-fn open_chromium_extensions_page() -> bool {
-    [
-        "google-chrome",
-        "microsoft-edge",
-        "brave-browser",
-        "chromium",
-    ]
-    .into_iter()
-    .any(|browser| {
-        Command::new(browser)
-            .args(["--new-tab", "chrome://extensions"])
-            .spawn()
-            .is_ok()
-    })
 }
 
 #[tauri::command]
@@ -975,16 +960,29 @@ fn install_tray(app: &tauri::App) -> Result<()> {
     let separator = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "tray-quit", "QUIT", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&open, &lock, &separator, &quit])?;
+    #[cfg(target_os = "macos")]
     let icon = app
         .default_window_icon()
         .context("OpenKeylet tray icon not found")?
         .clone();
+    #[cfg(not(target_os = "macos"))]
+    let icon = tauri::include_image!("icons/tray.png");
 
-    TrayIconBuilder::with_id("openkeylet-tray")
+    let builder = TrayIconBuilder::with_id("openkeylet-tray")
         .icon(icon)
+        .icon_as_template(cfg!(target_os = "macos"))
         .tooltip("OpenKeylet — LOCAL VAULT")
         .menu(&menu)
-        .show_menu_on_left_click(false)
+        .show_menu_on_left_click(false);
+    #[cfg(target_os = "linux")]
+    let builder = builder.temp_dir_path(
+        app.path()
+            .app_cache_dir()?
+            .join("tray")
+            .join(std::process::id().to_string()),
+    );
+
+    let tray = builder
         .on_menu_event(|app, event| {
             if event.id() == "tray-open" {
                 show_main_window(app);
@@ -1025,6 +1023,21 @@ fn install_tray(app: &tauri::App) -> Result<()> {
             _ => {}
         })
         .build(app)?;
+    #[cfg(target_os = "linux")]
+    {
+        // GTK exports the dbusmenu tree from idle callbacks. Keep the indicator
+        // passive until those callbacks finish so hosts cannot cache an empty
+        // first layout and then refuse to open it to request an update.
+        tray.set_visible(false)?;
+        glib::idle_add_local_full(glib::Priority::LOW, move || {
+            if let Err(error) = tray.set_visible(true) {
+                eprintln!("OpenKeylet: failed to show the system tray: {error:#}");
+            }
+            glib::ControlFlow::Break
+        });
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = tray;
     Ok(())
 }
 
@@ -1055,8 +1068,31 @@ fn request_rounded_corners(_window: &WebviewWindow) -> Result<()> {
 }
 
 pub fn run_gui() -> Result<()> {
+    let context = tauri::generate_context!();
+    #[cfg(target_os = "linux")]
+    let context = {
+        let mut context = context;
+        let main = context
+            .config_mut()
+            .app
+            .windows
+            .iter_mut()
+            .find(|window| window.label == "main")
+            .context("Main window configuration not found")?;
+        // Both the GTK surface and WebKit backing must be transparent; an
+        // opaque native background fills the CSS-rounded corners back in.
+        main.transparent = true;
+        main.background_color = Some(tauri::window::Color(0, 0, 0, 0));
+        context
+    };
     let data_dir = app_data_dir()?;
     let mut gui_instance = GuiInstance::acquire(&data_dir)?;
+    #[cfg(target_os = "linux")]
+    if let Err(error) =
+        crate::system_integration::ensure_application_entry(&mcp::launcher_executable()?)
+    {
+        eprintln!("OpenKeylet: failed to register the application launcher: {error:#}");
+    }
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -1176,6 +1212,7 @@ pub fn run_gui() -> Result<()> {
             agent_mcp_remove,
             choose_private_key,
             quick_pair_browser,
+            open_chrome_browser,
             reset_browser_pairing,
             open_browser_extension_folder,
             drag_browser_extension,
@@ -1197,7 +1234,7 @@ pub fn run_gui() -> Result<()> {
             open_data_folder,
             window_action,
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .context("OpenKeylet GUI startup failed")?;
 
     #[cfg(target_os = "macos")]

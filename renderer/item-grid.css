@@ -1,0 +1,139 @@
+/* Portrait instrument cards, with room for three rows in the vault well. */
+.connections-grid {
+  --item-gap: 6px;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-auto-rows: max-content;
+  align-content: start;
+  gap: var(--item-gap);
+  min-width: 0;
+}
+
+.connections-grid:has(> .empty-state) { display: flex; }
+.connections-grid > .empty-state { width: 100%; }
+
+.connection-card {
+  grid-template-areas: "name toggle" "type type" "actions actions";
+  grid-template-columns: minmax(0, 1fr) 20px;
+  grid-template-rows: 22px minmax(30px, 1fr) 56px;
+  align-items: stretch;
+  gap: 3px;
+  min-width: 0;
+  height: var(--item-row-height, 150px);
+  min-height: var(--item-row-height, 150px);
+  padding: 4px;
+}
+
+.connection-name {
+  height: 22px;
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 22px;
+}
+
+.connection-card > .item-toggle {
+  grid-area: toggle;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 22px;
+  min-height: 22px;
+  padding: 0;
+  border-radius: var(--radius);
+  background: var(--ui-well-face);
+  box-shadow: var(--ui-well-shadow);
+}
+
+.connection-type {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
+  width: 100%;
+  height: auto;
+  min-height: 30px;
+  padding: 2px 20px;
+  overflow: hidden;
+  line-height: 1;
+}
+
+.connection-type::before, .connection-type::after {
+  position: absolute;
+  top: 50%;
+  width: 12px;
+  border-top: 1px solid var(--line-soft);
+  opacity: .7;
+  content: "";
+}
+.connection-type::before { left: 6px; }
+.connection-type::after { right: 6px; }
+.connection-type svg { width: 28px; height: 28px; flex: none; }
+.connection-type small {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--muted);
+  font: 600 7px/1 var(--mono);
+  letter-spacing: .08em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.connection-card.disabled .connection-type { color: var(--faint); }
+.connection-card.disabled .connection-type svg { filter: none; }
+
+.card-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-auto-rows: 1fr;
+  align-self: stretch;
+  justify-self: stretch;
+  align-items: stretch;
+  gap: 2px;
+  width: 100%;
+  height: 56px;
+  padding: 2px;
+}
+.card-actions .item-disclosure-well,
+.card-actions .item-disclosure { width: 100%; height: 100%; }
+.card-actions .item-disclosure-well { grid-area: auto; }
+.card-actions .item-disclosure {
+  background: var(--ui-key-face);
+  box-shadow: var(--ui-key-contact-shadow);
+}
+.card-actions .item-disclosure svg { width: 12px; height: 12px; }
+.card-actions .small-button,
+.card-actions .small-button[data-action="history"] {
+  flex: 1 1 0;
+  width: auto;
+  min-width: 0;
+  height: 100%;
+  min-height: 0;
+  padding: 0 1px;
+  font-size: 8px;
+}
+.card-actions > :last-child:nth-child(odd) { grid-column: 1 / -1; }
+
+.connections-grid.is-reordering > .connection-card:is(.item-drop-before, .item-drop-after)::before {
+  top: 5px;
+  bottom: 5px;
+  left: -4px;
+  width: 2px;
+  height: auto;
+  right: auto;
+}
+.connections-grid.is-reordering > .connection-card.item-drop-after::before {
+  top: 5px;
+  bottom: 5px;
+  left: auto;
+  right: -4px;
+}
+
+/* Animate only the composited dialog surface, leaving the grid in place. */
+@media (prefers-reduced-motion: no-preference) {
+  #connection-modal:not(.hidden) .modal-card { animation: item-dialog-in 140ms ease-out both; }
+  @keyframes item-dialog-in {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+}

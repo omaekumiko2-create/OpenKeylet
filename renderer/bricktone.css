@@ -104,6 +104,10 @@ html.platform-macos {
 html.platform-macos { --mono: "SFMono-Regular", Menlo, Monaco, "PingFang SC", monospace; }
 html, body { border-radius: var(--window-radius); }
 body { background: var(--chassis); clip-path: inset(0 round var(--window-radius)); -webkit-font-smoothing: antialiased; }
+/* WebKitGTK clips overflow to the existing border radius. Avoid a redundant
+   composited mask and leave the native transparent corners unpainted. */
+html.platform-linux { background: transparent; }
+html.platform-linux body { clip-path: none; }
 /* Use the same gentle slant for labels, body copy and native form controls. */
 *, *::before, *::after, input::placeholder, textarea::placeholder { font-style: oblique 7.125deg !important; }
 .lettering-ink { display: inline-block; max-width: 100%; font: inherit !important; font-style: normal !important; color: inherit; transform: skewX(var(--ui-lettering-tilt)); transform-origin: left center; pointer-events: none; }

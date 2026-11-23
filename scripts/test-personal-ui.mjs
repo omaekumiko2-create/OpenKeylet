@@ -23,7 +23,7 @@ try {
   const errors = []; page.on("pageerror",e=>errors.push(e.message));
   await page.addInitScript(() => {
     const state = {settings:{language:"zh",closeBehavior:"tray",browserEnabled:true,browserPort:39272},connections:[],activities:[],mcp:{status:"ready",endpoint:"fixture",stdioCommand:"fixture"},browserBridge:{status:"listening",enabled:true,connected:true,paired:true,endpoint:"fixture"},security:{encrypted:true,storage:"fixture"}};
-    window.fixture = {saved:[],drafts:[],exports:[],copies:[],imports:[],trash:[],history:[{password:"synthetic-previous-password",changedAt:"2026-01-01T00:00:00Z"}],state};
+    window.fixture = {saved:[],drafts:[],exports:[],copies:[],pairings:[],browserOpens:0,imports:[],trash:[],history:[{password:"synthetic-previous-password",changedAt:"2026-01-01T00:00:00Z"}],state};
     window.__TAURI__ = {event:{listen:async()=>()=>{}},core:{invoke:async(command,args={}) => {
       if(command==="get_state") return structuredClone(state);
       if(command==="owner_status") return {pinConfigured:false,unlocked:true};
@@ -43,7 +43,9 @@ try {
         state.connections.push(item);return item;
       }
       if(command==="generate_password") return "Aa1!".repeat(32).slice(0,args.options.length);
-      if(command==="copy_owner_value") {fixture.copies.push(args.value);return;}
+      if(command==="copy_owner_value") {if(fixture.failCopy)throw Error("Copy failed");fixture.copies.push(args.value);return;}
+      if(command==="quick_pair_browser") {fixture.pairings.push(args.port);if(fixture.failPairing)throw Error("Pairing failed");return;}
+      if(command==="open_chrome_browser") {fixture.browserOpens++;if(fixture.failBrowser)throw Error("Browser failed");return;}
       if(command==="export_backup") {fixture.exports.push(args.password);return "fixture.mvault";}
       if(command==="import_backup") return {added:0,merged:0};
       if(command==="prepare_import") return {id:"fixture-import",preview:{total:4,types:{login:1,card:1,identity:1,secureNote:1},passkeys:1,skippedDeleted:1,warnings:["defaultDomainMatch","passwordHistory"]}};
@@ -147,6 +149,29 @@ try {
   assert.deepEqual(await page.evaluate(()=>serializeItem(false).loginUris),[{uri:"https://example.com/login",matchType:"exact"}]);
   await page.evaluate(()=>closeEditor());
   await page.locator('[data-page="settings"]').click();
+  await page.locator('#quick-pairing-button').click();
+  await page.locator('#browser-open-help:visible').waitFor();
+  await page.waitForFunction(()=>fixture.browserOpens===1);
+  assert.equal(await page.evaluate(()=>fixture.copies.at(-1)),'chrome://extensions/');
+  assert.equal(await page.evaluate(()=>fixture.pairings[0]),39272);
+  assert.match(await page.locator('#browser-open-help').textContent(),/粘贴.*地址栏/);
+  await page.evaluate(()=>{fixture.failPairing=true;});
+  await page.locator('#quick-pairing-button').click();
+  await page.waitForFunction(()=>fixture.browserOpens===2);
+  assert.equal(await page.evaluate(()=>fixture.pairings.length),2);
+  assert.equal(await page.evaluate(()=>fixture.copies.at(-1)),'chrome://extensions/');
+  assert.equal(await page.locator('#browser-open-help').isVisible(),true);
+  await page.evaluate(()=>{fixture.failPairing=false;fixture.failBrowser=true;});
+  await page.locator('#quick-pairing-button').click();
+  await page.waitForFunction(()=>fixture.browserOpens===3);
+  assert.equal(await page.evaluate(()=>fixture.pairings.length),3);
+  assert.equal(await page.locator('#browser-open-help').isVisible(),true);
+  await page.evaluate(()=>{fixture.failBrowser=false;fixture.failCopy=true;});
+  await page.locator('#quick-pairing-button').click();
+  await page.waitForFunction(()=>fixture.browserOpens===4);
+  assert.equal(await page.evaluate(()=>fixture.pairings.length),4);
+  assert.equal(await page.locator('#browser-open-help').isVisible(),false);
+  await page.evaluate(()=>{fixture.failCopy=false;});
   await page.locator("#header-export-backup-button").click();
   await page.locator("#backup-password").fill("synthetic-test-password");
   await page.locator("#backup-password-confirm").fill("synthetic-test-password");
@@ -215,5 +240,5 @@ try {
   await page.screenshot({path:path.join(artifacts,"narrow-card-editor.png")});
   assert.ok(await page.evaluate(()=>document.querySelector("#connection-modal .modal-card").getBoundingClientRect().bottom<=innerHeight));
   assert.deepEqual(errors,[]);
-  console.log(JSON.stringify({ok:true,checks:["combined add/draft selector","draft preservation and recovery","card editor","encrypted field payload","search by name and folder","multiline secure note","generator inserts password","backup password flow","multiple website rules","migration preview/cancel/commit","password history","trash restore and purge from settings","narrow layout"],artifacts},null,2));
+  console.log(JSON.stringify({ok:true,checks:["combined add/draft selector","draft preservation and recovery","card editor","encrypted field payload","search by name and folder","multiline secure note","generator inserts password","browser address copy and pairing","backup password flow","multiple website rules","migration preview/cancel/commit","password history","trash restore and purge from settings","narrow layout"],artifacts},null,2));
 } finally {await browser.close();server.close();}

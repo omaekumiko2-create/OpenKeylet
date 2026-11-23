@@ -10,9 +10,9 @@ export async function auditControlGeometry(page) {
     const visible = el => el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().height > 0;
     const name = el => el.id || el.className;
     const gaps = (well, cap) => [cap.top - well.top, well.right - cap.right, well.bottom - cap.bottom, cap.left - well.left];
-    const check = (label, values) => {
+    const check = (label, values, expected = inset) => {
       records.push({ label, gaps: values });
-      if (values.some(value => !Number.isFinite(value) || Math.abs(value - inset) > tolerance)) failures.push({ label, gaps: values, inset });
+      if (values.some(value => !Number.isFinite(value) || Math.abs(value - expected) > tolerance)) failures.push({ label, gaps: values, inset: expected });
     };
     {
       const wells = document.querySelectorAll('.title-search, .window-control-well, .title-switch, .language-switch, .nav, .filter-strip, .command-well, .card-actions, .agent-row-actions, #connection-modal .module-add-wrap');
@@ -22,10 +22,13 @@ export async function auditControlGeometry(page) {
         if (!children.length) continue;
         const outer = well.getBoundingClientRect(), boxes = children.map(el => el.getBoundingClientRect());
         const union = { top: Math.min(...boxes.map(r => r.top)), bottom: Math.max(...boxes.map(r => r.bottom)), left: Math.min(...boxes.map(r => r.left)), right: Math.max(...boxes.map(r => r.right)) };
-        check(`${name(well)} outer clearance`, gaps(outer, union));
-        for (const child of children) {
-          const r = child.getBoundingClientRect();
-          check(`${name(well)} / ${name(child)} vertical clearance`, [r.top - outer.top, outer.bottom - r.bottom]);
+        const expected = well.matches('.card-actions') ? 2 : inset;
+        check(`${name(well)} outer clearance`, gaps(outer, union), expected);
+        if (!well.matches('.card-actions')) {
+          for (const child of children) {
+            const r = child.getBoundingClientRect();
+            check(`${name(well)} / ${name(child)} vertical clearance`, [r.top - outer.top, outer.bottom - r.bottom], expected);
+          }
         }
       }
       const pseudoRect = (host, pseudo) => {

@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Capabilities for the local OpenKeylet management window.",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "core:window:allow-start-dragging"]
 }

@@ -11,11 +11,12 @@
     <link rel="stylesheet" href="bricktone-editor.css" />
     <link rel="stylesheet" href="bricktone-light.css" />
     <link rel="stylesheet" href="bricktone-appearance.css" />
+    <link rel="stylesheet" href="item-grid.css" />
     <script src="appearance.js"></script>
   </head>
   <body>
     <div class="title-drag-region" data-tauri-drag-region="deep">
-      <div class="app-mark" data-tauri-drag-region>
+      <div class="app-mark">
         <span class="app-mark-symbol" aria-hidden="true">
         <svg class="app-mark-logo" viewBox="-24 -24 448 448" aria-hidden="true">
           <!-- Construction: 100-unit cells, 8-unit inset, 16-unit corner radius.
@@ -87,7 +88,7 @@
         </button>
         <input id="title-search-input" class="page-search-input" data-page-search="connections" type="search" placeholder="Search items…" aria-label="Search vault items" autocomplete="off" hidden />
       </div>
-      <div class="title-tools">
+      <div class="title-tools" data-tauri-drag-region="false">
       <button class="title-switch" id="theme-toggle" type="button" role="switch" aria-checked="false" aria-label="Light mode" title="Switch to light mode">
         <span class="title-switch-option" data-state="false" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M20 12A8 8 0 1 1 12 4A6 6 0 0 0 20 12Z"/></svg></span>
         <span class="title-switch-option" data-state="true" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></svg></span>
@@ -181,9 +182,9 @@
               <ol class="browser-install-steps" aria-labelledby="browser-install-heading">
                 <li><span class="browser-step-number" aria-hidden="true">1</span><div class="browser-step-body">
                   <h3 id="browser-step-open-title">Open the extensions page</h3>
-                  <p id="browser-step-open-description">Click below, then turn on Developer mode in the top-right corner of the extensions page.</p>
-                  <div class="command-well"><button type="button" class="button primary" id="quick-pairing-button">Open extensions page</button></div>
-                  <p id="browser-open-help" role="status" hidden>Could not open it automatically. Enter chrome://extensions in Chrome's address bar, then turn on Developer mode.</p>
+                  <p id="browser-step-open-description">Open Chrome and copy the extensions page address. Paste it into the address bar, then turn on Developer mode.</p>
+                  <div class="command-well"><button type="button" class="button primary" id="quick-pairing-button">Open Chrome &amp; copy address</button></div>
+                  <p id="browser-open-help" role="status" hidden>Address copied. Paste it into Chrome's address bar and press Enter, then turn on Developer mode.</p>
                 </div></li>
                 <li><span class="browser-step-number" aria-hidden="true">2</span><div class="browser-step-body">
                   <h3 id="browser-step-drag-title">Drag in the extension</h3>

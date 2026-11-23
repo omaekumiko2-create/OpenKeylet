@@ -278,6 +278,14 @@ fn xml_escape(value: &str) -> String {
 }
 
 #[cfg(target_os = "linux")]
+pub fn ensure_application_entry(executable: &Path) -> Result<()> {
+    let path = dirs::data_dir()
+        .context("Could not find Linux application data directory")?
+        .join("applications/openkeylet.desktop");
+    set_entry(&path, executable, true, EntryKind::Desktop)
+}
+
+#[cfg(target_os = "linux")]
 fn desktop_entry_path(_executable: &Path) -> Result<PathBuf> {
     Ok(dirs::desktop_dir()
         .context("Desktop directory not found")?
@@ -307,14 +315,44 @@ fn set_entry(path: &Path, executable: &Path, enabled: bool, _kind: EntryKind) ->
             parent.display()
         )
     })?;
-    let executable = desktop_exec_quote(executable.to_string_lossy().as_ref());
+    let icon_path = dirs::data_dir()
+        .context("Could not find Linux application data directory")?
+        .join("icons/hicolor/256x256/apps/openkeylet.png");
+    fs::create_dir_all(
+        icon_path
+            .parent()
+            .context("Icon path is missing a parent directory")?,
+    )?;
+    write_if_changed(&icon_path, include_bytes!("../icons/128x128@2x.png"))?;
+    let executable_path = executable.to_string_lossy();
+    let command = desktop_exec_quote(&executable_path);
+    let try_exec = desktop_entry_value(&executable_path);
+    let icon = desktop_entry_value(icon_path.to_string_lossy().as_ref());
     let content = format!(
-        "[Desktop Entry]\nType=Application\nVersion=1.0\nName=OpenKeylet\nComment=Local credential relay for AI agents\nExec={executable} gui\nTryExec={executable}\nIcon=openkeylet\nTerminal=false\nCategories=Utility;Security;\n"
+        "[Desktop Entry]\nType=Application\nVersion=1.0\nName=OpenKeylet\nComment=Local credential relay for AI agents\nExec=env GDK_BACKEND=wayland,x11 {command} gui\nTryExec={try_exec}\nIcon={icon}\nStartupWMClass=openkeylet\nTerminal=false\nCategories=Utility;Security;\n"
     );
-    fs::write(path, content)
+    write_if_changed(path, content.as_bytes())
         .with_context(|| format!("Could not write system entry:{}", path.display()))?;
     fs::set_permissions(path, fs::Permissions::from_mode(0o755))
         .with_context(|| format!("Could not set system entry permissions:{}", path.display()))
+}
+
+#[cfg(target_os = "linux")]
+fn write_if_changed(path: &Path, content: &[u8]) -> Result<()> {
+    if fs::read(path).is_ok_and(|current| current == content) {
+        return Ok(());
+    }
+    fs::write(path, content)
+        .with_context(|| format!("Could not write application resource:{}", path.display()))
+}
+
+#[cfg(target_os = "linux")]
+fn desktop_entry_value(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t")
 }
 
 #[cfg(target_os = "linux")]
@@ -326,6 +364,7 @@ fn desktop_exec_quote(value: &str) -> String {
             .replace('"', "\\\"")
             .replace('`', "\\`")
             .replace('$', "\\$")
+            .replace('%', "%%")
     )
 }
 
