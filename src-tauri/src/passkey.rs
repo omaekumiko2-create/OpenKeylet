@@ -27,7 +27,7 @@ pub struct StoredPasskey {
     pub created_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct PasskeySummary {
     pub credential_id: String,
@@ -104,9 +104,9 @@ pub fn rp_id(origin_text: &str, options: &Value, create: bool) -> Result<String>
             options
                 .get("pubKeyCredParams")
                 .and_then(Value::as_array)
-                .is_some_and(|a| a
-                    .iter()
-                    .any(|v| v["type"] == "public-key" && v["alg"] == -7)),
+                .is_some_and(|a| a.is_empty()
+                    || a.iter()
+                        .any(|v| v["type"] == "public-key" && v["alg"] == -7)),
             "This website does not support ES256 passkeys"
         );
         let user = decode(
@@ -227,10 +227,14 @@ pub fn create(
     let resident = options
         .pointer("/authenticatorSelection/residentKey")
         .and_then(Value::as_str);
-    let discoverable = matches!(resident, Some("required" | "preferred"))
-        || (resident.is_none()
-            && options.pointer("/authenticatorSelection/requireResidentKey")
-                == Some(&Value::Bool(true)));
+    let legacy_rk = options
+        .pointer("/authenticatorSelection/requireResidentKey")
+        .and_then(Value::as_bool);
+    let discoverable = match resident {
+        Some("discouraged") => false,
+        Some("required" | "preferred") => true,
+        _ => legacy_rk.unwrap_or(true),
+    };
     let stored = StoredPasskey {
         counter: 0,
         credential_id: B64.encode(id),
@@ -360,5 +364,33 @@ mod tests {
             "example.com",
             &json!({"allowCredentials":[{"type":"public-key","id":"wrong"}]})
         ));
+    }
+    #[test]
+    fn supports_empty_alg_list_default_discoverable_and_optional_extensions() {
+        let mut o = options();
+        o["pubKeyCredParams"] = json!([]);
+        o["authenticatorSelection"] = json!({});
+        o["extensions"] = json!({"credProps": true, "prf": {}, "largeBlob": {"support": "preferred"}});
+        let (key, registration) = create("https://github.com", &{
+            let mut o2 = o.clone();
+            o2["rp"]["id"] = json!("github.com");
+            o2
+        }, true).unwrap();
+        assert!(key.discoverable, "omitted residentKey defaults to discoverable");
+        assert_eq!(registration["clientExtensionResults"]["credProps"]["rk"], true);
+        let usernameless_get = json!({"challenge": B64.encode([9; 32]), "rpId": "github.com"});
+        assert!(matches_request(&key, "github.com", &usernameless_get));
+        assert!(get(&key, "https://github.com", &usernameless_get, false).is_ok());
+
+        let mut discouraged = o.clone();
+        discouraged["rp"]["id"] = json!("github.com");
+        discouraged["authenticatorSelection"]["residentKey"] = json!("discouraged");
+        let (non_disc, _) = create("https://github.com", &discouraged, false).unwrap();
+        assert!(!non_disc.discoverable);
+
+        let mut required_blob = o.clone();
+        required_blob["rp"]["id"] = json!("github.com");
+        required_blob["extensions"]["largeBlob"]["support"] = json!("required");
+        assert!(create("https://github.com", &required_blob, true).is_err());
     }
 }

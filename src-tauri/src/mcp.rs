@@ -313,10 +313,20 @@ impl VaultMcp {
                 if decrypted.stored.has_capability(&decrypted.secrets, "http") {
                     actions.push("http_send".to_owned());
                 }
+                if decrypted.stored.has_capability(&decrypted.secrets, "passkey") {
+                    actions.push("browser_passkey".to_owned());
+                }
+                let passkeys = decrypted
+                    .secrets
+                    .passkeys
+                    .iter()
+                    .map(crate::passkey::StoredPasskey::summary)
+                    .collect();
                 Ok(ItemOutput {
                     name: decrypted.stored.name,
                     modules,
                     actions,
+                    passkeys,
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -485,6 +495,188 @@ impl VaultMcp {
         let replacements = self.resolve_secret_bindings(connection, &bindings, &input.item)?;
         interpolate_http_input(input, &replacements)?;
         Ok(())
+    }
+
+    fn matching_items_for_website(&self, website: &str) -> Result<Vec<Value>, String> {
+        let host = crate::passkey::origin(website)
+            .ok()
+            .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
+            .unwrap_or_default();
+        let connections = self
+            .vault
+            .list_decrypted_connections()
+            .map_err(|error| error.to_string())?;
+        let mut matched = Vec::new();
+        for c in connections {
+            if !c.stored.enabled {
+                continue;
+            }
+            let url_match = website_matches_stored(&c.stored, website);
+            let passkey_match = !host.is_empty()
+                && c.secrets.passkeys.iter().any(|k| {
+                    k.rp_id == host || host.ends_with(&format!(".{}", k.rp_id))
+                });
+            if !url_match && !passkey_match {
+                continue;
+            }
+            matched.push(json!({
+                "name": c.stored.name,
+                "itemType": c.stored.item_type(),
+                "hasUsername": c.secrets.get("username").is_some(),
+                "hasPassword": c.secrets.get("password").is_some(),
+                "hasTotp": c.secrets.get("totp").is_some(),
+                "passkeyCount": c.secrets.passkeys.len(),
+                "passkeyRpIds": c.secrets.passkeys.iter().map(|k| k.rp_id.clone()).collect::<Vec<_>>(),
+            }));
+        }
+        Ok(matched)
+    }
+
+    fn resolve_login_item_for_website(
+        &self,
+        website: &str,
+    ) -> Result<DecryptedConnection, String> {
+        let mut matches = self
+            .vault
+            .list_decrypted_connections()
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .filter(|c| {
+                c.stored.enabled
+                    && website_matches_stored(&c.stored, website)
+                    && (c.secrets.get("password").is_some()
+                        || c.secrets.get("username").is_some()
+                        || c.secrets.get("totp").is_some())
+            })
+            .collect::<Vec<_>>();
+        match matches.len() {
+            0 => Err(format!(
+                "No enabled OpenKeylet login item matches {website}; pass item explicitly"
+            )),
+            1 => {
+                let connection = matches.remove(0);
+                self.bind_active_item(connection.stored.id);
+                Ok(connection)
+            }
+            _ => Err(format!(
+                "Multiple OpenKeylet logins match {website}: {}; specify item",
+                matches
+                    .iter()
+                    .map(|c| c.stored.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        }
+    }
+
+    fn resolve_personal_item(&self, query: &str) -> Result<DecryptedConnection, String> {
+        let connections = self
+            .vault
+            .list_decrypted_connections()
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .filter(|c| c.stored.enabled && matches!(c.stored.item_type(), "card" | "identity"))
+            .collect::<Vec<_>>();
+        let query = query.trim();
+        if query.is_empty() {
+            return match connections.len() {
+                0 => Err("No enabled card or identity item is available in OpenKeylet".to_owned()),
+                1 => Ok(connections.into_iter().next().expect("length checked")),
+                _ => Err(format!(
+                    "Multiple card/identity items are available: {}; specify item",
+                    connections
+                        .iter()
+                        .map(|c| c.stored.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )),
+            };
+        }
+        let mut matches = filter_connections_by_query(connections, query);
+        match matches.len() {
+            0 => Err(format!("No enabled card or identity item found: {query}")),
+            1 => Ok(matches.remove(0)),
+            _ => Err(format!(
+                "Multiple card/identity items match '{query}': {}; use a more complete name",
+                matches
+                    .iter()
+                    .map(|c| c.stored.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        }
+    }
+
+    fn resolve_passkey_for_request(
+        &self,
+        query: &str,
+        rp_id: &str,
+        options: &Value,
+    ) -> Result<(Uuid, String, String, String), String> {
+        let mut candidates = self
+            .vault
+            .list_decrypted_connections()
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .filter(|c| {
+                c.stored.enabled
+                    && c.secrets
+                        .passkeys
+                        .iter()
+                        .any(|k| crate::passkey::matches_request(k, rp_id, options))
+            })
+            .collect::<Vec<_>>();
+        let query = query.trim();
+        if !query.is_empty() {
+            candidates = filter_connections_by_query(candidates, query);
+        }
+        let mut matches = Vec::new();
+        for c in candidates {
+            for k in &c.secrets.passkeys {
+                if crate::passkey::matches_request(k, rp_id, options) {
+                    matches.push((
+                        c.stored.id,
+                        c.stored.name.clone(),
+                        k.credential_id.clone(),
+                        k.user_name.clone(),
+                    ));
+                }
+            }
+        }
+        match matches.len() {
+            0 => Err(format!(
+                "No enabled OpenKeylet passkey matches relying party '{rp_id}'"
+            )),
+            1 => {
+                let picked = matches.remove(0);
+                self.bind_active_item(picked.0);
+                Ok(picked)
+            }
+            _ => Err(format!(
+                "Multiple passkeys match '{rp_id}': {}; specify item",
+                matches
+                    .iter()
+                    .map(|(_, name, _, user)| format!("{name} ({user})"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        }
+    }
+}
+
+fn website_matches_stored(stored: &crate::model::StoredConnection, website: &str) -> bool {
+    if !stored.login_uris.is_empty() {
+        return stored
+            .login_uris
+            .iter()
+            .any(|rule| crate::login_uri::matches(rule, website));
+    }
+    match (
+        crate::passkey::origin(&stored.base_url),
+        crate::passkey::origin(website),
+    ) {
+        (Ok(a), Ok(b)) => a.origin() == b.origin(),
+        _ => false,
     }
 }
 
@@ -867,6 +1059,8 @@ struct ItemOutput {
     name: String,
     modules: Vec<ItemModuleOutput>,
     actions: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    passkeys: Vec<crate::passkey::PasskeySummary>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -1144,7 +1338,7 @@ fn transfer_file_name(path: &str, label: &str) -> Result<String, String> {
     Ok(name.to_owned())
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct CredentialFillInput {
     #[serde(default)]
@@ -1172,6 +1366,205 @@ struct CredentialFillInput {
         description = "Submit after filling. For terminal and desktop targets this presses Enter; for browser targets it submits the focused field's form when one exists. Defaults to false."
     )]
     submit: bool,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional CSS selector on the target browser page (browser target only). Allows filling without manual focus."
+    )]
+    selector: Option<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional human-readable input hint such as 'api key', 'otp', or 'password' (browser target only). Allows filling without manual focus."
+    )]
+    field_hint: Option<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional browser tab ID from browser_inspect (browser target only)."
+    )]
+    tab_id: Option<i64>,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional browser tab URL prefix or substring to target an open tab (browser target only)."
+    )]
+    url: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BrowserInspectInput {
+    #[serde(default)]
+    #[schemars(description = "Optional browser tab ID to inspect. Omit to inspect the active web tab.")]
+    tab_id: Option<i64>,
+    #[serde(default)]
+    #[schemars(description = "Optional URL prefix or substring to pick an open browser tab.")]
+    url: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BrowserFillLoginInput {
+    #[serde(default)]
+    #[schemars(
+        description = "Optional OpenKeylet item name. Omit to automatically match an enabled login item for the active browser tab's URL/origin."
+    )]
+    item: String,
+    #[serde(default)]
+    #[schemars(
+        description = "Also fill the current 6-digit TOTP code into any OTP/2FA input (supports single input or split 6-digit boxes). Defaults to false."
+    )]
+    include_totp: bool,
+    #[serde(default)]
+    #[schemars(description = "Submit the login form or click its sign-in/continue button after filling. Defaults to false.")]
+    submit: bool,
+    #[serde(default)]
+    #[schemars(description = "Optional browser tab ID from browser_inspect.")]
+    tab_id: Option<i64>,
+    #[serde(default)]
+    #[schemars(description = "Optional URL prefix or substring to select an open browser tab.")]
+    url: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BrowserFillPersonalInput {
+    #[serde(default)]
+    #[schemars(description = "OpenKeylet card or identity item name. Omit when only one enabled card/identity exists.")]
+    item: String,
+    #[serde(default)]
+    #[schemars(description = "Optional browser tab ID from browser_inspect.")]
+    tab_id: Option<i64>,
+    #[serde(default)]
+    #[schemars(description = "Optional URL prefix or substring to select an open browser tab.")]
+    url: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BrowserClickInput {
+    #[serde(default)]
+    #[schemars(description = "Optional CSS selector of the button or link to click.")]
+    selector: Option<String>,
+    #[serde(default)]
+    #[schemars(description = "Optional visible button or link text (case-insensitive match, e.g. 'Sign in with a passkey' or 'Next').")]
+    text: Option<String>,
+    #[serde(default)]
+    #[schemars(description = "Optional browser tab ID from browser_inspect.")]
+    tab_id: Option<i64>,
+    #[serde(default)]
+    #[schemars(description = "Optional URL prefix or substring to select an open browser tab.")]
+    url: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BrowserPasskeyInput {
+    #[serde(default)]
+    #[schemars(
+        description = "Optional OpenKeylet item name containing the passkey. For sign-in ('get'), omit to auto-select the matching enabled passkey for the website's rpId."
+    )]
+    item: String,
+    #[serde(default)]
+    #[schemars(description = "Optional WebAuthn operation filter: 'get' (sign in) or 'create' (register a new passkey). Omit to accept whichever operation the page invokes.")]
+    operation: Option<String>,
+    #[serde(default)]
+    #[schemars(description = "Optional pending passkey requestId returned by browser_inspect.")]
+    request_id: Option<String>,
+    #[serde(default)]
+    #[schemars(description = "Optional CSS selector of the webpage button that triggers WebAuthn (armed before clicking to avoid race conditions).")]
+    trigger_selector: Option<String>,
+    #[serde(default)]
+    #[schemars(description = "Optional visible text of the webpage button that triggers WebAuthn (e.g. 'Sign in with passkey'). Armed before clicking.")]
+    trigger_text: Option<String>,
+    #[serde(default)]
+    #[schemars(description = "Optional browser tab ID from browser_inspect.")]
+    tab_id: Option<i64>,
+    #[serde(default)]
+    #[schemars(description = "Optional URL prefix or substring to select an open browser tab.")]
+    url: Option<String>,
+    #[serde(default)]
+    #[schemars(description = "Optional timeout in seconds (1–25) to wait for the webpage to invoke navigator.credentials.get/create. Defaults to 15.")]
+    wait_seconds: Option<u64>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+struct BrowserLoginOutput {
+    item: String,
+    filled_fields: Vec<String>,
+    submitted: bool,
+    url: String,
+    origin: String,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+struct BrowserPersonalOutput {
+    item: String,
+    item_type: String,
+    filled: u64,
+    url: String,
+    origin: String,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+struct BrowserClickOutput {
+    clicked_text: String,
+    tag: String,
+    url: String,
+    origin: String,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+struct BrowserPasskeyOutput {
+    operation: String,
+    rp_id: String,
+    origin: String,
+    item_name: String,
+    user_name: String,
+    credential_id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SecretWriteFileInput {
+    #[serde(default)]
+    #[schemars(
+        description = "Optional OpenKeylet project name, or an unambiguous natural-language phrase containing it. Omit it after this MCP session selected a compatible project, or when exactly one enabled project contains usable secrets."
+    )]
+    item: String,
+    #[schemars(
+        description = "Destination local file path (absolute, ~/ or MCP working-directory-relative). Parent directories are created automatically. Cannot target files inside OpenKeylet's own vault data directory."
+    )]
+    path: String,
+    #[schemars(
+        description = "Template text to write, referencing hidden modules as {{openkeylet:password}}, {{openkeylet:apiCredential}}, or {{openkeylet:module name}}. OpenKeylet substitutes secrets locally without returning plaintext."
+    )]
+    content: String,
+    #[serde(default = "default_true")]
+    #[schemars(
+        description = "Replace an existing destination file when append is false. Defaults to true."
+    )]
+    overwrite: bool,
+    #[serde(default)]
+    #[schemars(
+        description = "Append rendered content to the end of the file instead of replacing it. Defaults to false."
+    )]
+    append: bool,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional aliases mapping short placeholder names to secret modules in item."
+    )]
+    secret_bindings: HashMap<String, String>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+struct SecretWriteFileOutput {
+    path: String,
+    bytes_written: usize,
+    modules_used: Vec<String>,
+    appended: bool,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1352,10 +1745,14 @@ impl VaultMcp {
                 self.resolve_item_for_action(&input.item, Some("fill"))?
             };
             let item_id = connection.stored.id;
+            let browser_enabled = self
+                .vault
+                .settings()
+                .is_ok_and(|settings| settings.browser_enabled);
             let target = match requested_target.as_str() {
                 "" | "auto" | "default" if terminal_session_id.is_some() => "terminal".to_owned(),
                 "" | "auto" | "default" => {
-                    if self.browser.fill_configured() {
+                    if browser_enabled || self.browser.fill_configured() {
                         "browser".to_owned()
                     } else {
                         "desktop".to_owned()
@@ -1390,15 +1787,62 @@ impl VaultMcp {
                         }
                         match target.as_str() {
                             "browser" => {
-                                let browser_failure =
+                                let has_target_locator = input
+                                    .selector
+                                    .as_deref()
+                                    .is_some_and(|v| !v.trim().is_empty())
+                                    || input
+                                        .field_hint
+                                        .as_deref()
+                                        .is_some_and(|v| !v.trim().is_empty())
+                                    || input.tab_id.is_some()
+                                    || input.url.as_deref().is_some_and(|v| !v.trim().is_empty());
+                                let browser_attempt = if has_target_locator {
+                                    self.browser
+                                        .fill_field(
+                                            value.clone(),
+                                            submit,
+                                            json!({
+                                                "selector": input.selector,
+                                                "fieldHint": input.field_hint,
+                                                "moduleKind": kind,
+                                                "tabId": input.tab_id,
+                                                "url": input.url,
+                                            }),
+                                        )
+                                        .await
+                                } else {
                                     match self.browser.fill_value(value.clone(), submit).await {
-                                        Ok(result) if result.status == "ok" => {
-                                            return Ok("browser".to_owned());
+                                        Ok(result) if result.status == "ok" => Ok(result),
+                                        Err(error)
+                                            if error
+                                                .to_string()
+                                                .to_ascii_lowercase()
+                                                .contains("no focused input control") =>
+                                        {
+                                            self.browser
+                                                .fill_field(
+                                                    value.clone(),
+                                                    submit,
+                                                    json!({
+                                                        "moduleKind": kind,
+                                                    }),
+                                                )
+                                                .await
                                         }
-                                        Ok(result) => result.message,
-                                        Err(error) => error.to_string(),
-                                    };
-                                if !automatic_target {
+                                        other => other,
+                                    }
+                                };
+                                let browser_failure = match browser_attempt {
+                                    Ok(result) if result.status == "ok" => {
+                                        return Ok("browser".to_owned());
+                                    }
+                                    Ok(result) => result.message,
+                                    Err(error) => error.to_string(),
+                                };
+                                // Fail closed when Browser Bridge is enabled so we never blind-type
+                                // secrets into an unintended OS foreground window.
+                                if !automatic_target || has_target_locator || browser_enabled {
                                     bail!("{browser_failure}");
                                 }
                                 tokio::task::spawn_blocking(move || {
@@ -1997,6 +2441,531 @@ impl VaultMcp {
         .await;
         into_tool_result(result)
     }
+
+    #[tool(
+        name = "browser_inspect",
+        description = "Inspect the active (or specified) webpage through the paired OpenKeylet browser extension without exposing any input values or secrets. Returns open web tabs, detected login/OTP forms, visible fillable fields (metadata only), clickable buttons (including Passkey/Sign-in triggers), pending WebAuthn Passkey prompts, and matching enabled OpenKeylet vault items for that website.",
+        annotations(title = "Inspect browser page", read_only_hint = true, destructive_hint = false, idempotent_hint = true, open_world_hint = true)
+    )]
+    async fn browser_inspect(
+        &self,
+        Parameters(input): Parameters<BrowserInspectInput>,
+    ) -> CallToolResult {
+        let result: Result<Value, String> = async {
+            let mut inspected = self
+                .browser
+                .inspect_page(input.tab_id, input.url.as_deref())
+                .await
+                .map_err(|error| error.to_string())?;
+            let page_url = inspected["url"].as_str().unwrap_or_default().to_owned();
+            let matching_items = if !page_url.is_empty() {
+                self.matching_items_for_website(&page_url)?
+            } else {
+                Vec::new()
+            };
+            if let Some(object) = inspected.as_object_mut() {
+                object.insert("matchingItems".to_owned(), Value::Array(matching_items));
+            }
+            Ok(inspected)
+        }
+        .await;
+        into_tool_result(result)
+    }
+
+    #[tool(
+        name = "browser_fill_login",
+        description = "Fill username, password, and optionally the live TOTP verification code directly into a website login form through the paired OpenKeylet browser extension without manual focus or returning plaintext. Supports single-step login, two-step username/password pages, and single or split-box 2FA/OTP inputs. Omit item to automatically match the single enabled login saved for the active tab's URL/origin. Set submit=true to submit the form or click its sign-in/continue button.",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<BrowserLoginOutput>(),
+        annotations(title = "Fill browser login form", read_only_hint = false, destructive_hint = false, idempotent_hint = false, open_world_hint = true)
+    )]
+    async fn browser_fill_login(
+        &self,
+        Parameters(input): Parameters<BrowserFillLoginInput>,
+    ) -> CallToolResult {
+        let result: Result<BrowserLoginOutput, String> = async {
+            let inspected = self
+                .browser
+                .inspect_page(input.tab_id, input.url.as_deref())
+                .await
+                .map_err(|error| error.to_string())?;
+            let page_url = inspected["url"]
+                .as_str()
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| "No active HTTP/HTTPS browser tab to fill login credentials".to_owned())?
+                .to_owned();
+            let page_origin = inspected["origin"]
+                .as_str()
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| "Active browser tab has no valid web origin".to_owned())?
+                .to_owned();
+            let connection = if input.item.trim().is_empty() {
+                self.resolve_login_item_for_website(&page_url)?
+            } else {
+                let candidate = self.resolve_item_for_action(&input.item, Some("fill"))?;
+                let has_website_binding = !candidate.stored.login_uris.is_empty()
+                    || !candidate.stored.base_url.trim().is_empty();
+                if has_website_binding && !website_matches_stored(&candidate.stored, &page_url) {
+                    return Err(format!(
+                        "Refused to fill login for '{}': active page ({page_url}) does not match this item's saved website rules",
+                        candidate.stored.name
+                    ));
+                }
+                candidate
+            };
+            let item_id = connection.stored.id;
+            let item_name = connection.stored.name.clone();
+            let username = connection
+                .secrets
+                .get("username")
+                .map(str::to_owned)
+                .unwrap_or_default();
+            let password = connection
+                .secrets
+                .get("password")
+                .map(str::to_owned)
+                .unwrap_or_default();
+            let totp = if input.include_totp {
+                if let Some(secret) = connection.secrets.get("totp") {
+                    current_totp(secret).map_err(|error| error.to_string())?
+                } else {
+                    String::new()
+                }
+            } else {
+                String::new()
+            };
+            if username.is_empty() && password.is_empty() && totp.is_empty() {
+                return Err(format!(
+                    "Item '{item_name}' has no username, password, or TOTP configured to fill"
+                ));
+            }
+            let payload = json!({
+                "username": username,
+                "password": password,
+                "totp": totp,
+                "submit": input.submit,
+                "tabId": input.tab_id,
+                "url": input.url,
+                "expectedOrigin": page_origin,
+            });
+            let data = self
+                .track(item_id, "Fill browser login form".to_owned(), async {
+                    let response = self.browser.fill_login(payload).await?;
+                    if response.status != "ok" {
+                        bail!("{}", response.message);
+                    }
+                    Ok(response.data.unwrap_or_else(|| json!({})))
+                })
+                .await?;
+            let filled_fields = data["filledFields"]
+                .as_array()
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default();
+            Ok(BrowserLoginOutput {
+                item: item_name,
+                filled_fields,
+                submitted: data["submitted"].as_bool().unwrap_or(false),
+                url: data["url"].as_str().unwrap_or_default().to_owned(),
+                origin: data["origin"].as_str().unwrap_or_default().to_owned(),
+            })
+        }
+        .await;
+        into_tool_result(result)
+    }
+
+    #[tool(
+        name = "browser_fill_personal",
+        description = "Autofill a saved payment card or contact/billing identity item into the active HTTPS (or localhost) browser page through the paired OpenKeylet browser extension without revealing card numbers, security codes, or personal details to the model. Government ID numbers are never autofilled.",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<BrowserPersonalOutput>(),
+        annotations(title = "Fill browser card or identity", read_only_hint = false, destructive_hint = false, idempotent_hint = false, open_world_hint = true)
+    )]
+    async fn browser_fill_personal(
+        &self,
+        Parameters(input): Parameters<BrowserFillPersonalInput>,
+    ) -> CallToolResult {
+        let result: Result<BrowserPersonalOutput, String> = async {
+            let connection = self.resolve_personal_item(&input.item)?;
+            let item_id = connection.stored.id;
+            let item_name = connection.stored.name.clone();
+            let item_type = connection.stored.item_type().to_owned();
+            let field_names: &[&str] = match item_type.as_str() {
+                "card" => crate::item_types::CARD_FIELDS,
+                "identity" => crate::item_types::IDENTITY_FIELDS,
+                _ => return Err("Only card and identity items can be autofilled".to_owned()),
+            };
+            let mut fields = serde_json::Map::new();
+            for name in field_names {
+                if matches!(*name, "passportNumber" | "licenseNumber" | "nationalId") {
+                    continue;
+                }
+                if let Some(value) = connection.secrets.get(name) {
+                    fields.insert((*name).to_owned(), Value::String(value.to_owned()));
+                }
+            }
+            let payload = json!({
+                "itemType": item_type,
+                "fields": fields,
+                "tabId": input.tab_id,
+                "url": input.url,
+            });
+            let data = self
+                .track(
+                    item_id,
+                    format!("Fill browser {item_type} form"),
+                    async {
+                        let response = self.browser.fill_personal(payload).await?;
+                        if response.status != "ok" {
+                            bail!("{}", response.message);
+                        }
+                        Ok(response.data.unwrap_or_else(|| json!({})))
+                    },
+                )
+                .await?;
+            Ok(BrowserPersonalOutput {
+                item: item_name,
+                item_type,
+                filled: data["filled"].as_u64().unwrap_or(0),
+                url: data["url"].as_str().unwrap_or_default().to_owned(),
+                origin: data["origin"].as_str().unwrap_or_default().to_owned(),
+            })
+        }
+        .await;
+        into_tool_result(result)
+    }
+
+    #[tool(
+        name = "browser_click",
+        description = "Click a visible button or link on the active (or specified) browser tab via the paired OpenKeylet extension, matched by CSS selector or visible text (e.g. 'Continue', 'Next', 'Sign in with a passkey').",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<BrowserClickOutput>(),
+        annotations(title = "Click browser button", read_only_hint = false, destructive_hint = false, idempotent_hint = false, open_world_hint = true)
+    )]
+    async fn browser_click(
+        &self,
+        Parameters(input): Parameters<BrowserClickInput>,
+    ) -> CallToolResult {
+        let result: Result<BrowserClickOutput, String> = async {
+            let response = self
+                .browser
+                .click(json!({
+                    "selector": input.selector,
+                    "text": input.text,
+                    "tabId": input.tab_id,
+                    "url": input.url,
+                }))
+                .await
+                .map_err(|error| error.to_string())?;
+            if response.status != "ok" {
+                return Err(response.message);
+            }
+            let data = response.data.unwrap_or_else(|| json!({}));
+            Ok(BrowserClickOutput {
+                clicked_text: data["clickedText"].as_str().unwrap_or_default().to_owned(),
+                tag: data["tag"].as_str().unwrap_or_default().to_owned(),
+                url: data["url"].as_str().unwrap_or_default().to_owned(),
+                origin: data["origin"].as_str().unwrap_or_default().to_owned(),
+            })
+        }
+        .await;
+        into_tool_result(result)
+    }
+
+    #[tool(
+        name = "browser_passkey",
+        description = "Complete a WebAuthn Passkey sign-in ('get') or registration ('create') directly in the browser through the paired OpenKeylet extension and local hardware-free ES256 authenticator without exposing any private key. Pass triggerText or triggerSelector to atomically arm the interceptor and click the page's Passkey button in one call, or omit them to complete an already-pending WebAuthn prompt (discovered via browser_inspect). Requires Browser Bridge enabled, paired, and 'Agent Passkey signing' enabled in Settings.",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<BrowserPasskeyOutput>(),
+        annotations(title = "Complete browser Passkey", read_only_hint = false, destructive_hint = false, idempotent_hint = false, open_world_hint = true)
+    )]
+    async fn browser_passkey(
+        &self,
+        Parameters(input): Parameters<BrowserPasskeyInput>,
+    ) -> CallToolResult {
+        let result: Result<BrowserPasskeyOutput, String> = async {
+            let settings = self.vault.settings().map_err(|error| error.to_string())?;
+            if !settings.browser_enabled {
+                return Err("Browser Bridge is not enabled in OpenKeylet Settings".to_owned());
+            }
+            if !settings.browser_paired {
+                return Err("Chromium extension has not been paired".to_owned());
+            }
+            if !settings.browser_agent_passkey {
+                return Err("Agent Passkey signing is disabled in OpenKeylet Settings → Browser Bridge".to_owned());
+            }
+            if let Some(op) = input.operation.as_deref().map(str::trim).filter(|v| !v.is_empty())
+                && !matches!(op, "get" | "create")
+            {
+                return Err("operation must be 'get' or 'create'".to_owned());
+            }
+            let wait_ms = input
+                .wait_seconds
+                .map(|secs| secs.clamp(1, 25) * 1000)
+                .unwrap_or(15_000);
+            let captured = self
+                .browser
+                .passkey_capture(json!({
+                    "requestId": input.request_id,
+                    "operation": input.operation,
+                    "triggerSelector": input.trigger_selector,
+                    "triggerText": input.trigger_text,
+                    "tabId": input.tab_id,
+                    "url": input.url,
+                    "waitMs": wait_ms,
+                }))
+                .await
+                .map_err(|error| error.to_string())?;
+
+            let request_id = captured["requestId"]
+                .as_str()
+                .ok_or_else(|| "Extension did not return a passkey requestId".to_owned())?
+                .to_owned();
+            let origin = captured["origin"]
+                .as_str()
+                .ok_or_else(|| "Extension did not return the passkey origin".to_owned())?
+                .to_owned();
+            let operation = captured["operation"]
+                .as_str()
+                .ok_or_else(|| "Extension did not return the passkey operation".to_owned())?
+                .to_owned();
+            let options = captured["options"].clone();
+
+            let signed: Result<(Value, BrowserPasskeyOutput), String> = async {
+                let is_create = operation == "create";
+                let rp_id = crate::passkey::rp_id(&origin, &options, is_create)
+                    .map_err(|error| error.to_string())?;
+                if is_create {
+                    let started = Instant::now();
+                    let (key, response) = crate::passkey::create(&origin, &options, true)
+                        .map_err(|error| error.to_string())?;
+                    let item_name = format!("{} · {} · Passkey", key.rp_id, key.user_name);
+                    let user_name = key.user_name.clone();
+                    let credential_id = key.credential_id.clone();
+                    let store_result = self
+                        .vault
+                        .store_browser_passkey(&origin, key, &options);
+                    let _ = self.vault.add_activity(NewActivity {
+                        status: if store_result.is_ok() { "success" } else { "error" }.to_owned(),
+                        source: self.activity_source(),
+                        connection_name: item_name.clone(),
+                        action: format!("Passkey registration ({rp_id})"),
+                        duration_ms: started.elapsed().as_millis() as u64,
+                        error: store_result
+                            .as_ref()
+                            .err()
+                            .map(ToString::to_string)
+                            .unwrap_or_default(),
+                    });
+                    store_result.map_err(|error| error.to_string())?;
+                    Ok((
+                        response,
+                        BrowserPasskeyOutput {
+                            operation,
+                            rp_id,
+                            origin: origin.clone(),
+                            item_name,
+                            user_name,
+                            credential_id,
+                        },
+                    ))
+                } else {
+                    let (item_id, item_name, credential_id, user_name) =
+                        self.resolve_passkey_for_request(&input.item, &rp_id, &options)?;
+                    let response = self
+                        .track(
+                            item_id,
+                            format!("Passkey sign-in ({rp_id})"),
+                            async {
+                                self.vault.assert_browser_passkey(
+                                    item_id,
+                                    &credential_id,
+                                    &origin,
+                                    &options,
+                                    true,
+                                )
+                            },
+                        )
+                        .await?;
+                    Ok((
+                        response,
+                        BrowserPasskeyOutput {
+                            operation,
+                            rp_id,
+                            origin: origin.clone(),
+                            item_name,
+                            user_name,
+                            credential_id,
+                        },
+                    ))
+                }
+            }
+            .await;
+
+            match signed {
+                Ok((credential, output)) => {
+                    let resolved = self
+                        .browser
+                        .passkey_resolve(json!({
+                            "requestId": request_id,
+                            "credential": credential,
+                        }))
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    if resolved.status != "ok" {
+                        return Err(resolved.message);
+                    }
+                    Ok(output)
+                }
+                Err(error) => {
+                    let name = if error.starts_with("InvalidStateError:") {
+                        "InvalidStateError"
+                    } else {
+                        "NotAllowedError"
+                    };
+                    let _ = self
+                        .browser
+                        .passkey_resolve(json!({
+                            "requestId": request_id,
+                            "error": error,
+                            "name": name,
+                        }))
+                        .await;
+                    Err(error)
+                }
+            }
+        }
+        .await;
+        into_tool_result(result)
+    }
+
+    #[tool(
+        name = "secret_write_file",
+        description = "Write or append a local configuration file (such as .env, config.toml, or credentials JSON) using {{openkeylet:module}} placeholders without exposing hidden plaintext to the model. OpenKeylet substitutes secrets locally, writes atomically with restricted file permissions (0600 on Unix), refuses writes inside its own vault directory, and records an audit entry.",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<SecretWriteFileOutput>(),
+        annotations(title = "Write secret config file", read_only_hint = false, destructive_hint = true, idempotent_hint = false, open_world_hint = false)
+    )]
+    async fn secret_write_file(
+        &self,
+        Parameters(input): Parameters<SecretWriteFileInput>,
+    ) -> CallToolResult {
+        let result: Result<SecretWriteFileOutput, String> = async {
+            let mut placeholder_names = HashSet::new();
+            collect_secret_placeholders_text(&input.content, &mut placeholder_names)?;
+            if placeholder_names.is_empty() {
+                return Err("content must reference at least one {{openkeylet:module}} placeholder".to_owned());
+            }
+            let target_path = crate::storage::resolve_user_path(&input.path)
+                .map_err(|error| error.to_string())?;
+            let vault_dir = self.vault.data_dir();
+            if path_inside_directory(&target_path, vault_dir) {
+                return Err("Refused to write inside OpenKeylet's own vault data directory".to_owned());
+            }
+            if !input.append && !input.overwrite && target_path.exists() {
+                return Err(format!(
+                    "Destination file already exists and overwrite is false: {}",
+                    target_path.display()
+                ));
+            }
+            let mut bindings = input.secret_bindings.clone();
+            for name in &placeholder_names {
+                bindings.entry(name.clone()).or_insert_with(|| name.clone());
+            }
+            let mut connection = self.resolve_item_for_action(&input.item, Some("fill"))?;
+            let item_id = connection.stored.id;
+            let replacements =
+                self.resolve_secret_bindings(&mut connection, &bindings, &input.item)?;
+            let mut used = HashSet::new();
+            let rendered = zeroize::Zeroizing::new(interpolate_http_text(
+                &input.content,
+                &replacements,
+                &mut used,
+            )?);
+            let mut modules_used: Vec<String> = used.into_iter().collect();
+            modules_used.sort();
+            let display_path = target_path.to_string_lossy().into_owned();
+            let append = input.append;
+            let bytes_written = self
+                .track(
+                    item_id,
+                    format!("Write secret config file ({})", target_path.file_name().and_then(|n| n.to_str()).unwrap_or("file")),
+                    async {
+                        if let Some(parent) = target_path.parent()
+                            && !parent.as_os_str().is_empty()
+                        {
+                            std::fs::create_dir_all(parent)
+                                .context("Unable to create parent directory")?;
+                        }
+                        let mut final_bytes = zeroize::Zeroizing::new(Vec::new());
+                        if append && target_path.exists() {
+                            final_bytes.extend_from_slice(
+                                &std::fs::read(&target_path)
+                                    .context("Unable to read existing file for append")?,
+                            );
+                        }
+                        final_bytes.extend_from_slice(rendered.as_bytes());
+                        let mut writer = atomic_write_file::AtomicWriteFile::open(&target_path)
+                            .context("Unable to create temporary file")?;
+                        std::io::Write::write_all(&mut writer, &final_bytes)
+                            .context("Unable to write rendered file")?;
+                        writer
+                            .commit()
+                            .context("Unable to save file atomically")?;
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            let _ = std::fs::set_permissions(
+                                &target_path,
+                                std::fs::Permissions::from_mode(0o600),
+                            );
+                        }
+                        Ok(rendered.len())
+                    },
+                )
+                .await?;
+            Ok(SecretWriteFileOutput {
+                path: display_path,
+                bytes_written,
+                modules_used,
+                appended: append,
+            })
+        }
+        .await;
+        into_tool_result(result)
+    }
+}
+
+fn path_inside_directory(path: &Path, directory: &Path) -> bool {
+    fn canonicalize_best(candidate: &Path) -> std::path::PathBuf {
+        let mut tail = Vec::new();
+        let mut current = candidate;
+        loop {
+            if let Ok(resolved) = current.canonicalize() {
+                let mut full = resolved;
+                for part in tail.into_iter().rev() {
+                    full.push(part);
+                }
+                return full;
+            }
+            let Some(name) = current.file_name() else {
+                return candidate.to_path_buf();
+            };
+            tail.push(name.to_os_string());
+            let Some(parent) = current.parent() else {
+                return candidate.to_path_buf();
+            };
+            current = parent;
+        }
+    }
+    let dir = canonicalize_best(directory);
+    let mut current = Some(canonicalize_best(path));
+    while let Some(candidate) = current {
+        if candidate == dir {
+            return true;
+        }
+        current = candidate.parent().map(Path::to_path_buf);
+    }
+    false
 }
 
 #[tool_handler(router = self.tool_router)]
@@ -2005,7 +2974,7 @@ impl ServerHandler for VaultMcp {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("openkeylet", env!("CARGO_PKG_VERSION")).with_title("OpenKeylet"))
             .with_instructions(
-            "OpenKeylet lets agents use locally saved credentials without receiving hidden plaintext. An explicit item or unique items_search result becomes the current project; later compatible actions may omit item, and a terminal keeps its own binding. When the user names a project and the action is clear, call it directly. Use items_search only for discovery, selection, inspection, or genuine ambiguity. credential_fill understands common module phrases and may infer a sole secret; omit target to use the current running OpenKeylet terminal, otherwise a connected browser or foreground control, and use submit=true to complete the login. terminal_start makes the opened PTY current, so terminal_write, terminal_read, terminal_stop, and terminal credential fills should omit sessionId unless deliberately switching among multiple terminals. Use terminal_run for one-shot local commands and PTY tools only for persistent interaction. Direct {{openkeylet:module}} placeholders work in commands, stdin, paths, terminal input, SSH, and HTTP values; OpenKeylet substitutes and redacts them locally. terminal_run.stdin and ssh_run.stdin pass scripts, JSON, or other text without shell escaping or temporary files. A password or private-key project can use SSH without saved target metadata: pass host, optional port, and username at runtime; saved values are defaults and port 22 is the fallback. Use secretEnv only when a program needs an environment variable, and HTTP secretBindings only for aliases. Never ask the user to reveal a hidden value. terminal_read.until waits without polling and has no deadline unless waitSeconds is supplied. OpenKeylet has no observation, diagnostic, restricted, or execution modes.",
+            "OpenKeylet lets agents use locally saved credentials without receiving hidden plaintext. An explicit item or unique items_search result becomes the current project; later compatible actions may omit item, and a terminal keeps its own binding. When the user names a project and the action is clear, call it directly. Use items_search only for discovery, selection, inspection, or genuine ambiguity. For websites open in a browser with the paired OpenKeylet extension: use browser_inspect to view open tabs, forms, visible field/button metadata, pending WebAuthn Passkey prompts, and matching vault items (zero plaintext); use browser_fill_login to fill username, password, and optional TOTP (including split-box OTPs) without manual focus; use browser_passkey to sign in or register WebAuthn Passkeys (pass triggerText or triggerSelector to atomically arm and click the page's Passkey button, or omit to complete an already-pending prompt); use browser_fill_personal for cards/identities on HTTPS/localhost; use browser_click to click sign-in/continue buttons. credential_fill also accepts browser selector/fieldHint/tabId/url or falls back to focused controls. terminal_start makes the opened PTY current, so terminal_write, terminal_read, terminal_stop, and terminal credential fills should omit sessionId unless deliberately switching among multiple terminals. Use terminal_run for one-shot local commands and PTY tools only for persistent interaction. Direct {{openkeylet:module}} placeholders work in commands, stdin, paths, terminal input, SSH, and HTTP values; OpenKeylet substitutes and redacts them locally. Never ask the user to reveal a hidden value.",
         )
     }
 
@@ -2033,6 +3002,10 @@ fn display_client_name(raw_name: &str) -> String {
         "CURSOR".to_owned()
     } else if normalized.contains("opencode") {
         "OPENCODE".to_owned()
+    } else if normalized.contains("antigravity") || normalized == "agy" {
+        "ANTIGRAVITY".to_owned()
+    } else if normalized.contains("deepseek") || normalized == "dsh" {
+        "DEEPSEEK HARNESS".to_owned()
     } else if normalized.contains("chatgpt") {
         "CHATGPT".to_owned()
     } else {
@@ -2817,6 +3790,7 @@ mod tests {
                 target: String::new(),
                 session_id: None,
                 submit: false,
+                ..Default::default()
             }))
             .await;
         let filled = structured_value(&output);
@@ -2896,6 +3870,7 @@ mod tests {
                 target: "PTY".into(),
                 session_id: Some(terminal.session_id.to_string()),
                 submit: false,
+                ..Default::default()
             }))
             .await;
         let filled = structured_value(&output);
@@ -3390,5 +4365,203 @@ mod tests {
             .await;
         assert_eq!(result.is_error, Some(true));
         assert!(result.structured_content.is_none());
+    }
+
+    #[tokio::test]
+    async fn passkey_items_appear_in_items_search_and_respect_agent_passkey_setting() {
+        let directory = tempdir().unwrap();
+        let vault = Vault::open(directory.path().join("vault")).unwrap();
+        let options = json!({
+            "challenge": "KioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKio",
+            "rp": { "id": "example.com", "name": "Example" },
+            "user": { "id": "AQID", "name": "alice", "displayName": "Alice" },
+            "pubKeyCredParams": [{ "type": "public-key", "alg": -7 }],
+            "authenticatorSelection": { "residentKey": "required", "userVerification": "required" }
+        });
+        let (key, _) = crate::passkey::create("https://example.com", &options, true).unwrap();
+        vault
+            .store_browser_passkey("https://example.com", key, &options)
+            .unwrap();
+
+        let mcp = VaultMcp::new(vault.clone());
+        let listed = mcp
+            .search_items(ItemsSearchInput {
+                query: Some("example.com".into()),
+            })
+            .unwrap();
+        assert_eq!(listed.items.len(), 1);
+        assert!(listed.items[0].actions.contains(&"browser_passkey".to_owned()));
+        assert_eq!(listed.items[0].passkeys.len(), 1);
+        assert_eq!(listed.items[0].passkeys[0].rp_id, "example.com");
+
+        vault
+            .update_settings_patch(crate::model::SettingsPatch {
+                browser_enabled: Some(true),
+                browser_agent_passkey: Some(false),
+                ..Default::default()
+            })
+            .unwrap();
+        vault.set_browser_paired(true).unwrap();
+
+        let denied = mcp
+            .browser_passkey(Parameters(BrowserPasskeyInput {
+                item: String::new(),
+                operation: Some("get".into()),
+                request_id: None,
+                trigger_selector: None,
+                trigger_text: None,
+                tab_id: None,
+                url: None,
+                wait_seconds: None,
+            }))
+            .await;
+        assert_eq!(denied.is_error, Some(true));
+        let text = serde_json::to_string(&denied.content).unwrap();
+        assert!(text.contains("Agent Passkey signing is disabled"));
+    }
+
+    #[test]
+    fn display_client_name_recognizes_antigravity_and_deepseek_harness() {
+        assert_eq!(display_client_name("Antigravity"), "ANTIGRAVITY");
+        assert_eq!(display_client_name("agy"), "ANTIGRAVITY");
+        assert_eq!(display_client_name("DeepSeek Harness"), "DEEPSEEK HARNESS");
+        assert_eq!(display_client_name("dsh"), "DEEPSEEK HARNESS");
+    }
+
+    #[tokio::test]
+    async fn secret_write_file_renders_placeholders_without_exposing_plaintext() {
+        let directory = tempdir().unwrap();
+        let vault_dir = directory.path().join("vault");
+        let vault = Vault::open(vault_dir.clone()).unwrap();
+        let mut secrets = SecretBundle::default();
+        secrets
+            .named_secrets
+            .insert("apiCredential".into(), "sk-config-secret-9988".into());
+        vault
+            .save_connection(ConnectionInput {
+                login_uris: Vec::new(),
+                item_type: "api".into(),
+                folder: String::new(),
+                favorite: false,
+                id: None,
+                modules: vec![ItemModule {
+                    kind: "apiCredential".into(),
+                    name: String::new(),
+                    value: String::new(),
+                    agent_visible: Some(false),
+                }],
+                name: "Himalaya Mail".into(),
+                enabled: true,
+                description: String::new(),
+                http_auth_type: String::new(),
+                private_key_import_path: String::new(),
+                auth_header: String::new(),
+                auth_location: String::new(),
+                auth_prefix: String::new(),
+                api_auth_headers: vec![],
+                test_path: String::new(),
+                remove_secret_names: vec![],
+                secrets,
+            })
+            .unwrap();
+
+        let mcp = VaultMcp::new(vault.clone());
+        let out_file = directory.path().join("configs/.env");
+        let created = mcp
+            .secret_write_file(Parameters(SecretWriteFileInput {
+                item: "Himalaya Mail".into(),
+                path: out_file.to_string_lossy().into_owned(),
+                content: "TOKEN={{openkeylet:apiCredential}}\n".into(),
+                overwrite: true,
+                append: false,
+                secret_bindings: HashMap::new(),
+            }))
+            .await;
+        let payload = structured_value(&created);
+        assert!(!serde_json::to_string(&payload).unwrap().contains("sk-config-secret-9988"));
+        assert_eq!(payload["modulesUsed"], json!(["apiCredential"]));
+        assert_eq!(
+            std::fs::read_to_string(&out_file).unwrap(),
+            "TOKEN=sk-config-secret-9988\n"
+        );
+
+        // overwrite=false refuses to clobber existing file
+        let blocked = mcp
+            .secret_write_file(Parameters(SecretWriteFileInput {
+                item: "Himalaya Mail".into(),
+                path: out_file.to_string_lossy().into_owned(),
+                content: "OTHER={{openkeylet:apiCredential}}\n".into(),
+                overwrite: false,
+                append: false,
+                secret_bindings: HashMap::new(),
+            }))
+            .await;
+        assert_eq!(blocked.is_error, Some(true));
+
+        // Refuses writing inside OpenKeylet's own vault data directory
+        let vault_attack = mcp
+            .secret_write_file(Parameters(SecretWriteFileInput {
+                item: "Himalaya Mail".into(),
+                path: vault_dir.join("injected.txt").to_string_lossy().into_owned(),
+                content: "X={{openkeylet:apiCredential}}".into(),
+                overwrite: true,
+                append: false,
+                secret_bindings: HashMap::new(),
+            }))
+            .await;
+        assert_eq!(vault_attack.is_error, Some(true));
+        assert!(!vault_dir.join("injected.txt").exists());
+
+        // Missing placeholder secret fails cleanly without creating target file
+        let missing_file = directory.path().join("configs/missing.env");
+        let missing_res = mcp
+            .secret_write_file(Parameters(SecretWriteFileInput {
+                item: "Himalaya Mail".into(),
+                path: missing_file.to_string_lossy().into_owned(),
+                content: "NOPE={{openkeylet:nonExistentField}}\n".into(),
+                overwrite: true,
+                append: false,
+                secret_bindings: HashMap::new(),
+            }))
+            .await;
+        assert_eq!(missing_res.is_error, Some(true));
+        assert!(!missing_file.exists(), "Failed render must not create partial file");
+
+        // Disabled item is blocked from secret_write_file
+        let item = vault.list_connections().unwrap().remove(0);
+        vault.set_connection_enabled(item.id, false).unwrap();
+        let disabled_res = mcp
+            .secret_write_file(Parameters(SecretWriteFileInput {
+                item: "Himalaya Mail".into(),
+                path: missing_file.to_string_lossy().into_owned(),
+                content: "TOKEN={{openkeylet:apiCredential}}\n".into(),
+                overwrite: true,
+                append: false,
+                secret_bindings: HashMap::new(),
+            }))
+            .await;
+        assert_eq!(disabled_res.is_error, Some(true));
+
+        // Re-enable, move to Trash -> also blocked from MCP tools
+        vault.set_connection_enabled(item.id, true).unwrap();
+        let refreshed = vault.list_connections().unwrap().remove(0);
+        vault
+            .trash_connection(refreshed.id, Some(&refreshed.updated_at))
+            .unwrap();
+        let trashed_res = mcp
+            .secret_write_file(Parameters(SecretWriteFileInput {
+                item: "Himalaya Mail".into(),
+                path: missing_file.to_string_lossy().into_owned(),
+                content: "TOKEN={{openkeylet:apiCredential}}\n".into(),
+                overwrite: true,
+                append: false,
+                secret_bindings: HashMap::new(),
+            }))
+            .await;
+        assert_eq!(trashed_res.is_error, Some(true));
+
+        // Activity log must never record raw secret plaintext
+        let activities_json = serde_json::to_string(&vault.activities().unwrap()).unwrap();
+        assert!(!activities_json.contains("sk-config-secret-9988"));
     }
 }

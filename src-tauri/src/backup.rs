@@ -122,6 +122,8 @@ struct BackupPayload {
     connections: Vec<BackupConnection>,
     #[serde(default)]
     trash: Vec<crate::model::PortableTrashItem>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    deleted_ids: Vec<crate::model::DeletedItemTombstone>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -170,6 +172,7 @@ pub fn export_to_file(vault: &Vault, path: impl AsRef<Path>) -> Result<()> {
 
 fn backup_payload(vault: &Vault) -> Result<BackupPayload> {
     let (connections, trash) = vault.export_backup_entries()?;
+    let deleted_ids = vault.export_tombstones()?;
     let connections = connections
         .into_iter()
         .map(|(connection, secrets)| BackupConnection {
@@ -183,6 +186,7 @@ fn backup_payload(vault: &Vault) -> Result<BackupPayload> {
         created_at: Utc::now().to_rfc3339(),
         connections,
         trash,
+        deleted_ids,
     })
 }
 
@@ -209,6 +213,27 @@ pub(crate) fn inspect_cloud_snapshot(plain: &[u8]) -> Result<(String, usize)> {
 pub(crate) fn restore_cloud_snapshot(vault: &Vault, plain: &[u8]) -> Result<ImportSummary> {
     let payload: BackupPayload = serde_json::from_slice(plain)?;
     merge_backup_payload(vault, plain, payload.version)
+}
+
+pub(crate) fn sync_merge_cloud_snapshot(
+    vault: &Vault,
+    plain: &[u8],
+) -> Result<crate::model::SyncMergeSummary> {
+    let payload: BackupPayload = serde_json::from_slice(plain)?;
+    if payload.format != "mcp-vault-portable"
+        || !matches!(payload.version, 4 | 5 | 6 | 7 | BACKUP_VERSION)
+    {
+        bail!("Unsupported cloud sync payload version");
+    }
+    vault.sync_merge_entries(
+        payload
+            .connections
+            .into_iter()
+            .map(|item| (item.connection, item.secrets))
+            .collect(),
+        payload.trash,
+        payload.deleted_ids,
+    )
 }
 
 fn write_backup_file(path: &Path, file: &BackupFile) -> Result<()> {
@@ -699,5 +724,226 @@ mod tests {
         let summary = import_from_file(&target, &path).unwrap();
         assert_eq!(summary.added, 0);
         assert_eq!(summary.merged, 2);
+    }
+
+    #[test]
+    fn full_fidelity_backup_and_sync_preserve_all_types_passkeys_and_metadata_edits() {
+        let dir = tempdir().unwrap();
+        let src = Vault::open(dir.path().join("src")).unwrap();
+        let dst = Vault::open(dir.path().join("dst")).unwrap();
+
+        // 1. Login + password history + TOTP + Passkey + URI rule
+        let mut login_secrets = SecretBundle::default();
+        login_secrets.password = Some("first-pass-1".into());
+        login_secrets
+            .named_secrets
+            .insert("username".into(), "alice@example.com".into());
+        login_secrets.named_secrets.insert(
+            "totp".into(),
+            "otpauth://totp/Example:alice?secret=JBSWY3DPEHPK3PXP&digits=6&period=30".into(),
+        );
+        let login = src
+            .save_connection(ConnectionInput {
+                login_uris: vec![crate::login_uri::LoginUri {
+                    uri: "https://example.com".into(),
+                    match_type: "domain".into(),
+                }],
+                item_type: "login".into(),
+                folder: "Work".into(),
+                favorite: true,
+                id: None,
+                modules: vec![
+                    crate::model::ItemModule { kind: "url".into(), value: "https://example.com".into(), ..Default::default() },
+                    crate::model::ItemModule { kind: "username".into(), ..Default::default() },
+                    crate::model::ItemModule { kind: "password".into(), ..Default::default() },
+                    crate::model::ItemModule { kind: "totp".into(), ..Default::default() },
+                ],
+                name: "Example Login".into(),
+                enabled: true,
+                description: "Initial note".into(),
+                http_auth_type: String::new(),
+                private_key_import_path: String::new(),
+                auth_header: String::new(),
+                auth_location: String::new(),
+                auth_prefix: String::new(),
+                api_auth_headers: vec![],
+                test_path: String::new(),
+                remove_secret_names: vec![],
+                secrets: login_secrets,
+            })
+            .unwrap();
+        // Update password once to populate password history
+        let mut pw_update = SecretBundle::default();
+        pw_update.password = Some("second-pass-2".into());
+        src.save_connection(ConnectionInput {
+            login_uris: vec![crate::login_uri::LoginUri {
+                uri: "https://example.com".into(),
+                match_type: "domain".into(),
+            }],
+            item_type: "login".into(),
+            folder: "Work".into(),
+            favorite: true,
+            id: Some(login.id),
+            modules: vec![
+                crate::model::ItemModule { kind: "url".into(), value: "https://example.com".into(), ..Default::default() },
+                crate::model::ItemModule { kind: "username".into(), ..Default::default() },
+                crate::model::ItemModule { kind: "password".into(), ..Default::default() },
+                crate::model::ItemModule { kind: "totp".into(), ..Default::default() },
+            ],
+            name: "Example Login".into(),
+            enabled: true,
+            description: "Initial note".into(),
+            http_auth_type: String::new(),
+            private_key_import_path: String::new(),
+            auth_header: String::new(),
+            auth_location: String::new(),
+            auth_prefix: String::new(),
+            api_auth_headers: vec![],
+            test_path: String::new(),
+            remove_secret_names: vec![],
+            secrets: pw_update,
+        })
+        .unwrap();
+
+        // 2. Passkey item
+        let pk_opts = serde_json::json!({
+            "challenge": base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, [5; 32]),
+            "rp": {"id": "example.com", "name": "Example"},
+            "user": {"id": base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, [6; 16]), "name": "alice", "displayName": "Alice"},
+            "pubKeyCredParams": []
+        });
+        let (pk, _) = crate::passkey::create("https://example.com", &pk_opts, true).unwrap();
+        src.store_browser_passkey("https://example.com", pk, &pk_opts)
+            .unwrap();
+
+        // 3. Card + Identity + API item
+        let mut card_sec = SecretBundle::default();
+        for (k, v) in [
+            ("cardholderName", "Zhang San"),
+            ("cardNumber", "4111111111111111"),
+            ("cardBrand", "Visa"),
+            ("cardExpMonth", "07"),
+            ("cardExpYear", "2030"),
+            ("cardSecurityCode", "842"),
+        ] {
+            card_sec.named_secrets.insert(k.into(), v.into());
+        }
+        src.save_connection(ConnectionInput {
+            login_uris: vec![],
+            item_type: "card".into(),
+            folder: "Wallet".into(),
+            favorite: false,
+            id: None,
+            modules: crate::item_types::CARD_FIELDS
+                .iter()
+                .map(|k| crate::model::ItemModule { kind: (*k).into(), ..Default::default() })
+                .collect(),
+            name: "Corp Visa".into(),
+            enabled: true,
+            description: String::new(),
+            http_auth_type: String::new(),
+            private_key_import_path: String::new(),
+            auth_header: String::new(),
+            auth_location: String::new(),
+            auth_prefix: String::new(),
+            api_auth_headers: vec![],
+            test_path: String::new(),
+            remove_secret_names: vec![],
+            secrets: card_sec,
+        })
+        .unwrap();
+
+        let api_item = src
+            .save_connection(input(Uuid::new_v4(), "Custom API", "tok-999"))
+            .unwrap();
+
+        // Export password-protected .mvault and restore on fresh device
+        let mvault = dir.path().join("full-fidelity.mvault");
+        export_protected(&src, &mvault, "correct-horse-battery").unwrap();
+        let raw = fs::read_to_string(&mvault).unwrap();
+        assert!(!raw.contains("second-pass-2"));
+        assert!(!raw.contains("4111111111111111"));
+        assert!(!raw.contains("tok-999"));
+
+        let restored = import_with_password(&dst, &mvault, "correct-horse-battery").unwrap();
+        assert_eq!(restored.added, 4);
+        let dst_login = dst.get_connection(login.id).unwrap();
+        assert_eq!(dst_login.secrets.password.as_deref(), Some("second-pass-2"));
+        assert_eq!(dst_login.secrets.password_history.len(), 1);
+        assert_eq!(dst_login.stored.folder, "Work");
+        assert!(dst_login.stored.favorite);
+        assert!(crate::browser::current_totp(dst_login.secrets.get("totp").unwrap()).is_ok());
+
+        let dst_pk_item = dst
+            .list_decrypted_connections()
+            .unwrap()
+            .into_iter()
+            .find(|c| !c.secrets.passkeys.is_empty())
+            .unwrap();
+        let assert_req = serde_json::json!({
+            "challenge": base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, [9; 32]),
+            "rpId": "example.com"
+        });
+        assert!(
+            crate::passkey::get(&dst_pk_item.secrets.passkeys[0], "https://example.com", &assert_req, true).is_ok(),
+            "restored passkey must produce valid WebAuthn assertions"
+        );
+
+        // Now rename, edit description, disable item, and change API header -> verify cloud sync propagates ALL metadata edits!
+        std::thread::sleep(std::time::Duration::from_millis(15));
+        let mut updated_api = input(api_item.id, "Renamed API", "tok-999");
+        updated_api.description = "Updated description".into();
+        updated_api.enabled = false;
+        updated_api.auth_header = "X-Custom-Token".into();
+        src.save_connection(updated_api).unwrap();
+
+        let snap = cloud_snapshot(&src).unwrap();
+        let merged = sync_merge_cloud_snapshot(&dst, &snap).unwrap();
+        assert_eq!(merged.updated, 1);
+        let synced_api = dst.get_connection(api_item.id).unwrap();
+        assert_eq!(synced_api.stored.name, "Renamed API");
+        assert_eq!(synced_api.stored.description, "Updated description");
+        assert!(!synced_api.stored.enabled);
+        assert_eq!(synced_api.stored.auth_header, "X-Custom-Token");
+    }
+
+    #[test]
+    fn tampered_mvault_and_truncated_files_never_modify_target_vault() {
+        let dir = tempdir().unwrap();
+        let src = Vault::open(dir.path().join("src")).unwrap();
+        let dst = Vault::open(dir.path().join("dst")).unwrap();
+        src.save_connection(input(Uuid::new_v4(), "Source Secret", "src-tok-1"))
+            .unwrap();
+        dst.save_connection(input(Uuid::new_v4(), "Existing Local", "local-tok-1"))
+            .unwrap();
+
+        let mvault = dir.path().join("good.mvault");
+        assert!(export_protected(&src, &mvault, "11-char-pwd").is_err());
+        export_protected(&src, &mvault, "valid-twelve-char-password").unwrap();
+
+        // 1. Flip 1 char in ciphertext
+        let mut doc: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&mvault).unwrap()).unwrap();
+        let ct = doc["payload"]["ciphertext"].as_str().unwrap().to_owned();
+        let mut chars: Vec<char> = ct.chars().collect();
+        chars[5] = if chars[5] == 'A' { 'B' } else { 'A' };
+        doc["payload"]["ciphertext"] = serde_json::json!(chars.into_iter().collect::<String>());
+        let tampered = dir.path().join("tampered.mvault");
+        fs::write(&tampered, serde_json::to_vec(&doc).unwrap()).unwrap();
+        assert!(import_with_password(&dst, &tampered, "valid-twelve-char-password").is_err());
+
+        // 2. Truncated file
+        let truncated = dir.path().join("truncated.mvault");
+        let full = fs::read(&mvault).unwrap();
+        fs::write(&truncated, &full[..full.len() / 2]).unwrap();
+        assert!(import_with_password(&dst, &truncated, "valid-twelve-char-password").is_err());
+
+        // 3. Empty password on protected backup
+        assert!(import_with_password(&dst, &mvault, "").is_err());
+
+        // Target vault remains completely untouched
+        let items = dst.list_connections().unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].name, "Existing Local");
     }
 }

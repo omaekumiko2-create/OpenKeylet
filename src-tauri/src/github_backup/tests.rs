@@ -165,6 +165,9 @@ fn input(key: &str, mode: &str) -> ConnectInput {
         recovery_key_saved: true,
         auth_source: "token".into(),
         create_repository: false,
+        auto_sync: false,
+        provider: String::new(),
+        server_url: String::new(),
     }
 }
 
@@ -570,4 +573,364 @@ async fn large_contents_use_the_pinned_blob_and_errors_are_redacted() {
         assert_eq!(error, expected);
         assert!(!error.contains("token-and-secret-marker"));
     }
+}
+
+#[tokio::test]
+async fn bidirectional_sync_merges_multi_device_edits_propagates_deletions_and_skips_empty_commits() {
+    let mock = MockGithub::start().await;
+    let (_dir_a, device_a) = mock.manager();
+    let (_dir_b, device_b) = mock.manager();
+    let key = generate_recovery_key().unwrap();
+
+    // Device A saves item 1 and connects with auto_sync enabled.
+    let mut cfg_a = input(&key, "new");
+    cfg_a.auto_sync = true;
+    device_a.connect(cfg_a).await.unwrap();
+    let item1 = device_a
+        .vault
+        .save_connection(crate::model::ConnectionInput {
+            login_uris: Vec::new(),
+            item_type: "login".into(),
+            folder: String::new(),
+            favorite: false,
+            id: None,
+            modules: vec![
+                crate::model::ItemModule {
+                    kind: "username".into(),
+                    ..Default::default()
+                },
+                crate::model::ItemModule {
+                    kind: "password".into(),
+                    ..Default::default()
+                },
+            ],
+            name: "Shared Login".into(),
+            enabled: true,
+            description: String::new(),
+            http_auth_type: String::new(),
+            private_key_import_path: String::new(),
+            auth_header: String::new(),
+            auth_location: String::new(),
+            auth_prefix: String::new(),
+            api_auth_headers: vec![],
+            test_path: String::new(),
+            remove_secret_names: vec![],
+            secrets: {
+                let mut s = crate::model::SecretBundle::default();
+                s.password = Some("pass-v1".into());
+                s.named_secrets.insert("username".into(), "alice".into());
+                s
+            },
+        })
+        .unwrap();
+
+    let first_sync = device_a.sync().await.unwrap();
+    assert_eq!(first_sync.action, "pushed");
+    assert!(first_sync.status.auto_sync);
+    assert_eq!(mock.state.lock().unwrap().writes, 1);
+
+    // Second sync with no changes must NOT create an empty commit.
+    let noop = device_a.sync().await.unwrap();
+    assert_eq!(noop.action, "up_to_date");
+    assert_eq!(mock.state.lock().unwrap().writes, 1);
+
+    // Device B connects to existing repo and syncs -> pulls Shared Login!
+    let mut cfg_b = input(&key, "existing");
+    cfg_b.auto_sync = true;
+    device_b.connect(cfg_b).await.unwrap();
+    let pull_b = device_b.sync().await.unwrap();
+    assert_eq!(pull_b.merge.added, 1);
+    assert_eq!(device_b.vault.list_connections().unwrap().len(), 1);
+    assert_eq!(
+        device_b.vault.list_connections().unwrap()[0].id,
+        item1.id
+    );
+
+    // Device B adds item 2 while Device A permanently deletes item 1.
+    device_b
+        .vault
+        .save_connection(crate::model::ConnectionInput {
+            login_uris: Vec::new(),
+            item_type: "api".into(),
+            folder: String::new(),
+            favorite: false,
+            id: None,
+            modules: vec![crate::model::ItemModule {
+                kind: "apiCredential".into(),
+                ..Default::default()
+            }],
+            name: "Mac API Key".into(),
+            enabled: true,
+            description: String::new(),
+            http_auth_type: String::new(),
+            private_key_import_path: String::new(),
+            auth_header: String::new(),
+            auth_location: String::new(),
+            auth_prefix: String::new(),
+            api_auth_headers: vec![],
+            test_path: String::new(),
+            remove_secret_names: vec![],
+            secrets: {
+                let mut s = crate::model::SecretBundle::default();
+                s.named_secrets.insert("apiCredential".into(), "mac-key-123".into());
+                s
+            },
+        })
+        .unwrap();
+    let b_push = device_b.sync().await.unwrap();
+    assert_eq!(b_push.action, "pushed");
+
+    // Sleep briefly so tombstone timestamp is strictly newer than item1.updated_at.
+    tokio::time::sleep(std::time::Duration::from_millis(15)).await;
+    device_a
+        .vault
+        .trash_connection(item1.id, Some(&item1.updated_at))
+        .unwrap();
+    let trashed = device_a.vault.trash_items().unwrap();
+    device_a
+        .vault
+        .purge_connection(item1.id, &trashed[0].deleted_at)
+        .unwrap();
+
+    // Device A syncs: receives Mac API Key AND pushes tombstone for Shared Login (does NOT resurrect Shared Login!).
+    let a_merge = device_a.sync().await.unwrap();
+    assert_eq!(a_merge.action, "merged");
+    let a_names: Vec<_> = device_a
+        .vault
+        .list_connections()
+        .unwrap()
+        .into_iter()
+        .map(|c| c.name)
+        .collect();
+    assert_eq!(a_names, vec!["Mac API Key"]);
+
+    // Device B syncs: receives tombstone and removes Shared Login while keeping Mac API Key!
+    let b_final = device_b.sync().await.unwrap();
+    assert_eq!(b_final.merge.deleted, 1);
+    let b_names: Vec<_> = device_b
+        .vault
+        .list_connections()
+        .unwrap()
+        .into_iter()
+        .map(|c| c.name)
+        .collect();
+    assert_eq!(b_names, vec!["Mac API Key"]);
+
+    // Toggle auto_sync off cleanly.
+    let disabled = device_b.set_auto_sync(false).unwrap();
+    assert!(!disabled.auto_sync);
+    assert!(!device_b.is_auto_sync_enabled());
+}
+
+#[test]
+fn gitea_provider_validation_enforces_https_and_builds_api_v1_base() {
+    assert_eq!(normalize_provider("").unwrap(), "github");
+    assert_eq!(normalize_provider("forgejo").unwrap(), "gitea");
+    assert!(normalize_server_url("gitea", "http://git.example.com").is_err());
+    let base = gitea_api_base("https://git.example.com/subpath").unwrap();
+    assert_eq!(base.as_str(), "https://git.example.com/subpath/api/v1/");
+    let base_dedup = gitea_api_base("https://git.example.com/api/v1/").unwrap();
+    assert_eq!(base_dedup.as_str(), "https://git.example.com/api/v1/");
+    assert_eq!(
+        parse_repository_for("https://git.example.com/alice/vault.git", "https://git.example.com")
+            .unwrap(),
+        ("alice".to_owned(), "vault".to_owned())
+    );
+}
+
+#[tokio::test]
+async fn gitea_full_http_e2e_post_create_put_update_token_auth_and_public_rejection() {
+    #[derive(Default)]
+    struct GiteaState {
+        bytes: Option<Vec<u8>>,
+        public: bool,
+        post_creates: usize,
+        put_updates: usize,
+        auth_headers: Vec<String>,
+    }
+
+    async fn gitea_handler(
+        State(state): State<Arc<Mutex<GiteaState>>>,
+        method: Method,
+        uri: Uri,
+        headers: HeaderMap,
+        body: Bytes,
+    ) -> AxumResponse {
+        let mut s = state.lock().unwrap();
+        let auth = headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_owned();
+        s.auth_headers.push(auth.clone());
+        if auth != "token gitea-secret-tok" {
+            return StatusCode::UNAUTHORIZED.into_response();
+        }
+        if method == Method::GET && uri.path() == "/api/v1/user" {
+            return Json(json!({"login": "alice"})).into_response();
+        }
+        if method == Method::GET && uri.path() == "/api/v1/repos/alice/vault" {
+            return Json(json!({"id": 42, "private": !s.public, "archived": false, "disabled": false, "default_branch": "main"})).into_response();
+        }
+        let content_path = format!("/api/v1/repos/alice/vault/contents/{CLOUD_FILE}");
+        if method == Method::GET && uri.path() == content_path {
+            return match &s.bytes {
+                None => StatusCode::NOT_FOUND.into_response(),
+                Some(bytes) => Json(json!({
+                    "type": "file",
+                    "sha": blob_sha(bytes),
+                    "size": bytes.len(),
+                    "encoding": "base64",
+                    "content": STANDARD.encode(bytes),
+                }))
+                .into_response(),
+            };
+        }
+        if method == Method::POST && uri.path() == content_path {
+            if s.bytes.is_some() {
+                return StatusCode::CONFLICT.into_response();
+            }
+            let req: Value = serde_json::from_slice(&body).unwrap();
+            let bytes = STANDARD.decode(req["content"].as_str().unwrap()).unwrap();
+            let sha = blob_sha(&bytes);
+            s.bytes = Some(bytes);
+            s.post_creates += 1;
+            return (StatusCode::CREATED, Json(json!({"content": {"sha": sha}}))).into_response();
+        }
+        if method == Method::PUT && uri.path() == content_path {
+            let req: Value = serde_json::from_slice(&body).unwrap();
+            let current_sha = s.bytes.as_ref().map(|b| blob_sha(b));
+            if req.get("sha").and_then(Value::as_str) != current_sha.as_deref() {
+                return StatusCode::CONFLICT.into_response();
+            }
+            let bytes = STANDARD.decode(req["content"].as_str().unwrap()).unwrap();
+            let sha = blob_sha(&bytes);
+            s.bytes = Some(bytes);
+            s.put_updates += 1;
+            return Json(json!({"content": {"sha": sha}})).into_response();
+        }
+        StatusCode::NOT_FOUND.into_response()
+    }
+
+    let state = Arc::new(Mutex::new(GiteaState::default()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let server_url = format!("http://{}", listener.local_addr().unwrap());
+    let router = Router::new().fallback(gitea_handler).with_state(state.clone());
+    let task = tokio::spawn(async move { axum::serve(listener, router).await.unwrap(); });
+
+    let dir_a = tempfile::tempdir().unwrap();
+    let dir_b = tempfile::tempdir().unwrap();
+    let dev_a = GithubBackup::new(Vault::open(dir_a.path().join("vault")).unwrap()).unwrap();
+    let dev_b = GithubBackup::new(Vault::open(dir_b.path().join("vault")).unwrap()).unwrap();
+    let key = generate_recovery_key().unwrap();
+
+    let gitea_input = |mode: &str| ConnectInput {
+        repository: format!("{server_url}/alice/vault.git"),
+        token: "gitea-secret-tok".into(),
+        recovery_key: key.clone(),
+        mode: mode.into(),
+        recovery_key_saved: true,
+        auth_source: "token".into(),
+        create_repository: false,
+        auto_sync: true,
+        provider: "gitea".into(),
+        server_url: server_url.clone(),
+    };
+
+    // Reject public Gitea repository
+    state.lock().unwrap().public = true;
+    assert!(dev_a.connect(gitea_input("new")).await.is_err());
+    state.lock().unwrap().public = false;
+
+    // Connect private Gitea repo + initial sync -> MUST use POST
+    let status = dev_a.connect(gitea_input("new")).await.unwrap();
+    assert_eq!(status.provider, "gitea");
+    let mut s1 = SecretBundle::default();
+    s1.named_secrets.insert("apiCredential".into(), "gitea-tok-1".into());
+    dev_a.vault.save_connection(ConnectionInput {
+        login_uris: vec![], item_type: "api".into(), folder: String::new(), favorite: false, id: None,
+        modules: vec![ItemModule { kind: "apiCredential".into(), ..Default::default() }],
+        name: "Gitea First".into(), enabled: true, description: String::new(), http_auth_type: String::new(),
+        private_key_import_path: String::new(), auth_header: String::new(), auth_location: String::new(),
+        auth_prefix: String::new(), api_auth_headers: vec![], test_path: String::new(),
+        remove_secret_names: vec![], secrets: s1,
+    }).unwrap();
+    let first = dev_a.sync().await.unwrap();
+    assert_eq!(first.action, "pushed");
+    assert_eq!(state.lock().unwrap().post_creates, 1);
+    assert_eq!(state.lock().unwrap().put_updates, 0);
+
+    // Second device connects & syncs, adds item -> MUST use PUT with sha
+    dev_b.connect(gitea_input("existing")).await.unwrap();
+    let b_pull = dev_b.sync().await.unwrap();
+    assert_eq!(b_pull.merge.added, 1);
+    let mut s2 = SecretBundle::default();
+    s2.named_secrets.insert("apiCredential".into(), "gitea-tok-2".into());
+    dev_b.vault.save_connection(ConnectionInput {
+        login_uris: vec![], item_type: "api".into(), folder: String::new(), favorite: false, id: None,
+        modules: vec![ItemModule { kind: "apiCredential".into(), ..Default::default() }],
+        name: "Gitea Second".into(), enabled: true, description: String::new(), http_auth_type: String::new(),
+        private_key_import_path: String::new(), auth_header: String::new(), auth_location: String::new(),
+        auth_prefix: String::new(), api_auth_headers: vec![], test_path: String::new(),
+        remove_secret_names: vec![], secrets: s2,
+    }).unwrap();
+    let b_push = dev_b.sync().await.unwrap();
+    assert_eq!(b_push.action, "pushed");
+    assert_eq!(state.lock().unwrap().post_creates, 1);
+    assert_eq!(state.lock().unwrap().put_updates, 1);
+    assert!(state.lock().unwrap().auth_headers.iter().all(|h| h == "token gitea-secret-tok"));
+
+    task.abort();
+}
+
+#[tokio::test]
+async fn sync_recovers_from_409_conflict_storm_and_rejects_tampered_ciphertext() {
+    let mock = MockGithub::start().await;
+    let (_da, dev_a) = mock.manager();
+    let (_db, dev_b) = mock.manager();
+    let key = generate_recovery_key().unwrap();
+
+    dev_a.connect(input(&key, "new")).await.unwrap();
+    dev_a.sync().await.unwrap();
+    dev_b.connect(input(&key, "existing")).await.unwrap();
+    dev_b.sync().await.unwrap();
+
+    // Both devices edit offline simultaneously
+    let make_api = |name: &str, tok: &str| {
+        let mut s = SecretBundle::default();
+        s.named_secrets.insert("apiCredential".into(), tok.into());
+        ConnectionInput {
+            login_uris: vec![], item_type: "api".into(), folder: String::new(), favorite: false, id: None,
+            modules: vec![ItemModule { kind: "apiCredential".into(), ..Default::default() }],
+            name: name.into(), enabled: true, description: String::new(), http_auth_type: String::new(),
+            private_key_import_path: String::new(), auth_header: String::new(), auth_location: String::new(),
+            auth_prefix: String::new(), api_auth_headers: vec![], test_path: String::new(),
+            remove_secret_names: vec![], secrets: s,
+        }
+    };
+    dev_a.vault.save_connection(make_api("Device A Key", "tok-a")).unwrap();
+    dev_b.vault.save_connection(make_api("Device B Key", "tok-b")).unwrap();
+
+    // Device B pushes first; also force a transient 409 conflict on Device A's first PUT!
+    dev_b.sync().await.unwrap();
+    mock.state.lock().unwrap().conflict_on_put = true;
+    let a_res = dev_a.sync().await.unwrap();
+    assert_eq!(a_res.action, "merged");
+    let mut a_names: Vec<_> = dev_a.vault.list_connections().unwrap().into_iter().map(|c| c.name).collect();
+    a_names.sort();
+    assert_eq!(a_names, vec!["Device A Key", "Device B Key"]);
+
+    // Tamper 1 byte inside remote ciphertext -> sync MUST fail cleanly and keep local vault intact
+    {
+        let mut guard = mock.state.lock().unwrap();
+        let bytes = guard.bytes.as_mut().unwrap();
+        let mut doc: Value = serde_json::from_slice(bytes).unwrap();
+        let ct = doc["payload"]["ciphertext"].as_str().unwrap().to_owned();
+        let mut chars: Vec<char> = ct.chars().collect();
+        chars[4] = if chars[4] == 'A' { 'B' } else { 'A' };
+        doc["payload"]["ciphertext"] = json!(chars.into_iter().collect::<String>());
+        *bytes = serde_json::to_vec(&doc).unwrap();
+    }
+    assert!(dev_b.sync().await.is_err());
+    assert_eq!(dev_b.vault.list_connections().unwrap().len(), 1);
 }

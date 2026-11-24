@@ -176,16 +176,14 @@ async function connectOnce(force = false) {
       return;
     }
     if (message.type === "job") {
-      const expiresAt = jobExpiresAt(message.job);
-      const result = Number.isFinite(expiresAt) && Date.now() >= expiresAt
-        ? { ok: false, message: "The fill task has expired" }
-        : await fillFocused(message.job?.value, expiresAt, Boolean(message.job?.submit));
+      const result = await handleBrowserJob(message.job);
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
           type: "complete",
           jobId: message.job?.id,
-          ok: result.ok,
-          message: result.message,
+          ok: Boolean(result?.ok),
+          message: result?.message || "",
+          data: result?.data ?? null,
         }));
       }
     }
@@ -268,5 +266,5 @@ function writeToFocusedControl(value, expiresAt, submit = false) {
   }
 }
 
-importScripts("form-reader.js", "provider.js", "capture.js");
+importScripts("form-reader.js", "provider.js", "capture.js", "agent-actions.js");
 requestConnect();

@@ -1,7 +1,9 @@
 /* Local presentation preferences are independent of the encrypted vault. */
 (() => {
-  // Set the native shell class before the first frame is painted.
-  document.documentElement.classList.toggle('platform-linux', navigator.platform.startsWith('Linux'));
+  // Set native shell platform classes before the first frame is painted.
+  const isMac = navigator.platform.startsWith('Mac') || navigator.userAgent.includes('Macintosh');
+  document.documentElement.classList.toggle('platform-macos', isMac);
+  document.documentElement.classList.toggle('platform-linux', !isMac && navigator.platform.startsWith('Linux'));
   const storageKey = 'openkeylet.appearance.v1';
   let preferences = { theme: 'dark', sound: false };
   try {

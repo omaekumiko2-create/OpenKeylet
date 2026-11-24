@@ -50,18 +50,28 @@ pub struct ConnectInput {
     pub auth_source: String,
     #[serde(default)]
     pub create_repository: bool,
+    #[serde(default)]
+    pub auto_sync: bool,
+    #[serde(default)]
+    pub provider: String,
+    #[serde(default)]
+    pub server_url: String,
 }
 
-#[derive(Default, Serialize)]
+#[derive(Default, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BackupStatus {
     pub connected: bool,
+    pub provider: String,
+    pub server_url: String,
     pub repository: String,
     pub branch: String,
+    pub auto_sync: bool,
     pub needs_restore: bool,
     pub has_remote_backup: bool,
     pub last_backup_at: Option<String>,
     pub last_restore_at: Option<String>,
+    pub last_synced_at: Option<String>,
     pub remote_backup_at: Option<String>,
     pub remote_item_count: Option<usize>,
 }
@@ -73,10 +83,26 @@ pub struct RestoreResult {
     pub status: BackupStatus,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncResult {
+    pub action: String,
+    pub merge: crate::model::SyncMergeSummary,
+    pub status: BackupStatus,
+}
+
+fn default_provider() -> String {
+    "github".to_owned()
+}
+
 #[derive(Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 #[serde(rename_all = "camelCase")]
 struct DeviceConfig {
     format: String,
+    #[serde(default = "default_provider")]
+    provider: String,
+    #[serde(default)]
+    server_url: String,
     owner: String,
     repo: String,
     repository_id: u64,
@@ -84,24 +110,42 @@ struct DeviceConfig {
     token: String,
     recovery_key: String,
     base_sha: Option<String>,
+    #[serde(default)]
+    auto_sync: bool,
     needs_restore: bool,
     has_remote_backup: bool,
     last_backup_at: Option<String>,
     last_restore_at: Option<String>,
+    #[serde(default)]
+    last_synced_at: Option<String>,
+    #[serde(default)]
+    last_synced_fingerprint: Option<String>,
     remote_backup_at: Option<String>,
     remote_item_count: Option<usize>,
 }
 
 impl DeviceConfig {
+    fn is_gitea(&self) -> bool {
+        self.provider == "gitea"
+    }
+
     fn status(&self) -> BackupStatus {
         BackupStatus {
             connected: true,
+            provider: if self.provider.is_empty() {
+                "github".to_owned()
+            } else {
+                self.provider.clone()
+            },
+            server_url: self.server_url.clone(),
             repository: format!("{}/{}", self.owner, self.repo),
             branch: self.branch.clone(),
+            auto_sync: self.auto_sync,
             needs_restore: self.needs_restore,
             has_remote_backup: self.has_remote_backup,
             last_backup_at: self.last_backup_at.clone(),
             last_restore_at: self.last_restore_at.clone(),
+            last_synced_at: self.last_synced_at.clone(),
             remote_backup_at: self.remote_backup_at.clone(),
             remote_item_count: self.remote_item_count,
         }
@@ -129,6 +173,7 @@ struct Repository {
 
 #[derive(Deserialize)]
 struct GithubUser {
+    #[serde(alias = "username")]
     login: String,
 }
 
@@ -188,15 +233,29 @@ impl GithubBackup {
             .unwrap_or_default())
     }
 
+    pub fn is_auto_sync_enabled(&self) -> bool {
+        self.load()
+            .ok()
+            .flatten()
+            .is_some_and(|config| config.auto_sync)
+    }
+
+    pub fn set_auto_sync(&self, enabled: bool) -> Result<BackupStatus> {
+        let mut config = self.connected()?;
+        config.auto_sync = enabled;
+        self.save(&config)?;
+        Ok(config.status())
+    }
+
     pub async fn account(&self, input: AuthInput) -> Result<AccountStatus> {
         let token = auth::token(&input.auth_source, &input.token).await?;
-        let user = self.user(&token).await?;
+        let user = self.user(&token, "github", "").await?;
         Ok(AccountStatus { login: user.login })
     }
 
-    async fn user(&self, token: &str) -> Result<GithubUser> {
+    async fn user(&self, token: &str, provider: &str, server_url: &str) -> Result<GithubUser> {
         let response = self
-            .api_request(Method::GET, &["user"], token)?
+            .api_request_for(Method::GET, &["user"], token, provider, server_url)?
             .send()
             .await
             .context("GITHUB_NETWORK")?;
@@ -226,21 +285,28 @@ impl GithubBackup {
         if !matches!(input.mode.as_str(), "new" | "existing") {
             bail!("GITHUB_MODE_INVALID");
         }
-        let (owner, repo) = parse_repository(&input.repository)?;
+        let provider = normalize_provider(&input.provider)?;
+        let server_url = normalize_server_url(&provider, &input.server_url)?;
+        let (owner, repo) = parse_repository_for(&input.repository, &server_url)?;
         let recovery_key = input.recovery_key.trim();
         parse_recovery_key(recovery_key)?;
-        let token = auth::token(&input.auth_source, &input.token).await?;
+        let auth_source = if provider == "gitea" && input.auth_source.trim().is_empty() {
+            "token"
+        } else {
+            &input.auth_source
+        };
+        let token = auth::token(auth_source, &input.token).await?;
         if input.create_repository {
             if input.mode != "new" {
                 bail!("GITHUB_CREATE_MODE");
             }
-            let user = self.user(&token).await?;
+            let user = self.user(&token, &provider, &server_url).await?;
             if !user.login.eq_ignore_ascii_case(&owner) {
                 bail!("GITHUB_CREATE_OWNER");
             }
             // Creating is opt-in. Never adopt or change an existing repository.
             let existing = self
-                .request(Method::GET, &owner, &repo, &[], &token)?
+                .request_for(Method::GET, &owner, &repo, &[], &token, &provider, &server_url)?
                 .send()
                 .await
                 .context("GITHUB_NETWORK")?;
@@ -250,9 +316,12 @@ impl GithubBackup {
             if existing.status() != StatusCode::NOT_FOUND {
                 check_response(&existing)?;
             }
-            let response = self.api_request(Method::POST, &["user", "repos"], &token)?
+            let response = self
+                .api_request_for(Method::POST, &["user", "repos"], &token, &provider, &server_url)?
                 .json(&serde_json::json!({"name":repo,"private":true,"auto_init":true,"description":"Encrypted OpenKeylet vault backups"}))
-                .send().await.context("GITHUB_CREATE_UNCONFIRMED")?;
+                .send()
+                .await
+                .context("GITHUB_CREATE_UNCONFIRMED")?;
             if response.status() == StatusCode::UNPROCESSABLE_ENTITY {
                 bail!("GITHUB_REPOSITORY_EXISTS");
             }
@@ -267,9 +336,13 @@ impl GithubBackup {
                 bail!("GITHUB_PRIVATE_REQUIRED");
             }
         }
-        let repository = self.repository(&owner, &repo, &token).await?;
+        let repository = self
+            .repository(&owner, &repo, &token, &provider, &server_url)
+            .await?;
         let mut config = DeviceConfig {
             format: LOCAL_FORMAT.to_owned(),
+            provider,
+            server_url,
             owner,
             repo,
             repository_id: repository.id,
@@ -277,10 +350,13 @@ impl GithubBackup {
             token: token.to_string(),
             recovery_key: recovery_key.to_owned(),
             base_sha: None,
+            auto_sync: input.auto_sync,
             needs_restore: false,
             has_remote_backup: false,
             last_backup_at: None,
             last_restore_at: None,
+            last_synced_at: None,
+            last_synced_fingerprint: None,
             remote_backup_at: None,
             remote_item_count: None,
         };
@@ -293,7 +369,7 @@ impl GithubBackup {
                 let (created_at, count) =
                     backup::inspect_cloud_snapshot(&plain).context("GITHUB_BACKUP_INVALID")?;
                 // Merely seeing the remote SHA is not permission to overwrite it.
-                // A newly connected device must first restore this snapshot.
+                // A newly connected device must first restore/sync this snapshot.
                 config.needs_restore = true;
                 config.has_remote_backup = true;
                 config.remote_backup_at = Some(created_at);
@@ -306,19 +382,117 @@ impl GithubBackup {
         Ok(config.status())
     }
 
-    pub async fn upload(&self) -> Result<BackupStatus> {
+    pub async fn sync(&self) -> Result<SyncResult> {
         let mut config = self.connected()?;
-        if config.needs_restore {
-            bail!("GITHUB_RESTORE_REQUIRED");
-        }
         self.check_repository(&config).await?;
+        let local_was_empty = self
+            .vault
+            .export_backup_entries()
+            .map(|(active, trash)| active.is_empty() && trash.is_empty())
+            .unwrap_or(false)
+            && self
+                .vault
+                .export_tombstones()
+                .map(|t| t.is_empty())
+                .unwrap_or(false);
+        let before_fp = self
+            .vault
+            .sync_content_fingerprint()
+            .context("GITHUB_LOCAL_VAULT")?;
+        let mut total_merge = crate::model::SyncMergeSummary::default();
+        let mut pulled = false;
+
         let remote = self.remote_file(&config).await?;
-        if remote.as_ref().map(|file| file.sha.as_str()) != config.base_sha.as_deref() {
-            config.needs_restore = true;
-            config.has_remote_backup = remote.is_some();
-            self.save(&config)?;
-            bail!("GITHUB_REMOTE_CHANGED");
+        if let Some(remote_file) = remote.as_ref()
+            && config.base_sha.as_deref() != Some(remote_file.sha.as_str())
+        {
+            let plain = decrypt_snapshot(&remote_file.bytes, &config.recovery_key)?;
+            let (created_at, count) =
+                backup::inspect_cloud_snapshot(&plain).context("GITHUB_BACKUP_INVALID")?;
+            let merged = backup::sync_merge_cloud_snapshot(&self.vault, &plain)
+                .context("GITHUB_RESTORE_FAILED")?;
+            total_merge.added += merged.added;
+            total_merge.updated += merged.updated;
+            total_merge.deleted += merged.deleted;
+            total_merge.unchanged += merged.unchanged;
+            config.base_sha = Some(remote_file.sha.clone());
+            config.needs_restore = false;
+            config.has_remote_backup = true;
+            config.remote_backup_at = Some(created_at);
+            config.remote_item_count = Some(count);
+            config.last_restore_at = Some(Utc::now().to_rfc3339());
+            pulled = true;
         }
+
+        let after_pull_fp = self
+            .vault
+            .sync_content_fingerprint()
+            .context("GITHUB_LOCAL_VAULT")?;
+        let local_had_changes = match config.last_synced_fingerprint.as_deref() {
+            Some(last) => last != before_fp.as_str(),
+            None => !local_was_empty,
+        };
+        let needs_push = remote.is_none() || local_had_changes;
+
+        if !needs_push {
+            let now = Utc::now().to_rfc3339();
+            config.last_synced_at = Some(now);
+            config.last_synced_fingerprint = Some(after_pull_fp);
+            self.save(&config)?;
+            return Ok(SyncResult {
+                action: if pulled { "pulled" } else { "up_to_date" }.to_owned(),
+                merge: total_merge,
+                status: config.status(),
+            });
+        }
+
+        // Push merged encrypted snapshot with compare-and-swap; retry once on 409 conflict.
+        for attempt in 0..2 {
+            match self.push_encrypted_snapshot(&mut config).await {
+                Ok(()) => {
+                    let final_fp = self
+                        .vault
+                        .sync_content_fingerprint()
+                        .context("GITHUB_LOCAL_VAULT")?;
+                    let now = Utc::now().to_rfc3339();
+                    config.last_synced_at = Some(now);
+                    config.last_synced_fingerprint = Some(final_fp);
+                    self.save(&config)?;
+                    return Ok(SyncResult {
+                        action: if pulled { "merged" } else { "pushed" }.to_owned(),
+                        merge: total_merge,
+                        status: config.status(),
+                    });
+                }
+                Err(error) if attempt == 0 && error.to_string().contains("GITHUB_CONFLICT") => {
+                    if let Some(latest) = self.remote_file(&config).await? {
+                        let plain = decrypt_snapshot(&latest.bytes, &config.recovery_key)?;
+                        let (created_at, count) =
+                            backup::inspect_cloud_snapshot(&plain).context("GITHUB_BACKUP_INVALID")?;
+                        let merged = backup::sync_merge_cloud_snapshot(&self.vault, &plain)
+                            .context("GITHUB_RESTORE_FAILED")?;
+                        total_merge.added += merged.added;
+                        total_merge.updated += merged.updated;
+                        total_merge.deleted += merged.deleted;
+                        total_merge.unchanged += merged.unchanged;
+                        config.base_sha = Some(latest.sha);
+                        config.needs_restore = false;
+                        config.has_remote_backup = true;
+                        config.remote_backup_at = Some(created_at);
+                        config.remote_item_count = Some(count);
+                        config.last_restore_at = Some(Utc::now().to_rfc3339());
+                        pulled = true;
+                        continue;
+                    }
+                    return Err(error);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        bail!("GITHUB_CONFLICT")
+    }
+
+    async fn push_encrypted_snapshot(&self, config: &mut DeviceConfig) -> Result<()> {
         let plain = backup::cloud_snapshot(&self.vault).context("GITHUB_LOCAL_VAULT")?;
         let (created_at, count) =
             backup::inspect_cloud_snapshot(&plain).context("GITHUB_LOCAL_VAULT")?;
@@ -332,15 +506,20 @@ impl GithubBackup {
         if let Some(sha) = &config.base_sha {
             payload["sha"] = serde_json::Value::String(sha.clone());
         }
-        // The SHA is GitHub's compare-and-swap guard. No forced writes or
-        // automatic retries: a lost response is resolved by a later restore.
+        let method = if config.is_gitea() && config.base_sha.is_none() {
+            Method::POST
+        } else {
+            Method::PUT
+        };
         let response = self
-            .request(
-                Method::PUT,
+            .request_for(
+                method,
                 &config.owner,
                 &config.repo,
                 &["contents", CLOUD_FILE],
                 &config.token,
+                &config.provider,
+                &config.server_url,
             )?
             .json(&payload)
             .send()
@@ -360,6 +539,29 @@ impl GithubBackup {
         config.remote_backup_at = Some(created_at);
         config.remote_item_count = Some(count);
         config.last_backup_at = Some(Utc::now().to_rfc3339());
+        Ok(())
+    }
+
+    pub async fn upload(&self) -> Result<BackupStatus> {
+        let mut config = self.connected()?;
+        if config.needs_restore {
+            bail!("GITHUB_RESTORE_REQUIRED");
+        }
+        self.check_repository(&config).await?;
+        let remote = self.remote_file(&config).await?;
+        if remote.as_ref().map(|file| file.sha.as_str()) != config.base_sha.as_deref() {
+            config.needs_restore = true;
+            config.has_remote_backup = remote.is_some();
+            self.save(&config)?;
+            bail!("GITHUB_REMOTE_CHANGED");
+        }
+        self.push_encrypted_snapshot(&mut config).await?;
+        let fp = self
+            .vault
+            .sync_content_fingerprint()
+            .context("GITHUB_LOCAL_VAULT")?;
+        config.last_synced_at = config.last_backup_at.clone();
+        config.last_synced_fingerprint = Some(fp);
         self.save(&config)?;
         Ok(config.status())
     }
@@ -384,6 +586,8 @@ impl GithubBackup {
         config.remote_backup_at = Some(created_at);
         config.remote_item_count = Some(count);
         config.last_restore_at = Some(Utc::now().to_rfc3339());
+        config.last_synced_at = config.last_restore_at.clone();
+        config.last_synced_fingerprint = self.vault.sync_content_fingerprint().ok();
         self.save(&config)?;
         Ok(RestoreResult {
             summary,
@@ -429,43 +633,69 @@ impl GithubBackup {
         Ok(())
     }
 
-    fn request(
+    fn request_for(
         &self,
         method: Method,
         owner: &str,
         repo: &str,
         suffix: &[&str],
         token: &str,
+        provider: &str,
+        server_url: &str,
     ) -> Result<reqwest::RequestBuilder> {
         let mut segments = vec!["repos", owner, repo];
         segments.extend(suffix);
-        self.api_request(method, &segments, token)
+        self.api_request_for(method, &segments, token, provider, server_url)
     }
 
-    fn api_request(
+    fn api_request_for(
         &self,
         method: Method,
         segments: &[&str],
         token: &str,
+        provider: &str,
+        server_url: &str,
     ) -> Result<reqwest::RequestBuilder> {
-        let mut url = self.api_base.clone();
+        let mut url = if provider == "gitea" && !server_url.is_empty() {
+            gitea_api_base(server_url)?
+        } else {
+            self.api_base.clone()
+        };
         url.path_segments_mut()
-            .expect("HTTP base URL")
+            .map_err(|_| anyhow::anyhow!("GITHUB_REPOSITORY_INVALID"))?
+            .pop_if_empty()
             .extend(segments);
-        let mut authorization = HeaderValue::from_str(&format!("Bearer {token}"))
-            .map_err(|_| anyhow::anyhow!("GITHUB_TOKEN_INVALID"))?;
+        let auth_value = if provider == "gitea" {
+            format!("token {token}")
+        } else {
+            format!("Bearer {token}")
+        };
+        let mut authorization =
+            HeaderValue::from_str(&auth_value).map_err(|_| anyhow::anyhow!("GITHUB_TOKEN_INVALID"))?;
         authorization.set_sensitive(true);
-        Ok(self
+        let builder = self
             .client
             .request(method, url)
-            .header(AUTHORIZATION, authorization)
-            .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", "2026-03-10"))
+            .header(AUTHORIZATION, authorization);
+        if provider == "gitea" {
+            Ok(builder.header("Accept", "application/json"))
+        } else {
+            Ok(builder
+                .header("Accept", "application/vnd.github+json")
+                .header("X-GitHub-Api-Version", "2026-03-10"))
+        }
     }
 
-    async fn repository(&self, owner: &str, repo: &str, token: &str) -> Result<Repository> {
+    async fn repository(
+        &self,
+        owner: &str,
+        repo: &str,
+        token: &str,
+        provider: &str,
+        server_url: &str,
+    ) -> Result<Repository> {
         let response = self
-            .request(Method::GET, owner, repo, &[], token)?
+            .request_for(Method::GET, owner, repo, &[], token, provider, server_url)?
             .send()
             .await
             .context("GITHUB_NETWORK")?;
@@ -485,7 +715,13 @@ impl GithubBackup {
 
     async fn check_repository(&self, config: &DeviceConfig) -> Result<()> {
         let repository = self
-            .repository(&config.owner, &config.repo, &config.token)
+            .repository(
+                &config.owner,
+                &config.repo,
+                &config.token,
+                &config.provider,
+                &config.server_url,
+            )
             .await?;
         if repository.id != config.repository_id {
             bail!("GITHUB_REPOSITORY_CHANGED");
@@ -498,12 +734,14 @@ impl GithubBackup {
 
     async fn remote_file(&self, config: &DeviceConfig) -> Result<Option<RemoteFile>> {
         let response = self
-            .request(
+            .request_for(
                 Method::GET,
                 &config.owner,
                 &config.repo,
                 &["contents", CLOUD_FILE],
                 &config.token,
+                &config.provider,
+                &config.server_url,
             )?
             .query(&[("ref", &config.branch)])
             .send()
@@ -526,12 +764,14 @@ impl GithubBackup {
             // Contents API omits inline content above 1 MB. Pin the blob SHA
             // instead of following download_url or reading a moving branch.
             let response = self
-                .request(
+                .request_for(
                     Method::GET,
                     &config.owner,
                     &config.repo,
                     &["git", "blobs", &file.sha],
                     &config.token,
+                    &config.provider,
+                    &config.server_url,
                 )?
                 .send()
                 .await
@@ -551,6 +791,42 @@ impl GithubBackup {
             bytes,
         }))
     }
+}
+
+fn normalize_provider(value: &str) -> Result<String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "" | "github" => Ok("github".to_owned()),
+        "gitea" | "forgejo" => Ok("gitea".to_owned()),
+        _ => bail!("GITHUB_MODE_INVALID"),
+    }
+}
+
+fn normalize_server_url(provider: &str, value: &str) -> Result<String> {
+    if provider != "gitea" {
+        return Ok(String::new());
+    }
+    let trimmed = value.trim().trim_end_matches('/');
+    let url = Url::parse(trimmed).map_err(|_| anyhow::anyhow!("GITHUB_REPOSITORY_INVALID"))?;
+    let loopback = matches!(url.host_str(), Some("127.0.0.1" | "localhost"));
+    if url.scheme() != "https" && !(cfg!(test) && url.scheme() == "http" && loopback) {
+        bail!("GITHUB_REPOSITORY_INVALID");
+    }
+    if url.host_str().is_none() || !url.username().is_empty() || url.password().is_some() {
+        bail!("GITHUB_REPOSITORY_INVALID");
+    }
+    Ok(trimmed.to_owned())
+}
+
+fn gitea_api_base(server_url: &str) -> Result<Url> {
+    let trimmed = server_url.trim().trim_end_matches('/');
+    let base = trimmed.strip_suffix("/api/v1").unwrap_or(trimmed);
+    let mut url = Url::parse(base).map_err(|_| anyhow::anyhow!("GITHUB_REPOSITORY_INVALID"))?;
+    if !url.path().ends_with('/') {
+        let next = format!("{}/", url.path());
+        url.set_path(&next);
+    }
+    url.join("api/v1/")
+        .map_err(|_| anyhow::anyhow!("GITHUB_REPOSITORY_INVALID"))
 }
 
 pub fn generate_recovery_key() -> Result<String> {
@@ -606,6 +882,20 @@ fn decrypt_snapshot(bytes: &[u8], recovery_key: &str) -> Result<Zeroizing<Vec<u8
     Ok(Zeroizing::new(
         decrypt_bytes(&key, &file.payload, CLOUD_AAD).context("GITHUB_KEY_MISMATCH")?,
     ))
+}
+
+fn parse_repository_for(input: &str, server_url: &str) -> Result<(String, String)> {
+    let trimmed = input.trim();
+    let repository = if !server_url.is_empty() {
+        let prefix = format!("{}/", server_url.trim().trim_end_matches('/'));
+        trimmed
+            .strip_prefix(&prefix)
+            .or_else(|| trimmed.strip_prefix("https://github.com/"))
+            .unwrap_or(trimmed)
+    } else {
+        trimmed.strip_prefix("https://github.com/").unwrap_or(trimmed)
+    };
+    parse_repository(repository)
 }
 
 fn parse_repository(input: &str) -> Result<(String, String)> {

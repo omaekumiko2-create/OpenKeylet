@@ -60,11 +60,27 @@ async function refresh() {
     $("#entries").replaceChildren();
     if (!entries.length) { const p=document.createElement("p"); p.textContent="这个网站还没有保存的密码 / No saved logins"; $("#entries").append(p); }
     for (const item of entries) {
+      const row = document.createElement("div"); row.className = "login-entry-row";
       const button = document.createElement("button"); button.type = "button"; button.className = "login-entry";
       const title = document.createElement("strong"); title.textContent = item.name;
       const sub = document.createElement("small"); sub.textContent = item.username || "填写 / Fill";
       button.append(title, sub); button.addEventListener("click", async () => { button.disabled=true; try { await call("fill",{id:item.id}); showError("已填写 / Filled"); } catch(e) { showError(e); } finally { button.disabled=false; } });
-      $("#entries").append(button);
+      row.append(button);
+      if (item.hasTotp) {
+        const totpBtn = document.createElement("button"); totpBtn.type = "button"; totpBtn.className = "secondary totp-copy-button";
+        totpBtn.textContent = "2FA"; totpBtn.title = "复制当前 TOTP 验证码 / Copy live 2FA code";
+        totpBtn.addEventListener("click", async () => {
+          totpBtn.disabled = true;
+          try {
+            const res = await call("totp", { id: item.id });
+            await navigator.clipboard.writeText(res.code);
+            showError(`2FA 已复制 (${res.remainingSeconds}s) / 2FA code copied`);
+          } catch (e) { showError(e); }
+          finally { totpBtn.disabled = false; }
+        });
+        row.append(totpBtn);
+      }
+      $("#entries").append(row);
     }
   } catch(e) {
     closeSave(); closePersonal(); OpenKeyletVaultUI.close();

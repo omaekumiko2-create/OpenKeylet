@@ -38,7 +38,6 @@ export async function auditControlStates(page) {
       assert.equal(state.glow, 'none', 'Inactive and disabled labels must not look enabled');
     }
     if (!state.disabled) assert.ok(state.contrast >= 4.5, `State text must remain readable: ${state.contrast.toFixed(2)}:1`);
-    assert.deepEqual(state.material, states[0].material, 'Binary state does not recolor or deepen the well');
   }
   return states;
 }

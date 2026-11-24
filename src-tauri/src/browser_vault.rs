@@ -33,7 +33,7 @@ fn same_origin(stored: &StoredConnection, website: &str) -> bool {
 fn list(vault: &Vault, website: &str) -> Result<Value> {
     passkey::origin(website)?;
     Ok(Value::Array(vault.list_decrypted_connections()?.into_iter().filter(|c| c.stored.enabled && same_origin(&c.stored, website) && c.secrets.get("password").is_some())
-        .map(|c| json!({"id":c.stored.id,"name":c.stored.name,"username":c.secrets.get("username").unwrap_or_default(),"updatedAt":c.stored.updated_at})).collect()))
+        .map(|c| json!({"id":c.stored.id,"name":c.stored.name,"username":c.secrets.get("username").unwrap_or_default(),"hasTotp":c.secrets.get("totp").is_some(),"updatedAt":c.stored.updated_at})).collect()))
 }
 
 async fn verify(vault: &Vault, pin: &str, throttle: &Mutex<Instant>) -> Result<bool> {
@@ -73,7 +73,19 @@ pub async fn handle(
             let create = text(p, "operation")? == "create";
             let rp = passkey::rp_id(text(p, "origin")?, &p["options"], create)?;
             let mut entries = Vec::new();
-            if !create {
+            if create {
+                if let Some(exclude) = p["options"]["excludeCredentials"].as_array() {
+                    for c in vault.list_decrypted_connections()? {
+                        ensure!(
+                            !c.secrets.passkeys.iter().any(|k| k.rp_id == rp
+                                && exclude.iter().any(|e| {
+                                    e["type"] == "public-key" && e["id"] == k.credential_id
+                                })),
+                            "InvalidStateError: A matching passkey already exists"
+                        );
+                    }
+                }
+            } else {
                 for c in vault.list_decrypted_connections()? {
                     if c.stored.enabled {
                         for k in &c.secrets.passkeys {
@@ -203,6 +215,16 @@ pub async fn handle(
             Ok(
                 json!({"username":c.secrets.get("username").unwrap_or_default(),"password":c.secrets.get("password").context("No password saved")?}),
             )
+        }
+        "password.totp" => {
+            let c = vault.get_connection(Uuid::parse_str(text(p, "id")?)?)?;
+            ensure!(
+                c.stored.enabled && same_origin(&c.stored, text(p, "origin")?),
+                "This login does not belong to the current website"
+            );
+            let totp_secret = c.secrets.get("totp").context("No TOTP configured for this item")?;
+            let (code, remaining_seconds, period) = crate::browser::current_totp_details(totp_secret)?;
+            Ok(json!({"code": code, "remainingSeconds": remaining_seconds, "period": period}))
         }
         "password.save" => vault.save_browser_login(p),
         _ => bail!("Unsupported browser operation"),
@@ -696,6 +718,110 @@ mod tests {
             !std::fs::read_to_string(d.path().join("original/vault.json"))
                 .unwrap()
                 .contains(&secret)
+        );
+    }
+
+    #[tokio::test]
+    async fn passkey_prepare_fails_fast_on_excluded_and_password_totp_returns_live_code() {
+        let d = tempfile::tempdir().unwrap();
+        let v = Vault::open(d.path().join("vault")).unwrap();
+        let mut session = Session::default();
+        let throttle = Mutex::new(Instant::now());
+
+        let options = json!({
+            "challenge": base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, [7; 32]),
+            "rp": {"id": "example.com", "name": "Example"},
+            "user": {"id": base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, [9; 16]), "name": "alice", "displayName": "Alice"},
+            "pubKeyCredParams": [{"type": "public-key", "alg": -7}],
+            "authenticatorSelection": {"residentKey": "preferred"}
+        });
+        let (key, _) = passkey::create("https://example.com", &options, false).unwrap();
+        let cred_id = key.credential_id.clone();
+        v.store_browser_passkey("https://example.com", key, &options)
+            .unwrap();
+
+        let mut dup = options.clone();
+        dup["excludeCredentials"] = json!([{"type": "public-key", "id": cred_id}]);
+        let err = handle(
+            &v,
+            &mut session,
+            &throttle,
+            "passkey.prepare",
+            &json!({"origin": "https://example.com", "operation": "create", "options": dup}),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().starts_with("InvalidStateError:"));
+
+        let mut secrets = SecretBundle::default();
+        secrets.password = Some("pw-1".into());
+        secrets.named_secrets.insert("username".into(), "alice".into());
+        secrets
+            .named_secrets
+            .insert("totp".into(), "JBSWY3DPEHPK3PXP".into());
+        let saved = v
+            .save_connection(ConnectionInput {
+                login_uris: Vec::new(),
+                item_type: "login".into(),
+                folder: String::new(),
+                favorite: false,
+                id: None,
+                modules: vec![
+                    ItemModule { kind: "url".into(), value: "https://example.com".into(), ..Default::default() },
+                    ItemModule { kind: "username".into(), ..Default::default() },
+                    ItemModule { kind: "password".into(), ..Default::default() },
+                    ItemModule { kind: "totp".into(), ..Default::default() },
+                ],
+                name: "Example 2FA".into(),
+                enabled: true,
+                description: String::new(),
+                http_auth_type: String::new(),
+                private_key_import_path: String::new(),
+                auth_header: String::new(),
+                auth_location: String::new(),
+                auth_prefix: String::new(),
+                api_auth_headers: vec![],
+                test_path: String::new(),
+                remove_secret_names: vec![],
+                secrets,
+            })
+            .unwrap();
+
+        let listed = handle(
+            &v,
+            &mut session,
+            &throttle,
+            "password.list",
+            &json!({"origin": "https://example.com/login"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(listed.as_array().unwrap()[0]["hasTotp"], true);
+
+        let totp = handle(
+            &v,
+            &mut session,
+            &throttle,
+            "password.totp",
+            &json!({"origin": "https://example.com/login", "id": saved.id}),
+        )
+        .await
+        .unwrap();
+        let code = totp["code"].as_str().unwrap();
+        assert_eq!(code.len(), 6);
+        assert!(code.chars().all(|c| c.is_ascii_digit()));
+        assert!(totp["remainingSeconds"].as_u64().unwrap() <= 30);
+
+        assert!(
+            handle(
+                &v,
+                &mut session,
+                &throttle,
+                "password.totp",
+                &json!({"origin": "https://evil.example", "id": saved.id}),
+            )
+            .await
+            .is_err()
         );
     }
 }

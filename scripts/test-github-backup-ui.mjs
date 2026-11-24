@@ -21,7 +21,7 @@ try{
   const errors=[];page.on("pageerror",error=>errors.push(error.message));
   await page.addInitScript(()=>{
     const state={settings:{language:"zh",closeBehavior:"tray",browserEnabled:true,browserPort:39272},connections:[],activities:[],mcp:{status:"ready"},browserBridge:{status:"listening"},security:{encrypted:true}};
-    window.fixture={status:{connected:false},connects:[],uploads:0,restores:0,failUpload:false,failConnect:false,unlocked:true};
+    window.fixture={status:{connected:false},connects:[],uploads:0,restores:0,syncs:0,failUpload:false,failConnect:false,unlocked:true};
     window.__TAURI__={event:{listen:async()=>()=>{}},core:{invoke:async(command,args={})=>{
       if(command==="get_state")return structuredClone(state);
       if(command==="owner_status")return {pinConfigured:!fixture.unlocked,unlocked:fixture.unlocked};
@@ -32,7 +32,7 @@ try{
       if(command==="github_backup_connect"){
         if(fixture.failConnect)throw Error("GITHUB_PRIVATE_REQUIRED");
         fixture.connects.push(structuredClone(args.input));
-        fixture.status={connected:true,repository:args.input.repository,branch:"main",hasRemoteBackup:args.input.mode==="existing",needsRestore:args.input.mode==="existing"};
+        fixture.status={connected:true,provider:args.input.provider||"github",serverUrl:args.input.serverUrl||"",repository:args.input.repository,branch:"main",autoSync:Boolean(args.input.autoSync),hasRemoteBackup:args.input.mode==="existing",needsRestore:args.input.mode==="existing"};
         return structuredClone(fixture.status);
       }
       if(command==="github_backup_upload"){
@@ -42,6 +42,14 @@ try{
       if(command==="github_backup_restore"){
         fixture.restores++;fixture.status.needsRestore=false;fixture.status.lastRestoreAt="2026-10-20T00:00:00Z";
         return {status:structuredClone(fixture.status),summary:{added:2,merged:1}};
+      }
+      if(command==="github_backup_sync"){
+        fixture.syncs++;fixture.status.needsRestore=false;fixture.status.hasRemoteBackup=true;fixture.status.lastSyncedAt="2026-10-20T00:05:00Z";
+        return {action:"merged",merge:{added:1,updated:1,deleted:0,unchanged:0},status:structuredClone(fixture.status)};
+      }
+      if(command==="github_backup_set_auto_sync"){
+        fixture.status.autoSync=Boolean(args.enabled);
+        return structuredClone(fixture.status);
       }
       if(command==="github_backup_disconnect"){fixture.status={connected:false};return structuredClone(fixture.status);}
       return {};
@@ -106,13 +114,22 @@ try{
   await page.evaluate(()=>fixture.failUpload=false);
   await page.locator("#github-upload").click();await page.locator("#confirmation-accept").click();
   await page.waitForFunction(()=>fixture.uploads===2);
+  await page.locator("#github-sync").click();
+  await page.waitForFunction(()=>fixture.syncs===1);
+  await page.locator("#github-auto-sync").check({force:true});
+  await page.waitForFunction(()=>fixture.status.autoSync===true);
   await page.locator("#github-reconfigure").click();
+  await page.locator("#github-provider").selectOption("gitea");
+  assert.equal(await page.locator("#github-server-url").isVisible(),true);
+  assert.equal(await page.locator("#github-token").isVisible(),true);
+  await page.locator("#github-provider").selectOption("github");
   await page.locator("#github-auth-source").selectOption("token");
   await page.locator("#github-token").fill("synthetic-private-value");
   await page.evaluate(async()=>{fixture.unlocked=false;await refreshOwnerLock();});
+  await page.waitForFunction(()=>document.querySelector("#github-modal").classList.contains("hidden"));
   assert.equal(await page.locator("#github-token").inputValue(),"");
   assert.equal(await page.locator("#github-modal").isVisible(),false);
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
   assert.deepEqual(errors,[]);
-  console.log(JSON.stringify({ok:true,checks:["account check","CLI authorization selection","explicit repository creation","recovery key acknowledgement","first encrypted upload","existing backup restore gate","token cleared","cancel restore","merge restore","public repository rejection","upload retry without reconnection","lock clears secrets","460px layout"],artifacts},null,2));
+  console.log(JSON.stringify({ok:true,checks:["account check","CLI authorization selection","explicit repository creation","recovery key acknowledgement","first encrypted upload","existing backup restore gate","token cleared","cancel restore","merge restore","public repository rejection","upload retry without reconnection","two-way sync","auto-sync toggle","Gitea/Forgejo platform option","lock clears secrets","460px layout"],artifacts},null,2));
 }finally{await browser.close();server.close();}

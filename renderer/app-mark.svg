@@ -1,62 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="-24 -24 448 448" role="img" aria-labelledby="openkeylet-mark-title openkeylet-mark-desc">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" role="img" aria-labelledby="openkeylet-mark-title openkeylet-mark-desc">
   <title id="openkeylet-mark-title">OpenKeylet</title>
-  <desc id="openkeylet-mark-desc">A square key ring and separate stepped key bit, built on a four by four grid, engraved into the surface and then inclined.</desc>
-  <!-- Construction: 100-unit cells, 8-unit inset, 16-unit corner radius.
-       The ring occupies the upper-left 3 x 3 cells with its center cut out.
-       The key bit occupies (4,3), (3,4), (4,4); a 16-unit seam separates it.
-       Bricktone finish at 26px: 0.65px upper inner shade, 0.5px softness,
-       0.4px lower inner lip; the completed engraving is skewed -7.125deg. -->
-  <defs>
-    <filter id="openkeylet-mark-engraving" x="-32" y="-32" width="464" height="464" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
-      <feFlood class="logo-emission-ink" flood-color="#39d5f5" result="signal-ink"/>
-      <feGaussianBlur in="SourceAlpha" stdDeviation="18" result="far-light"/>
-      <feComposite in="signal-ink" in2="far-light" operator="in" result="far-color"/>
-      <feComponentTransfer in="far-color" result="far-emission"><feFuncA type="linear" slope=".2"/></feComponentTransfer>
-      <feGaussianBlur in="SourceAlpha" stdDeviation="8" result="near-light"/>
-      <feComposite in="signal-ink" in2="near-light" operator="in" result="near-color"/>
-      <feComponentTransfer in="near-color" result="near-emission"><feFuncA type="linear" slope=".52"/></feComponentTransfer>
-      <feGaussianBlur in="SourceAlpha" stdDeviation="7.6923" result="cut-softness"/>
-      <feOffset in="cut-softness" dy="10" result="cut-down"/>
-      <feComposite in="SourceAlpha" in2="cut-down" operator="out" result="upper-cut"/>
-      <feFlood flood-color="#000000" flood-opacity=".28" result="cut-ink"/>
-      <feComposite in="cut-ink" in2="upper-cut" operator="in" result="inner-shade"/>
-      <feOffset in="SourceAlpha" dy="-6.1538" result="lip-up"/>
-      <feComposite in="SourceAlpha" in2="lip-up" operator="out" result="lower-lip"/>
-      <feFlood flood-color="#ffffff" flood-opacity=".07" result="lip-light"/>
-      <feComposite in="lip-light" in2="lower-lip" operator="in" result="inner-light"/>
-      <feMerge>
-        <feMergeNode in="far-emission"/>
-        <feMergeNode in="near-emission"/>
-        <feMergeNode in="SourceGraphic"/>
-        <feMergeNode in="inner-shade"/>
-        <feMergeNode in="inner-light"/>
-      </feMerge>
-    </filter>
-    <filter id="openkeylet-bit-engraving" x="-32" y="-32" width="464" height="464" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
-      <feGaussianBlur in="SourceGraphic" stdDeviation="18" result="far-light"/>
-      <feComponentTransfer in="far-light" result="far-emission"><feFuncA type="linear" slope=".2"/></feComponentTransfer>
-      <feGaussianBlur in="SourceGraphic" stdDeviation="8" result="near-light"/>
-      <feComponentTransfer in="near-light" result="near-emission"><feFuncA type="linear" slope=".52"/></feComponentTransfer>
-      <feGaussianBlur in="SourceAlpha" stdDeviation="7.6923" result="cut-softness"/>
-      <feOffset in="cut-softness" dy="10" result="cut-down"/>
-      <feComposite in="SourceAlpha" in2="cut-down" operator="out" result="upper-cut"/>
-      <feFlood flood-color="#000000" flood-opacity=".28" result="cut-ink"/>
-      <feComposite in="cut-ink" in2="upper-cut" operator="in" result="inner-shade"/>
-      <feOffset in="SourceAlpha" dy="-6.1538" result="lip-up"/>
-      <feComposite in="SourceAlpha" in2="lip-up" operator="out" result="lower-lip"/>
-      <feFlood flood-color="#ffffff" flood-opacity=".07" result="lip-light"/>
-      <feComposite in="lip-light" in2="lower-lip" operator="in" result="inner-light"/>
-      <feMerge>
-        <feMergeNode in="far-emission"/>
-        <feMergeNode in="near-emission"/>
-        <feMergeNode in="SourceGraphic"/>
-        <feMergeNode in="inner-shade"/>
-        <feMergeNode in="inner-light"/>
-      </feMerge>
-    </filter>
-  </defs>
-  <g class="logo-tilt" transform="translate(200 200) skewX(-7.125) translate(-200 -200)">
-    <path class="logo-ring" fill="#8ce7f9" fill-rule="evenodd" filter="url(#openkeylet-mark-engraving)" d="M24 8H276A16 16 0 0 1 292 24V276A16 16 0 0 1 276 292H24A16 16 0 0 1 8 276V24A16 16 0 0 1 24 8ZM124 108H176A16 16 0 0 1 192 124V176A16 16 0 0 1 176 192H124A16 16 0 0 1 108 176V124A16 16 0 0 1 124 108Z"/>
-    <path class="logo-bit" fill="#f2f4f4" filter="url(#openkeylet-bit-engraving)" d="M324 208H376A16 16 0 0 1 392 224V376A16 16 0 0 1 376 392H224A16 16 0 0 1 208 376V324A16 16 0 0 1 224 308H292A16 16 0 0 0 308 292V224A16 16 0 0 1 324 208Z"/>
-  </g>
+  <desc id="openkeylet-mark-desc">A clean geometric key ring and stepped key bit built on a four by four grid.</desc>
+  <path class="logo-ring" fill="#f4f4f5" fill-rule="evenodd" d="M24 8H276A16 16 0 0 1 292 24V276A16 16 0 0 1 276 292H24A16 16 0 0 1 8 276V24A16 16 0 0 1 24 8ZM124 108H176A16 16 0 0 1 192 124V176A16 16 0 0 1 176 192H124A16 16 0 0 1 108 176V124A16 16 0 0 1 124 108Z"/>
+  <path class="logo-bit" fill="#a1a1aa" d="M324 208H376A16 16 0 0 1 392 224V376A16 16 0 0 1 376 392H224A16 16 0 0 1 208 376V324A16 16 0 0 1 224 308H292A16 16 0 0 0 308 292V224A16 16 0 0 1 324 208Z"/>
 </svg>

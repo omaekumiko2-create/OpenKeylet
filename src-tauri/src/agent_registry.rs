@@ -8,21 +8,26 @@ use std::{
     env, fs,
     io::Write,
     path::{Path, PathBuf},
-    process::Output,
-    time::Duration,
 };
-use tokio::{process::Command, time::timeout};
 use toml_edit::{Array, DocumentMut, Item, Table, value};
 
-const CLIENT_IDS: [&str; 5] = ["codex", "claude-code", "cursor", "opencode", "openclaw"];
-const STATUS_CLI_TIMEOUT: Duration = Duration::from_secs(3);
-const ACTION_CLI_TIMEOUT: Duration = Duration::from_secs(20);
+const CLIENT_IDS: [&str; 6] = [
+    "codex",
+    "claude-code",
+    "cursor",
+    "opencode",
+    "antigravity",
+    "deepseek-harness",
+];
+const DSH_MCP_PLUGIN_NAME: &str = "@deepseek-ai/dsh-mcp-client";
+const DSH_MCP_ENTRY_ID: &str = "mcp-openkeylet";
+const DSH_MCP_LEGACY_ID: &str = "mcp-kru";
 const OPENKEYLET_INSTRUCTION_START: &str = "<!-- OPENKEYLET MANAGED INSTRUCTION START -->";
 const OPENKEYLET_INSTRUCTION_END: &str = "<!-- OPENKEYLET MANAGED INSTRUCTION END -->";
 const LEGACY_INSTRUCTION_START: &str = "<!-- KRU MANAGED INSTRUCTION START -->";
 const LEGACY_INSTRUCTION_END: &str = "<!-- KRU MANAGED INSTRUCTION END -->";
 const OPENKEYLET_INSTRUCTION_BLOCK: &str = r#"<!-- OPENKEYLET MANAGED INSTRUCTION START -->
-When a task may require a login, credential, authenticated API, SSH host, VPS, or server, prefer OpenKeylet before asking the user to provide a secret. If the user names an OpenKeylet project and the intended action is clear, call that OpenKeylet action directly with the project name. When only one enabled project supports the action, its name may be omitted. Use `items_search` only to discover projects, modules, actions, or resolve ambiguity. Follow OpenKeylet's MCP server instructions and never ask for hidden plaintext.
+When a task may require a login, passkey, credential, authenticated API, SSH host, VPS, server, or secret config file, prefer OpenKeylet before asking the user to provide a secret. For websites open in a browser with the OpenKeylet extension, use `browser_inspect`, `browser_fill_login`, `browser_passkey`, `browser_fill_personal`, `browser_click`, or `credential_fill` directly without asking for plaintext. To place secrets into local config files (like `.env` or `config.toml`), use `secret_write_file` with `{{openkeylet:module}}` placeholders. If the user names an OpenKeylet project and the intended action is clear, call that OpenKeylet action directly with the project name. When only one enabled project supports the action, its name may be omitted. Use `items_search` only to discover projects, modules, actions, or resolve ambiguity. Follow OpenKeylet's MCP server instructions and never ask for hidden plaintext.
 <!-- OPENKEYLET MANAGED INSTRUCTION END -->"#;
 
 #[derive(Debug, Clone, Serialize)]
@@ -60,7 +65,8 @@ pub struct AgentRegistry {
     opencode_config: PathBuf,
     opencode_config_explicit: bool,
     opencode_instruction_dir: PathBuf,
-    openclaw_config: PathBuf,
+    antigravity_config_dir: PathBuf,
+    dsh_home: PathBuf,
     path_dirs: Vec<PathBuf>,
     app_data: PathBuf,
     local_app_data: PathBuf,
@@ -92,7 +98,9 @@ impl AgentRegistry {
                 .unwrap_or_else(|| home.join(".config"))
                 .join("opencode")
         });
-        let openclaw_config = resolve_openclaw_config(&home, env_path("OPENCLAW_CONFIG_PATH"));
+        let antigravity_config_dir =
+            resolve_antigravity_config_dir(&home, env_path("ANTIGRAVITY_CONFIG_DIR"));
+        let dsh_home = resolve_dsh_home(&home, env_path("DSH_HOME"));
         Ok(Self {
             executable: normalize_path(executable),
             home,
@@ -102,7 +110,8 @@ impl AgentRegistry {
             opencode_config,
             opencode_config_explicit,
             opencode_instruction_dir,
-            openclaw_config,
+            antigravity_config_dir,
+            dsh_home,
             path_dirs,
             app_data,
             local_app_data,
@@ -136,23 +145,23 @@ impl AgentRegistry {
             opencode_config,
             opencode_config_explicit,
             opencode_instruction_dir: home.join(".config").join("opencode"),
-            openclaw_config: resolve_openclaw_config(&home, None),
+            antigravity_config_dir: resolve_antigravity_config_dir(&home, None),
+            dsh_home: resolve_dsh_home(&home, None),
             home,
             path_dirs,
         }
     }
 
     pub async fn list(&self) -> Vec<AgentClientStatus> {
-        // CLI-backed clients may need to start a Node process. Scan every client
-        // concurrently so a slow or broken CLI cannot serially stall the settings page.
-        let (codex, claude, cursor, opencode, openclaw) = tokio::join!(
+        let (codex, claude, cursor, opencode, antigravity, dsh) = tokio::join!(
             self.status(CLIENT_IDS[0]),
             self.status(CLIENT_IDS[1]),
             self.status(CLIENT_IDS[2]),
             self.status(CLIENT_IDS[3]),
             self.status(CLIENT_IDS[4]),
+            self.status(CLIENT_IDS[5]),
         );
-        vec![codex, claude, cursor, opencode, openclaw]
+        vec![codex, claude, cursor, opencode, antigravity, dsh]
     }
 
     pub async fn register(&self, client_ids: &[String]) -> Vec<AgentActionResult> {
@@ -235,8 +244,10 @@ impl AgentRegistry {
     async fn mutate_mcp_client(&self, client_id: &str, action: &str) -> Result<()> {
         match client_id {
             "codex" => self.mutate_codex(action),
-            "claude-code" | "cursor" | "opencode" => self.mutate_json_client(client_id, action),
-            "openclaw" => self.mutate_cli_client(client_id, action).await,
+            "claude-code" | "cursor" | "opencode" | "antigravity" => {
+                self.mutate_json_client(client_id, action)
+            }
+            "deepseek-harness" => self.mutate_deepseek_harness(action),
             _ => unreachable!(),
         }
     }
@@ -248,7 +259,9 @@ impl AgentRegistry {
         let detected = config_path.is_file()
             || executable.is_some()
             || self.desktop_install_exists(client_id)
-            || (client_id == "opencode" && self.opencode_config_target_exists());
+            || (client_id == "opencode" && self.opencode_config_target_exists())
+            || (client_id == "antigravity" && self.antigravity_target_exists())
+            || (client_id == "deepseek-harness" && self.dsh_target_exists());
         let install_path = executable
             .as_ref()
             .map(|path| path.to_string_lossy().into_owned())
@@ -276,19 +289,11 @@ impl AgentRegistry {
 
         let inspected = match client_id {
             "codex" => self.inspect_codex(),
-            // Claude's `mcp get` performs a health check and may fetch remote
-            // connectors. Inspect the user scope we manage without starting it.
-            "claude-code" | "cursor" | "opencode" => self.inspect_json_client(client_id),
-            "openclaw" => {
-                let Some(executable) = executable else {
-                    status.state = "error".to_owned();
-                    status.can_register = false;
-                    status.message =
-                        "Configuration detected, but no callable CLI was found".to_owned();
-                    return status;
-                };
-                self.inspect_cli_client(&executable).await
+            // Inspect JSON/YAML user-scope configs directly without launching CLIs.
+            "claude-code" | "cursor" | "opencode" | "antigravity" => {
+                self.inspect_json_client(client_id)
             }
+            "deepseek-harness" => self.inspect_deepseek_harness(),
             _ => Ok(EntryState::Available),
         };
         match inspected {
@@ -416,6 +421,8 @@ impl AgentRegistry {
                 })
             }
             "opencode" => Ok(self.opencode_instruction_dir.join("AGENTS.md")),
+            "antigravity" => Ok(self.antigravity_config_dir.join("GEMINI.md")),
+            "deepseek-harness" => Ok(self.dsh_home.join("AGENTS.md")),
             _ => bail!("This Agent has no global rules entry point that can be safely maintained"),
         }
     }
@@ -481,6 +488,9 @@ impl AgentRegistry {
             return Ok(EntryState::Available);
         }
         let text = fs::read_to_string(&path).context("Unable to read Agent JSON configuration")?;
+        if text.trim().is_empty() {
+            return Ok(EntryState::Available);
+        }
         let document: JsonValue = parse_to_serde_value(&text, &ParseOptions::default())
             .context("Invalid Agent JSON/JSONC configuration")?;
         validate_json_client_config(client_id, &document)?;
@@ -560,38 +570,43 @@ impl AgentRegistry {
         Ok(with_legacy_state(state?, has_legacy))
     }
 
-    async fn inspect_cli_client(&self, executable: &Path) -> Result<EntryState> {
-        let current = self
-            .inspect_named_cli_entry(executable, "openkeylet")
-            .await?;
-        let legacy = self.inspect_named_cli_entry(executable, "kru").await?;
+    fn inspect_deepseek_harness(&self) -> Result<EntryState> {
+        let path = self.config_path("deepseek-harness");
+        if !path.is_file() {
+            return Ok(EntryState::Available);
+        }
+        let text =
+            fs::read_to_string(&path).context("Unable to read DeepSeek Harness configuration")?;
+        let (_, blocks) = parse_cordis_patch_blocks(&text)?;
+        let mut current: Option<EntryState> = None;
+        let mut has_legacy = false;
+        for block in &blocks {
+            let parsed = inspect_dsh_block(block);
+            let is_current = parsed.id.as_deref() == Some(DSH_MCP_ENTRY_ID)
+                || parsed.server_name.as_deref() == Some("openkeylet");
+            let is_legacy = parsed.id.as_deref() == Some(DSH_MCP_LEGACY_ID)
+                || parsed.server_name.as_deref() == Some("kru");
+            if is_current {
+                let state = classify_dsh_entry(&parsed, &self.executable);
+                current = Some(match current {
+                    None => state,
+                    Some(EntryState::Conflict) => EntryState::Conflict,
+                    Some(_) if state == EntryState::Conflict => EntryState::Conflict,
+                    Some(_) => EntryState::Stale,
+                });
+            } else if is_legacy
+                && parsed.command.as_deref().is_some_and(|command| {
+                    is_openkeylet_command(command)
+                        || same_path(Path::new(command), &self.executable)
+                })
+            {
+                has_legacy = true;
+            }
+        }
         Ok(with_legacy_state(
             current.unwrap_or(EntryState::Available),
-            matches!(legacy, Some(EntryState::Registered | EntryState::Stale)),
+            has_legacy,
         ))
-    }
-
-    async fn inspect_named_cli_entry(
-        &self,
-        executable: &Path,
-        name: &str,
-    ) -> Result<Option<EntryState>> {
-        let args = vec!["mcp", "show", name, "--json"];
-        let output = self.run_cli_status(executable, &args).await?;
-        let text = output_text(&output);
-        if !output.status.success() {
-            if is_missing_entry(&text) {
-                return Ok(None);
-            }
-            bail!("{}", clean_process_error(&text));
-        }
-        if text_matches(&text, &self.executable) {
-            Ok(Some(EntryState::Registered))
-        } else if text_has_openkeylet_command(&text) {
-            Ok(Some(EntryState::Stale))
-        } else {
-            Ok(Some(EntryState::Conflict))
-        }
     }
 
     fn mutate_codex(&self, action: &str) -> Result<()> {
@@ -652,10 +667,15 @@ impl AgentRegistry {
     fn mutate_json_client(&self, client_id: &str, action: &str) -> Result<()> {
         let path = self.config_path(client_id);
         let original = read_or(&path, "{}\n")?;
-        let root = CstRootNode::parse(&original, &ParseOptions::default())
+        let parsed_source = if original.trim().is_empty() {
+            "{}\n"
+        } else {
+            &original
+        };
+        let root = CstRootNode::parse(parsed_source, &ParseOptions::default())
             .context("Invalid Agent JSON/JSONC configuration; no changes were made")?;
         let original_value: JsonValue =
-            parse_to_serde_value(&original, &ParseOptions::default())
+            parse_to_serde_value(parsed_source, &ParseOptions::default())
                 .context("Invalid Agent JSON/JSONC configuration; no changes were made")?;
         validate_json_client_config(client_id, &original_value)?;
         let root_object = root.object_value_or_set();
@@ -787,119 +807,34 @@ impl AgentRegistry {
         write_atomic_checked(&path, &original, &root.to_string())
     }
 
-    async fn mutate_cli_client(&self, client_id: &str, action: &str) -> Result<()> {
-        let executable = self
-            .find_client_executable(client_id)
-            .context("Agent CLI not found")?;
-        if action == "remove" || action == "repair" {
-            let args = vec!["mcp", "unset", "openkeylet"];
-            let output = self.run_cli_action(&executable, &args).await?;
-            if !(output.status.success() || is_missing_entry(&output_text(&output))) {
-                bail!("{}", clean_process_error(&output_text(&output)));
+    fn mutate_deepseek_harness(&self, action: &str) -> Result<()> {
+        let path = self.config_path("deepseek-harness");
+        let original = read_or(&path, "")?;
+        let (header, blocks) = parse_cordis_patch_blocks(&original)?;
+        if action == "repair" && path.is_file() {
+            backup_config(&path)?;
+        }
+        let mut kept = Vec::new();
+        for block in blocks {
+            let parsed = inspect_dsh_block(&block);
+            let is_current = parsed.id.as_deref() == Some(DSH_MCP_ENTRY_ID)
+                || parsed.server_name.as_deref() == Some("openkeylet");
+            let is_owned_legacy = (parsed.id.as_deref() == Some(DSH_MCP_LEGACY_ID)
+                || parsed.server_name.as_deref() == Some("kru"))
+                && parsed.command.as_deref().is_some_and(|command| {
+                    is_openkeylet_command(command)
+                        || same_path(Path::new(command), &self.executable)
+                });
+            if is_current || is_owned_legacy {
+                continue;
             }
-            if action == "remove" {
-                return self.remove_legacy_cli_entry(&executable).await;
-            }
+            kept.push(block);
         }
-        let exe = self.executable.to_string_lossy().into_owned();
-        let args = vec![
-            "mcp".to_owned(),
-            "add".to_owned(),
-            "openkeylet".to_owned(),
-            "--command".to_owned(),
-            exe,
-            "--arg".to_owned(),
-            "mcp".to_owned(),
-            "--arg".to_owned(),
-            "stdio".to_owned(),
-        ];
-        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        let output = self.run_cli_action(&executable, &refs).await?;
-        if !output.status.success() {
-            bail!("{}", clean_process_error(&output_text(&output)));
+        if action != "remove" {
+            kept.push(render_dsh_mcp_block(&self.executable));
         }
-        self.remove_legacy_cli_entry(&executable).await
-    }
-
-    async fn remove_legacy_cli_entry(&self, executable: &Path) -> Result<()> {
-        if matches!(
-            self.inspect_named_cli_entry(executable, "kru").await?,
-            Some(EntryState::Registered | EntryState::Stale)
-        ) {
-            let args = vec!["mcp", "unset", "kru"];
-            let output = self.run_cli_action(executable, &args).await?;
-            if !(output.status.success() || is_missing_entry(&output_text(&output))) {
-                bail!("{}", clean_process_error(&output_text(&output)));
-            }
-        }
-        Ok(())
-    }
-
-    async fn run_cli_status(&self, executable: &Path, args: &[&str]) -> Result<Output> {
-        self.run_cli(
-            executable,
-            args,
-            STATUS_CLI_TIMEOUT,
-            "Agent CLI status check timed out",
-        )
-        .await
-    }
-
-    async fn run_cli_action(&self, executable: &Path, args: &[&str]) -> Result<Output> {
-        self.run_cli(
-            executable,
-            args,
-            ACTION_CLI_TIMEOUT,
-            "Agent CLI operation timed out",
-        )
-        .await
-    }
-
-    async fn run_cli(
-        &self,
-        executable: &Path,
-        args: &[&str],
-        deadline: Duration,
-        timeout_message: &str,
-    ) -> Result<Output> {
-        let (program, prefix) = self.resolve_program(executable)?;
-        let mut command = Command::new(program);
-        command.args(prefix).args(args).kill_on_drop(true);
-        #[cfg(windows)]
-        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-        timeout(deadline, command.output())
-            .await
-            .with_context(|| timeout_message.to_owned())?
-            .context("Unable to start Agent CLI")
-    }
-
-    fn resolve_program(&self, executable: &Path) -> Result<(PathBuf, Vec<String>)> {
-        if !cfg!(windows)
-            || !executable
-                .extension()
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("cmd"))
-        {
-            return Ok((executable.to_path_buf(), Vec::new()));
-        }
-        let text = fs::read_to_string(executable).context("Unable to read npm command launcher")?;
-        let pattern = regex::Regex::new(r#"(?i)%dp0%\\([^\"\r\n]+\.(?:c?js|mjs))"#)?;
-        let relative = pattern
-            .captures(&text)
-            .and_then(|captures| captures.get(1))
-            .map(|value| value.as_str().replace('\\', "/"))
-            .context("This .cmd is not a supported standard npm launcher")?;
-        let root = executable
-            .parent()
-            .context("Invalid npm launcher directory")?;
-        let target = normalize_path(root.join(relative));
-        let modules = normalize_path(root.join("node_modules"));
-        if !target.starts_with(&modules) || !target.is_file() {
-            bail!("npm launcher target is not in a trusted node_modules");
-        }
-        let node = self
-            .find_named_command(&["node"])
-            .context("node.exe not found; unable to run the npm Agent CLI safely")?;
-        Ok((node, vec![node_script_argument_path(&target)]))
+        let updated = render_cordis_patch(&header, &kept);
+        write_atomic_checked(&path, &original, &updated)
     }
 
     fn config_path(&self, client_id: &str) -> PathBuf {
@@ -908,9 +843,41 @@ impl AgentRegistry {
             "claude-code" => self.claude_config.clone(),
             "cursor" => self.home.join(".cursor").join("mcp.json"),
             "opencode" => self.opencode_config_path(),
-            "openclaw" => self.openclaw_config.clone(),
+            "antigravity" => self.antigravity_config_dir.join("mcp_config.json"),
+            "deepseek-harness" => self.dsh_config_path(),
             _ => self.home.join(".openkeylet").join("unsupported"),
         }
+    }
+
+    fn dsh_config_path(&self) -> PathBuf {
+        let profiles = self.dsh_home.join("profiles");
+        for preferred in ["desktop", "web"] {
+            let dir = profiles.join(preferred);
+            if dir.is_dir() {
+                return dir.join("cordis.patch.yml");
+            }
+        }
+        if let Ok(entries) = fs::read_dir(&profiles) {
+            let mut dirs: Vec<PathBuf> = entries
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| path.is_dir())
+                .collect();
+            dirs.sort();
+            if let Some(first) = dirs.into_iter().next() {
+                return first.join("cordis.patch.yml");
+            }
+        }
+        profiles.join("desktop").join("cordis.patch.yml")
+    }
+
+    fn antigravity_target_exists(&self) -> bool {
+        self.antigravity_config_dir.join("mcp_config.json").is_file()
+            || self.home.join(".gemini").join("antigravity").is_dir()
+    }
+
+    fn dsh_target_exists(&self) -> bool {
+        self.dsh_home.join("profiles").is_dir() || self.dsh_home.join("AGENTS.md").is_file()
     }
 
     fn opencode_config_path(&self) -> PathBuf {
@@ -937,6 +904,8 @@ impl AgentRegistry {
         let names: &[&str] = match client_id {
             "claude-code" => &["claude"],
             "cursor" => &["cursor-agent", "cursor"],
+            "antigravity" => &["agy", "antigravity"],
+            "deepseek-harness" => &["dsh"],
             _ => &[client_id],
         };
         self.find_named_command(names)
@@ -951,7 +920,8 @@ impl AgentRegistry {
             self.home.join(".local").join("share").join("pnpm"),
             self.home.join(".codex").join("bin"),
             self.home.join(".opencode").join("bin"),
-            self.home.join(".openclaw").join("bin"),
+            self.home.join(".gemini").join("antigravity").join("bin"),
+            self.app_data.join("Antigravity").join("bin"),
             self.app_data.join("npm"),
             self.local_app_data.join("pnpm"),
         ];
@@ -1024,6 +994,29 @@ impl AgentRegistry {
                     .join("opencode")
                     .join("OpenCode.exe"),
             ],
+            ("antigravity", "windows") => vec![
+                self.local_app_data
+                    .join("Programs")
+                    .join("Antigravity")
+                    .join("Antigravity.exe"),
+                self.app_data.join("Antigravity"),
+            ],
+            ("deepseek-harness", "windows") => vec![
+                self.local_app_data
+                    .join("Programs")
+                    .join("DeepSeek Harness")
+                    .join("DeepSeek Harness.exe"),
+                self.local_app_data
+                    .join("DeepSeek Harness")
+                    .join("DeepSeek Harness.exe"),
+                self.home
+                    .join("Documents")
+                    .join("myenv")
+                    .join("tools")
+                    .join("dsh")
+                    .join("app")
+                    .join("DeepSeek Harness.exe"),
+            ],
             ("codex", "macos") => vec![
                 PathBuf::from("/Applications/Codex.app"),
                 self.home.join("Applications/Codex.app"),
@@ -1035,6 +1028,14 @@ impl AgentRegistry {
             ("opencode", "macos") => vec![
                 PathBuf::from("/Applications/OpenCode.app"),
                 self.home.join("Applications/OpenCode.app"),
+            ],
+            ("antigravity", "macos") => vec![
+                PathBuf::from("/Applications/Antigravity.app"),
+                self.home.join("Applications/Antigravity.app"),
+            ],
+            ("deepseek-harness", "macos") => vec![
+                PathBuf::from("/Applications/DeepSeek Harness.app"),
+                self.home.join("Applications/DeepSeek Harness.app"),
             ],
             _ => Vec::new(),
         };
@@ -1078,7 +1079,10 @@ enum InstructionState {
 }
 
 fn supports_managed_instruction(client_id: &str) -> bool {
-    matches!(client_id, "codex" | "claude-code" | "opencode")
+    matches!(
+        client_id,
+        "codex" | "claude-code" | "opencode" | "antigravity" | "deepseek-harness"
+    )
 }
 
 fn apply_entry_state(status: &mut AgentClientStatus, state: EntryState) {
@@ -1150,7 +1154,7 @@ fn legacy_json_paths(client_id: &str) -> &'static [&'static str] {
 }
 
 fn uses_mcp_servers(client_id: &str) -> bool {
-    matches!(client_id, "claude-code" | "cursor")
+    matches!(client_id, "claude-code" | "cursor" | "antigravity")
 }
 
 fn validate_json_client_config(client_id: &str, document: &JsonValue) -> Result<()> {
@@ -1193,31 +1197,185 @@ fn classify_command(command: &str, args: &[String], executable: &Path) -> EntryS
     }
 }
 
-fn text_matches(text: &str, executable: &Path) -> bool {
-    let normalized = text.replace("\\/", "/").to_ascii_lowercase();
-    let exact = executable.to_string_lossy().to_ascii_lowercase();
-    let portable = exact.strip_prefix(r"\\?\").unwrap_or(&exact);
-    let candidates = [
-        exact.clone(),
-        portable.to_owned(),
-        exact.replace('\\', r"\\"),
-        portable.replace('\\', r"\\"),
-    ];
-    candidates
-        .iter()
-        .any(|candidate| normalized.contains(candidate))
-        && normalized.contains("mcp")
-        && normalized.contains("stdio")
+#[derive(Debug, Default)]
+struct DshBlockInfo {
+    id: Option<String>,
+    name: Option<String>,
+    server_name: Option<String>,
+    transport: Option<String>,
+    command: Option<String>,
+    args: Vec<String>,
 }
 
-fn text_has_openkeylet_command(text: &str) -> bool {
-    let pattern =
-        regex::Regex::new(r#"(?im)(?:^\s*command\s*:\s*|\"command\"\s*:\s*\")([^\"\r\n,]+)"#)
-            .expect("static command regex");
-    pattern
-        .captures_iter(text)
-        .filter_map(|captures| captures.get(1))
-        .any(|command| is_openkeylet_command(command.as_str().trim()))
+fn parse_cordis_patch_blocks(text: &str) -> Result<(String, Vec<String>)> {
+    let normalized = text.replace("\r\n", "\n");
+    let mut header_lines = Vec::new();
+    let mut blocks: Vec<Vec<String>> = Vec::new();
+    for line in normalized.lines() {
+        let trimmed = line.trim();
+        if blocks.is_empty() {
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                header_lines.push(line.to_owned());
+                continue;
+            }
+            if trimmed == "[]" {
+                continue;
+            }
+            if line.starts_with("- ") || line == "-" {
+                blocks.push(vec![line.to_owned()]);
+                continue;
+            }
+            bail!(
+                "DeepSeek Harness cordis.patch.yml must be a top-level YAML list; no changes were made"
+            );
+        } else if line.starts_with("- ") || line == "-" {
+            blocks.push(vec![line.to_owned()]);
+        } else {
+            blocks.last_mut().unwrap().push(line.to_owned());
+        }
+    }
+    let header = header_lines.join("\n").trim_end_matches('\n').to_owned();
+    let blocks = blocks
+        .into_iter()
+        .map(|lines| lines.join("\n").trim_end_matches('\n').to_owned())
+        .collect();
+    Ok((header, blocks))
+}
+
+fn unquote_yaml_scalar(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2 {
+        if let Ok(parsed) = serde_json::from_str::<String>(trimmed) {
+            return parsed;
+        }
+        return trimmed[1..trimmed.len() - 1].to_owned();
+    }
+    if trimmed.starts_with('\'') && trimmed.ends_with('\'') && trimmed.len() >= 2 {
+        return trimmed[1..trimmed.len() - 1].replace("''", "'");
+    }
+    trimmed.to_owned()
+}
+
+fn parse_yaml_inline_list(raw: &str) -> Vec<String> {
+    let trimmed = raw.trim();
+    let Some(inner) = trimmed.strip_prefix('[').and_then(|s| s.strip_suffix(']')) else {
+        return Vec::new();
+    };
+    if inner.trim().is_empty() {
+        return Vec::new();
+    }
+    inner
+        .split(',')
+        .map(unquote_yaml_scalar)
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+fn inspect_dsh_block(block: &str) -> DshBlockInfo {
+    let mut info = DshBlockInfo::default();
+    let mut in_config = false;
+    let mut config_indent = 0usize;
+    let mut in_args = false;
+    let mut args_indent = 0usize;
+
+    for raw_line in block.lines() {
+        let line = raw_line.trim_end();
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let indent = line.len() - line.trim_start().len();
+        if in_args && indent <= args_indent && !trimmed.starts_with("- ") {
+            in_args = false;
+        }
+        if in_args {
+            if let Some(rest) = trimmed.strip_prefix("- ") {
+                info.args.push(unquote_yaml_scalar(rest));
+                continue;
+            }
+            in_args = false;
+        }
+        if in_config && indent <= config_indent && !line.starts_with("- ") {
+            in_config = false;
+        }
+
+        let effective = if line.starts_with("- ") {
+            &line[2..]
+        } else {
+            trimmed
+        };
+        let Some((key, val)) = effective.split_once(':') else {
+            continue;
+        };
+        let key = key.trim();
+        let val = val.trim();
+        if !in_config && indent <= 2 {
+            match key {
+                "id" => info.id = Some(unquote_yaml_scalar(val)),
+                "name" => info.name = Some(unquote_yaml_scalar(val)),
+                "config" => {
+                    in_config = true;
+                    config_indent = indent;
+                }
+                _ => {}
+            }
+        } else if in_config {
+            match key {
+                "serverName" => info.server_name = Some(unquote_yaml_scalar(val)),
+                "transport" => info.transport = Some(unquote_yaml_scalar(val)),
+                "command" => info.command = Some(unquote_yaml_scalar(val)),
+                "args" => {
+                    if val.is_empty() {
+                        in_args = true;
+                        args_indent = indent;
+                    } else {
+                        info.args = parse_yaml_inline_list(val);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    info
+}
+
+fn classify_dsh_entry(info: &DshBlockInfo, executable: &Path) -> EntryState {
+    let command = info.command.as_deref().unwrap_or_default();
+    let plugin_ok = info.name.as_deref() == Some(DSH_MCP_PLUGIN_NAME);
+    let transport_ok = info.transport.as_deref() == Some("stdio");
+    let server_ok = info.server_name.as_deref() == Some("openkeylet");
+    let id_ok = info.id.as_deref() == Some(DSH_MCP_ENTRY_ID);
+    let command_state = classify_command(command, &info.args, executable);
+    if command_state == EntryState::Registered && plugin_ok && transport_ok && server_ok && id_ok {
+        EntryState::Registered
+    } else if command_state == EntryState::Conflict && !is_openkeylet_command(command) {
+        EntryState::Conflict
+    } else {
+        EntryState::Stale
+    }
+}
+
+fn render_dsh_mcp_block(executable: &Path) -> String {
+    let quoted_command = serde_json::to_string(&executable.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| format!("\"{}\"", executable.display()));
+    format!(
+        "- id: {DSH_MCP_ENTRY_ID}\n  name: \"{DSH_MCP_PLUGIN_NAME}\"\n  config:\n    serverName: openkeylet\n    transport: stdio\n    command: {quoted_command}\n    args:\n      - mcp\n      - stdio"
+    )
+}
+
+fn render_cordis_patch(header: &str, blocks: &[String]) -> String {
+    let mut out = String::new();
+    if !header.is_empty() {
+        out.push_str(header);
+        out.push('\n');
+    }
+    if blocks.is_empty() {
+        out.push_str("[]\n");
+    } else {
+        out.push_str(&blocks.join("\n"));
+        out.push('\n');
+    }
+    out
 }
 
 fn is_openkeylet_command(command: &str) -> bool {
@@ -1248,22 +1406,6 @@ fn same_path(left: &Path, right: &Path) -> bool {
 
 fn normalize_path(path: impl AsRef<Path>) -> PathBuf {
     fs::canonicalize(path.as_ref()).unwrap_or_else(|_| path.as_ref().to_path_buf())
-}
-
-fn node_script_argument_path(path: &Path) -> String {
-    #[cfg(windows)]
-    {
-        let path = path.to_string_lossy();
-        if let Some(path) = path.strip_prefix(r"\\?\UNC\") {
-            format!(r"\\{path}")
-        } else {
-            path.strip_prefix(r"\\?\").unwrap_or(&path).to_owned()
-        }
-    }
-    #[cfg(not(windows))]
-    {
-        path.to_string_lossy().into_owned()
-    }
 }
 
 fn is_runnable_file(path: &Path) -> bool {
@@ -1326,10 +1468,40 @@ fn preferred_json_config(directory: &Path) -> PathBuf {
     if json.is_file() { json } else { jsonc }
 }
 
-fn resolve_openclaw_config(home: &Path, configured: Option<PathBuf>) -> PathBuf {
+fn resolve_antigravity_config_dir(home: &Path, configured: Option<PathBuf>) -> PathBuf {
     configured
         .filter(|path| !path.as_os_str().is_empty())
-        .unwrap_or_else(|| home.join(".openclaw").join("openclaw.json"))
+        .unwrap_or_else(|| home.join(".gemini").join("config"))
+}
+
+fn resolve_dsh_home(home: &Path, configured: Option<PathBuf>) -> PathBuf {
+    if let Some(path) = configured.filter(|path| !path.as_os_str().is_empty()) {
+        return path;
+    }
+    let default = home.join(".dsh");
+    if default.exists() {
+        return default;
+    }
+    let myenv_projects = home.join("Documents").join("myenv").join("projects");
+    if let Ok(entries) = fs::read_dir(&myenv_projects) {
+        let mut homes: Vec<PathBuf> = entries
+            .flatten()
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .to_ascii_lowercase()
+                    .starts_with("dsh-")
+            })
+            .map(|entry| entry.path().join("home"))
+            .filter(|candidate| candidate.join("profiles").is_dir())
+            .collect();
+        homes.sort();
+        if let Some(found) = homes.into_iter().next() {
+            return found;
+        }
+    }
+    default
 }
 
 fn toml_array_strings(array: &Array) -> Vec<String> {
@@ -1469,45 +1641,14 @@ fn backup_config(path: &Path) -> Result<PathBuf> {
     Ok(backup)
 }
 
-fn output_text(output: &Output) -> String {
-    format!(
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    )
-}
-
-fn is_missing_entry(text: &str) -> bool {
-    let text = text.to_ascii_lowercase();
-    [
-        "not found",
-        "does not exist",
-        "no mcp",
-        "unknown mcp",
-        "unknown server",
-        "Not found",
-        "Does not exist",
-    ]
-    .iter()
-    .any(|needle| text.contains(needle))
-}
-
-fn clean_process_error(text: &str) -> String {
-    let text = text.trim();
-    if text.is_empty() {
-        "Agent CLI operation failed".to_owned()
-    } else {
-        text.chars().take(600).collect()
-    }
-}
-
 fn display_name(client_id: &str) -> &str {
     match client_id {
         "codex" => "Codex",
         "claude-code" => "Claude Code",
         "cursor" => "Cursor",
         "opencode" => "OpenCode",
-        "openclaw" => "OpenClaw",
+        "antigravity" => "Antigravity",
+        "deepseek-harness" => "DeepSeek Harness",
         _ => "Unknown Agent",
     }
 }
@@ -2126,11 +2267,19 @@ mod tests {
         let resolved = resolve_opencode_config(&home, None, None, Some(xdg.clone()));
         assert_eq!(resolved, (xdg.join("opencode/opencode.jsonc"), false));
 
-        let openclaw = temp.path().join("openclaw-custom.json5");
+        let antigravity = temp.path().join("antigravity-custom");
         assert_eq!(
-            resolve_openclaw_config(&home, Some(openclaw.clone())),
-            openclaw
+            resolve_antigravity_config_dir(&home, Some(antigravity.clone())),
+            antigravity
         );
+        assert_eq!(
+            resolve_antigravity_config_dir(&home, None),
+            home.join(".gemini/config")
+        );
+
+        let dsh = temp.path().join("dsh-custom");
+        assert_eq!(resolve_dsh_home(&home, Some(dsh.clone())), dsh);
+        assert_eq!(resolve_dsh_home(&home, None), home.join(".dsh"));
     }
 
     #[test]
@@ -2180,16 +2329,28 @@ mod tests {
             Some(normalize_path(&opencode))
         );
 
-        let openclaw = temp
+        let antigravity = temp
             .path()
-            .join(".openclaw/bin")
-            .join(format!("openclaw{suffix}"));
-        fs::create_dir_all(openclaw.parent().unwrap()).unwrap();
-        fs::write(&openclaw, b"test").unwrap();
-        make_test_executable(&openclaw);
+            .join(".gemini/antigravity/bin")
+            .join(format!("agy{suffix}"));
+        fs::create_dir_all(antigravity.parent().unwrap()).unwrap();
+        fs::write(&antigravity, b"test").unwrap();
+        make_test_executable(&antigravity);
         assert_eq!(
-            registry.find_client_executable("openclaw"),
-            Some(normalize_path(&openclaw))
+            registry.find_client_executable("antigravity"),
+            Some(normalize_path(&antigravity))
+        );
+
+        let dsh = temp
+            .path()
+            .join(".local/bin")
+            .join(format!("dsh{suffix}"));
+        fs::create_dir_all(dsh.parent().unwrap()).unwrap();
+        fs::write(&dsh, b"test").unwrap();
+        make_test_executable(&dsh);
+        assert_eq!(
+            registry.find_client_executable("deepseek-harness"),
+            Some(normalize_path(&dsh))
         );
 
         let unrelated = temp.path().join("bin/opencode-helper.exe");
@@ -2211,40 +2372,136 @@ mod tests {
         assert_eq!(ids, CLIENT_IDS);
     }
 
-    #[test]
-    fn cli_conflict_detection_checks_command_not_server_name() {
-        assert!(!text_has_openkeylet_command(
-            "openkeylet:\n  Command: C:\\tools\\other.exe\n  Args: mcp stdio"
-        ));
-        assert!(text_has_openkeylet_command(
-            r#"{"name":"openkeylet","command":"C:\\old\\openkeylet.exe","args":["mcp","stdio"]}"#
-        ));
+    #[tokio::test]
+    async fn antigravity_registration_handles_empty_config_and_managed_gemini_rules() {
+        let (_temp, registry) = registry();
+        let path = registry.config_path("antigravity");
+        assert_eq!(path.file_name().unwrap(), "mcp_config.json");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // Real Antigravity installations may initialize an empty 0-byte mcp_config.json.
+        fs::write(&path, "").unwrap();
+        let rules_path = registry.antigravity_config_dir.join("GEMINI.md");
+        fs::write(&rules_path, "# My Antigravity Rules\n").unwrap();
+
+        let before = registry.status("antigravity").await;
+        assert!(before.detected);
+        assert_eq!(before.state, "available");
+        assert!(before.can_register);
+
+        assert!(registry.mutate("antigravity", "register").await.ok);
+        let value: JsonValue = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            value.pointer("/mcpServers/openkeylet/args"),
+            Some(&serde_json::json!(["mcp", "stdio"]))
+        );
+        let rules = fs::read_to_string(&rules_path).unwrap();
+        assert!(rules.starts_with("# My Antigravity Rules"));
+        assert!(rules.contains(OPENKEYLET_INSTRUCTION_BLOCK));
+        assert_eq!(registry.status("antigravity").await.state, "registered");
+
+        assert!(registry.mutate("antigravity", "remove").await.ok);
+        assert_eq!(registry.status("antigravity").await.state, "available");
+        let after_rules = fs::read_to_string(&rules_path).unwrap();
+        assert!(after_rules.starts_with("# My Antigravity Rules"));
+        assert!(!after_rules.contains(OPENKEYLET_INSTRUCTION_START));
+    }
+
+    #[tokio::test]
+    async fn deepseek_harness_registration_repair_and_removal_preserve_cordis_patch() {
+        let (_temp, registry) = registry();
+        let path = registry.config_path("deepseek-harness");
+        assert_eq!(path.file_name().unwrap(), "cordis.patch.yml");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let initial = "\
+# DeepSeek Harness desktop profile patch
+- id: custom-provider
+  name: \"@deepseek-ai/dsh-provider-custom\"
+  config:
+    token: !!js/function () { return process.env.MY_TOKEN; }
+";
+        fs::write(&path, initial).unwrap();
+        let rules_path = registry.dsh_home.join("AGENTS.md");
+        fs::write(&rules_path, "# Personal DSH rules\n").unwrap();
+
+        let before = registry.status("deepseek-harness").await;
+        assert!(before.detected);
+        assert_eq!(before.state, "available");
+        assert!(before.can_register);
+
+        assert!(registry.mutate("deepseek-harness", "register").await.ok);
+        assert_eq!(registry.status("deepseek-harness").await.state, "registered");
+        let registered_text = fs::read_to_string(&path).unwrap();
+        assert!(registered_text.contains("# DeepSeek Harness desktop profile patch"));
+        assert!(registered_text.contains("!!js/function () { return process.env.MY_TOKEN; }"));
+        assert!(registered_text.contains("- id: mcp-openkeylet"));
+        assert!(registered_text.contains("name: \"@deepseek-ai/dsh-mcp-client\""));
+        assert!(registered_text.contains("serverName: openkeylet"));
+        assert!(
+            fs::read_to_string(&rules_path)
+                .unwrap()
+                .contains(OPENKEYLET_INSTRUCTION_BLOCK)
+        );
+
+        // Stale legacy entry is migrated cleanly on repair and backed up.
+        let stale = format!(
+            "{initial}\n- id: mcp-kru\n  name: \"@deepseek-ai/dsh-mcp-client\"\n  config:\n    serverName: kru\n    transport: stdio\n    command: \"/old/kru\"\n    args:\n      - mcp\n      - stdio\n"
+        );
+        fs::write(&path, &stale).unwrap();
+        let stale_status = registry.status("deepseek-harness").await;
+        assert_eq!(stale_status.state, "stale");
+        assert!(stale_status.can_repair);
+
+        assert!(registry.mutate("deepseek-harness", "repair").await.ok);
+        assert_eq!(registry.status("deepseek-harness").await.state, "registered");
+        let repaired_text = fs::read_to_string(&path).unwrap();
+        assert!(!repaired_text.contains("mcp-kru"));
+        assert!(repaired_text.contains("- id: mcp-openkeylet"));
+        assert!(repaired_text.contains("!!js/function"));
+        assert!(fs::read_dir(path.parent().unwrap()).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains("cordis.patch.yml.openkeylet.")
+        }));
+
+        // Removal cleans OpenKeylet entry and rules while preserving personal content.
+        assert!(registry.mutate("deepseek-harness", "remove").await.ok);
+        assert_eq!(registry.status("deepseek-harness").await.state, "available");
+        let removed_text = fs::read_to_string(&path).unwrap();
+        assert!(!removed_text.contains("mcp-openkeylet"));
+        assert!(removed_text.contains("custom-provider"));
+        assert!(removed_text.contains("!!js/function"));
+        let after_rules = fs::read_to_string(&rules_path).unwrap();
+        assert!(after_rules.starts_with("# Personal DSH rules"));
+        assert!(!after_rules.contains(OPENKEYLET_INSTRUCTION_START));
+
+        // Unrelated entry with conflicting serverName is reported as conflict and never overwritten.
+        let conflict = format!(
+            "{initial}\n- id: mcp-openkeylet\n  name: \"@deepseek-ai/dsh-mcp-client\"\n  config:\n    serverName: openkeylet\n    transport: stdio\n    command: \"/usr/bin/other-server\"\n"
+        );
+        fs::write(&path, &conflict).unwrap();
+        assert_eq!(registry.status("deepseek-harness").await.state, "conflict");
+        assert!(!registry.mutate("deepseek-harness", "register").await.ok);
+        assert_eq!(fs::read_to_string(&path).unwrap(), conflict);
     }
 
     #[test]
-    fn cli_path_match_accepts_windows_verbatim_path_output() {
-        let executable = Path::new(r"\\?\C:\Users\malou\openkeylet.exe");
-        assert!(text_matches(
-            r"Command: \\?\C:\Users\malou\openkeylet.exe
-Args: mcp stdio",
-            executable
-        ));
-        assert!(text_matches(
-            r#"{"command":"\\\\?\\C:\\Users\\malou\\openkeylet.exe","args":["mcp","stdio"]}"#,
-            executable
-        ));
-    }
+    fn deepseek_harness_selects_existing_profile_config() {
+        let (_temp, registry) = registry();
+        assert_eq!(
+            registry.config_path("deepseek-harness"),
+            registry.dsh_home.join("profiles/desktop/cordis.patch.yml")
+        );
 
-    #[cfg(windows)]
-    #[test]
-    fn node_argv_uses_an_ordinary_windows_path() {
-        assert_eq!(
-            node_script_argument_path(Path::new(r"\\?\C:\Users\test\node_modules\cli.js")),
-            r"C:\Users\test\node_modules\cli.js"
-        );
-        assert_eq!(
-            node_script_argument_path(Path::new(r"\\?\UNC\server\share\cli.js")),
-            r"\\server\share\cli.js"
-        );
+        let web_patch = registry.dsh_home.join("profiles/web/cordis.patch.yml");
+        fs::create_dir_all(web_patch.parent().unwrap()).unwrap();
+        fs::write(&web_patch, "[]\n").unwrap();
+        assert_eq!(registry.config_path("deepseek-harness"), web_patch);
+
+        let desktop_patch = registry.dsh_home.join("profiles/desktop/cordis.patch.yml");
+        fs::create_dir_all(desktop_patch.parent().unwrap()).unwrap();
+        fs::write(&desktop_patch, "[]\n").unwrap();
+        assert_eq!(registry.config_path("deepseek-harness"), desktop_patch);
     }
 }

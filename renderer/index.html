@@ -6,11 +6,8 @@
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>OpenKeylet</title>
     <link rel="stylesheet" href="styles.css" />
-    <link rel="stylesheet" href="bricktone.css" />
+    <link rel="stylesheet" href="modern-theme.css" />
     <link rel="stylesheet" href="github-backup.css" />
-    <link rel="stylesheet" href="bricktone-editor.css" />
-    <link rel="stylesheet" href="bricktone-light.css" />
-    <link rel="stylesheet" href="bricktone-appearance.css" />
     <link rel="stylesheet" href="item-grid.css" />
     <script src="appearance.js"></script>
   </head>
@@ -18,94 +15,31 @@
     <div class="title-drag-region" data-tauri-drag-region="deep">
       <div class="app-mark">
         <span class="app-mark-symbol" aria-hidden="true">
-        <svg class="app-mark-logo" viewBox="-24 -24 448 448" aria-hidden="true">
-          <!-- Construction: 100-unit cells, 8-unit inset, 16-unit corner radius.
-               The ring occupies the upper-left 3 x 3 cells with its center cut out.
-               The key bit occupies (4,3), (3,4), (4,4); a 16-unit seam separates it.
-               Bricktone finish at 26px: 0.65px upper inner shade, 0.5px softness,
-               0.4px lower inner lip; the completed engraving is skewed -7.125deg. -->
-          <defs>
-            <filter id="openkeylet-mark-engraving" x="-32" y="-32" width="464" height="464" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
-              <feFlood class="logo-emission-ink" flood-color="#39d5f5" result="signal-ink"/>
-              <feGaussianBlur in="SourceAlpha" stdDeviation="18" result="far-light"/>
-              <feComposite in="signal-ink" in2="far-light" operator="in" result="far-color"/>
-              <feComponentTransfer in="far-color" result="far-emission"><feFuncA type="linear" slope=".2"/></feComponentTransfer>
-              <feGaussianBlur in="SourceAlpha" stdDeviation="8" result="near-light"/>
-              <feComposite in="signal-ink" in2="near-light" operator="in" result="near-color"/>
-              <feComponentTransfer in="near-color" result="near-emission"><feFuncA type="linear" slope=".52"/></feComponentTransfer>
-              <feGaussianBlur in="SourceAlpha" stdDeviation="7.6923" result="cut-softness"/>
-              <feOffset in="cut-softness" dy="10" result="cut-down"/>
-              <feComposite in="SourceAlpha" in2="cut-down" operator="out" result="upper-cut"/>
-              <feFlood flood-color="#000000" flood-opacity=".28" result="cut-ink"/>
-              <feComposite in="cut-ink" in2="upper-cut" operator="in" result="inner-shade"/>
-              <feOffset in="SourceAlpha" dy="-6.1538" result="lip-up"/>
-              <feComposite in="SourceAlpha" in2="lip-up" operator="out" result="lower-lip"/>
-              <feFlood flood-color="#ffffff" flood-opacity=".07" result="lip-light"/>
-              <feComposite in="lip-light" in2="lower-lip" operator="in" result="inner-light"/>
-              <feMerge>
-                <feMergeNode in="far-emission"/>
-                <feMergeNode in="near-emission"/>
-                <feMergeNode in="SourceGraphic"/>
-                <feMergeNode in="inner-shade"/>
-                <feMergeNode in="inner-light"/>
-              </feMerge>
-            </filter>
-            <filter id="openkeylet-bit-engraving" x="-32" y="-32" width="464" height="464" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
-              <feGaussianBlur in="SourceGraphic" stdDeviation="18" result="far-light"/>
-              <feComponentTransfer in="far-light" result="far-emission"><feFuncA type="linear" slope=".2"/></feComponentTransfer>
-              <feGaussianBlur in="SourceGraphic" stdDeviation="8" result="near-light"/>
-              <feComponentTransfer in="near-light" result="near-emission"><feFuncA type="linear" slope=".52"/></feComponentTransfer>
-              <feGaussianBlur in="SourceAlpha" stdDeviation="7.6923" result="cut-softness"/>
-              <feOffset in="cut-softness" dy="10" result="cut-down"/>
-              <feComposite in="SourceAlpha" in2="cut-down" operator="out" result="upper-cut"/>
-              <feFlood flood-color="#000000" flood-opacity=".28" result="cut-ink"/>
-              <feComposite in="cut-ink" in2="upper-cut" operator="in" result="inner-shade"/>
-              <feOffset in="SourceAlpha" dy="-6.1538" result="lip-up"/>
-              <feComposite in="SourceAlpha" in2="lip-up" operator="out" result="lower-lip"/>
-              <feFlood flood-color="#ffffff" flood-opacity=".07" result="lip-light"/>
-              <feComposite in="lip-light" in2="lower-lip" operator="in" result="inner-light"/>
-              <feMerge>
-                <feMergeNode in="far-emission"/>
-                <feMergeNode in="near-emission"/>
-                <feMergeNode in="SourceGraphic"/>
-                <feMergeNode in="inner-shade"/>
-                <feMergeNode in="inner-light"/>
-              </feMerge>
-            </filter>
-          </defs>
-          <g class="logo-tilt" transform="translate(200 200) skewX(-7.125) translate(-200 -200)">
-            <path class="logo-ring" fill="#8ce7f9" fill-rule="evenodd" filter="url(#openkeylet-mark-engraving)" d="M24 8H276A16 16 0 0 1 292 24V276A16 16 0 0 1 276 292H24A16 16 0 0 1 8 276V24A16 16 0 0 1 24 8ZM124 108H176A16 16 0 0 1 192 124V176A16 16 0 0 1 176 192H124A16 16 0 0 1 108 176V124A16 16 0 0 1 124 108Z"/>
-            <path class="logo-bit" fill="#f2f4f4" filter="url(#openkeylet-bit-engraving)" d="M324 208H376A16 16 0 0 1 392 224V376A16 16 0 0 1 376 392H224A16 16 0 0 1 208 376V324A16 16 0 0 1 224 308H292A16 16 0 0 0 308 292V224A16 16 0 0 1 324 208Z"/>
-          </g>
+        <svg class="app-mark-logo" viewBox="0 0 400 400" aria-hidden="true">
+          <!-- Construction: 100-unit cells, 8-unit inset, 16-unit corner radius. -->
+          <path class="logo-ring" fill="#f4f4f5" fill-rule="evenodd" d="M24 8H276A16 16 0 0 1 292 24V276A16 16 0 0 1 276 292H24A16 16 0 0 1 8 276V24A16 16 0 0 1 24 8ZM124 108H176A16 16 0 0 1 192 124V176A16 16 0 0 1 176 192H124A16 16 0 0 1 108 176V124A16 16 0 0 1 124 108Z"/>
+          <path class="logo-bit" fill="#a1a1aa" d="M324 208H376A16 16 0 0 1 392 224V376A16 16 0 0 1 376 392H224A16 16 0 0 1 208 376V324A16 16 0 0 1 224 308H292A16 16 0 0 0 308 292V224A16 16 0 0 1 324 208Z"/>
         </svg>
         </span>
         <strong>OpenKeylet</strong>
       </div>
-      <div class="title-search" id="title-search">
-        <button id="title-search-toggle" type="button" aria-expanded="false" aria-controls="title-search-input" aria-label="Search vault items" title="Search vault items">
+      <div class="title-search" id="title-search" data-tauri-drag-region="false">
+        <button id="title-search-toggle" type="button" aria-label="Search vault items" title="Search vault items">
           <svg class="search-open-glyph" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg>
           <svg class="search-close-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12m0-12L6 18"/></svg>
         </button>
-        <input id="title-search-input" class="page-search-input" data-page-search="connections" type="search" placeholder="Search items…" aria-label="Search vault items" autocomplete="off" hidden />
+        <input id="title-search-input" class="page-search-input" data-page-search="connections" type="search" placeholder="Search items…" aria-label="Search vault items" autocomplete="off" />
       </div>
       <div class="title-tools" data-tauri-drag-region="false">
       <button class="title-switch" id="theme-toggle" type="button" role="switch" aria-checked="false" aria-label="Light mode" title="Switch to light mode">
         <span class="title-switch-option" data-state="false" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M20 12A8 8 0 1 1 12 4A6 6 0 0 0 20 12Z"/></svg></span>
         <span class="title-switch-option" data-state="true" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></svg></span>
       </button>
-      <button class="title-switch" id="sound-toggle" type="button" role="switch" aria-checked="false" aria-label="Interface sounds" title="Turn interface sounds on">
-        <span class="title-switch-option" data-state="false" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 9H7L12 5V19L7 15H3Z"/><path d="m15 9 6 6m0-6-6 6"/></svg></span>
-        <span class="title-switch-option" data-state="true" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 9H7L12 5V19L7 15H3Z"/><path d="M15 9Q18 12 15 15M18 6Q24 12 18 18"/></svg></span>
-      </button>
-      <div class="language-switch" id="language-switch" role="group" aria-label="Language">
-        <button class="active" type="button" data-language="en">EN</button>
-        <button type="button" data-language="zh">ZH</button>
-      </div>
       <button class="owner-lock-button hidden" id="owner-lock-button" type="button">LOCK</button>
-      <div class="window-controls">
+      </div>
+      <div class="window-controls" data-tauri-drag-region="false">
         <div class="window-control-well"><button class="window-control" data-window-action="minimize" aria-label="Minimize"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14" /></svg></button></div>
         <div class="window-control-well"><button class="window-control close" data-window-action="close" aria-label="Close"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12m0-12L6 18" /></svg></button></div>
-      </div>
       </div>
     </div>
 
@@ -124,12 +58,12 @@
         <section class="page active" id="page-connections">
           <header class="page-header connections-header">
             <div class="filter-strip item-type-switch" id="item-type-switch" role="group" aria-label="Item type filter"></div>
-            <div class="creation-control command-well" data-mode="add" role="group" aria-label="Add or continue a draft">
-              <div class="creation-options">
-                <button class="creation-option" id="add-connection-button" type="button" aria-pressed="true">＋ Add</button>
-                <button class="creation-option" id="drafts-button" type="button" aria-pressed="false" disabled>Draft</button>
+            <div class="creation-control" data-mode="add">
+              <div class="draft-pill hidden" id="draft-pill">
+                <button class="draft-resume-button" id="drafts-button" type="button" disabled>Draft</button>
+                <button class="draft-delete-button hidden" id="delete-draft-button" type="button" aria-label="Delete draft" title="Delete draft">×</button>
               </div>
-              <button class="draft-delete-button hidden" id="delete-draft-button" type="button" aria-label="Delete draft" title="Delete draft">×</button>
+              <button class="button primary add-item-button" id="add-connection-button" type="button">＋ Add</button>
             </div>
           </header>
           <div class="list-well"><div class="connections-grid" id="connections-list" tabindex="0" aria-label="Vault items"></div></div>
@@ -167,17 +101,23 @@
             </section>
 
             <section class="content-panel settings-card" data-module="APP / 03">
-              <div class="settings-heading"><div><h2>Window and lock</h2><p>Control the close button and local PIN lock.</p></div></div>
+              <div class="settings-heading"><div><h2>Window and preferences</h2><p>Control language, sounds, close behavior and local PIN lock.</p></div></div>
               <div class="desktop-options">
+                <div class="desktop-option" id="language-option"><span><strong>Interface language</strong><small>Switch between English and Simplified Chinese</small></span><div class="language-switch" id="language-switch" role="group" aria-label="Language"><button class="active" type="button" data-language="en">EN</button><button type="button" data-language="zh">ZH</button></div></div>
+                <div class="desktop-option" id="sound-option"><span><strong>Interface sounds</strong><small>Subtle click feedback for toggles and buttons</small></span><button class="title-switch" id="sound-toggle" type="button" role="switch" aria-checked="false" aria-label="Interface sounds" title="Turn interface sounds on"><span class="title-switch-option" data-state="false" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 9H7L12 5V19L7 15H3Z"/><path d="m15 9 6 6m0-6-6 6"/></svg></span><span class="title-switch-option" data-state="true" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 9H7L12 5V19L7 15H3Z"/><path d="M15 9Q18 12 15 15M18 6Q24 12 18 18"/></svg></span></button></div>
                 <label class="desktop-option" for="close-behavior"><span><strong>Close button</strong><small>Minimize to keep the tray menu available</small></span><select class="input" id="close-behavior"><option value="tray">Minimize to tray</option><option value="exit">Quit OpenKeylet</option></select></label>
-                <div class="desktop-option pin-option"><span><strong>PIN lock</strong><small>Turning this off removes the current PIN; set a new PIN when you turn it on again</small></span><label class="switch"><input type="checkbox" id="pin-enabled" /><span></span></label></div>
+                <div class="desktop-option pin-option"><span><strong>PIN lock</strong><small>Locks desktop viewing and management against others on this device; turning off removes the PIN</small></span><label class="switch"><input type="checkbox" id="pin-enabled" /><span></span></label></div>
+                <label class="desktop-option hidden" id="owner-auto-lock-option" for="owner-auto-lock-minutes"><span><strong>Auto-lock</strong><small>Lock the desktop window after idle time (background MCP remains ready)</small></span><select class="input" id="owner-auto-lock-minutes"><option value="0">Never</option><option value="5">5 minutes</option><option value="15">15 minutes</option><option value="30">30 minutes</option><option value="60">60 minutes</option></select></label>
               </div>
             </section>
 
             <section class="content-panel settings-card" data-module="WEB / 04">
-              <div class="settings-heading"><div class="square-icon coral">WEB</div><div><h2>Browser Bridge</h2><p>A reliable path for unattended browser entry; desktop mode requires actual system foreground focus.</p></div><label class="switch"><input type="checkbox" id="browser-enabled" /><span></span></label></div>
+              <div class="settings-heading"><div class="square-icon coral">WEB</div><div><h2>Browser Bridge</h2><p>Let AI agents inspect pages, fill credentials and forms, and complete Passkey sign-in via the paired extension.</p></div><label class="switch"><input type="checkbox" id="browser-enabled" /><span></span></label></div>
               <div class="status-strip" id="browser-status-strip"></div>
-              <label class="field-label" for="browser-port">Local port</label><div class="inline-setting"><input class="input" id="browser-port" type="number" min="1" max="65535" /><div class="command-well"><button class="button secondary" id="save-browser-settings-button">Save</button></div></div>
+              <label class="field-label" for="browser-port">Local port</label><div class="inline-setting"><input class="input" id="browser-port" type="number" min="1024" max="65535" /><div class="command-well"><button class="button secondary" id="save-browser-settings-button">Save</button></div></div>
+              <div class="desktop-options">
+                <div class="desktop-option" id="browser-agent-passkey-option"><span><strong>Agent Passkey signing</strong><small>Allow local AI agents to complete WebAuthn Passkey sign-in and registration for enabled items</small></span><label class="switch"><input type="checkbox" id="browser-agent-passkey-enabled" checked /><span></span></label></div>
+              </div>
               <div class="browser-connect-note"><strong id="browser-install-heading">INSTALL IN TWO STEPS</strong></div>
               <ol class="browser-install-steps" aria-labelledby="browser-install-heading">
                 <li><span class="browser-step-number" aria-hidden="true">1</span><div class="browser-step-body">
@@ -194,21 +134,24 @@
                 </div></li>
               </ol>
               <details class="browser-install-fallback"><summary id="browser-fallback-title">Can't install by dragging?</summary><p id="browser-fallback-description">Open the extension folder below. On the extensions page, click Load unpacked and select that folder.</p><div class="command-well"><button type="button" class="button quiet" id="open-extension-button">Extension folder</button></div></details>
-              <div class="button-row bridge-actions"><div class="command-well"><button class="button danger-soft" id="reset-pairing-button">Reset</button></div></div>
+              <div class="button-row bridge-actions"><div class="command-well"><button type="button" class="button secondary" id="start-pairing-button">Start pairing</button></div><div class="command-well"><button type="button" class="button quiet" id="test-browser-bridge-button">Test connection</button></div><div class="command-well"><button type="button" class="button danger-soft" id="reset-pairing-button">Reset</button></div></div>
             </section>
 
             <section class="content-panel settings-card wide github-card" data-module="CLOUD / 05" id="github-backup-card">
-              <div class="settings-heading"><div><h2 id="github-heading">Encrypted GitHub backup</h2><p id="github-description">Back up the encrypted vault to your own private repository.</p></div></div>
+              <div class="settings-heading"><div><h2 id="github-heading">Personal vault repository</h2><p id="github-description">Optional end-to-end encrypted sync or backup in your own private GitHub / Gitea repository.</p></div></div>
               <div class="status-strip offline" id="github-status" role="status"></div>
               <dl class="github-details hidden" id="github-details"><dt id="github-repository-label">Repository</dt><dd id="github-repository-value"></dd><dt id="github-backup-label">Last upload</dt><dd id="github-backup-value"></dd><dt id="github-restore-label">Last restore</dt><dd id="github-restore-value"></dd></dl>
+              <div class="desktop-options hidden" id="github-auto-sync-section">
+                <div class="desktop-option" id="github-auto-sync-option"><span><strong id="github-auto-sync-label">Automatic two-way sync</strong><small id="github-auto-sync-help">Pull remote changes on open and push encrypted updates after edits</small></span><label class="switch"><input type="checkbox" id="github-auto-sync" /><span></span></label></div>
+              </div>
               <p class="github-note" id="github-note"></p>
               <p class="github-error hidden" id="github-error" role="alert"></p>
-              <div class="button-row github-actions"><div class="command-well"><button class="button primary" id="github-connect" type="button">Connect repository</button></div><div class="command-well"><button class="button primary hidden" id="github-upload" type="button">Back up now</button></div><div class="command-well"><button class="button secondary hidden" id="github-restore" type="button">Restore from cloud</button></div></div>
+              <div class="button-row github-actions"><div class="command-well"><button class="button primary" id="github-connect" type="button">Connect repository</button></div><div class="command-well"><button class="button primary hidden" id="github-sync" type="button">Sync now</button></div><div class="command-well"><button class="button secondary hidden" id="github-upload" type="button">Back up now</button></div><div class="command-well"><button class="button quiet hidden" id="github-restore" type="button">Restore from cloud</button></div></div>
               <div class="button-row github-manage hidden" id="github-manage"><div class="command-well"><button class="button quiet" id="github-show-key" type="button">View recovery key</button></div><div class="command-well"><button class="button quiet" id="github-reconfigure" type="button">Update connection</button></div><div class="command-well"><button class="button danger-soft" id="github-disconnect" type="button">Disconnect</button></div></div>
               <div class="github-key-display hidden" id="github-key-display"><label for="github-saved-key" id="github-saved-key-label">Recovery key</label><textarea class="input github-key" id="github-saved-key" readonly rows="2" spellcheck="false" autocomplete="off"></textarea><p class="github-note" id="github-key-warning"></p><div class="button-row"><div class="command-well"><button type="button" class="button secondary" id="github-copy-saved-key">Copy</button></div><div class="command-well"><button type="button" class="button quiet" id="github-hide-key">Hide</button></div></div></div>
             </section>
 
-            <section class="content-panel settings-card wide" data-module="SAFE / 05">
+            <section class="content-panel settings-card wide" data-module="SAFE / 06">
               <div class="settings-heading"><div class="square-icon coral">BK</div><div><h2>Local data</h2><p>Export all items and passkeys encrypted with a separate backup password, or restore an existing backup.</p></div></div>
               <div class="security-actions"><div class="command-well"><button class="button primary" id="migration-open" type="button">迁入密码库 / Import vault</button></div><div class="command-well"><button class="button quiet" id="open-data-button">Open data directory</button></div><div class="command-well"><button class="button quiet" id="generator-open" type="button">生成器</button></div><div class="command-well"><button class="button quiet" id="trash-open" type="button">回收站</button></div></div>
             </section>
@@ -226,7 +169,7 @@
         <label class="field" id="owner-pin-confirm-field"><span>Re-enter PIN</span><div class="pin-control" data-pin-group="owner-pin-confirm"><input class="pin-cell-input" id="owner-pin-confirm" type="password" inputmode="numeric" pattern="[0-9]" maxlength="1" autocomplete="off" /><input class="pin-cell-input" type="password" inputmode="numeric" pattern="[0-9]" maxlength="1" autocomplete="off" /><input class="pin-cell-input" type="password" inputmode="numeric" pattern="[0-9]" maxlength="1" autocomplete="off" /><input class="pin-cell-input" type="password" inputmode="numeric" pattern="[0-9]" maxlength="1" autocomplete="off" /><input class="pin-cell-input" type="password" inputmode="numeric" pattern="[0-9]" maxlength="1" autocomplete="off" /><input class="pin-cell-input" type="password" inputmode="numeric" pattern="[0-9]" maxlength="1" autocomplete="off" /></div></label>
         <button class="button primary owner-unlock-action" id="owner-unlock-action" type="submit">SET PIN</button>
         <button class="button quiet hidden" id="owner-pin-cancel" type="button">Cancel</button>
-        <div class="lock-note"><i></i><span>Secrets are encrypted by the local random master key. The PIN is used for local unlocking and verification.</span></div>
+        <div class="lock-note"><i></i><span>PIN locks desktop viewing and editing against others on this computer; pair with OS screen lock and encrypted backups for offline security.</span></div>
       </form>
     </div>
 
@@ -265,8 +208,12 @@
         <div class="modal-header"><h2 id="github-modal-title">Connect GitHub</h2><button class="icon-button" type="button" id="github-modal-close" aria-label="Close">×</button></div>
         <form id="github-form" class="github-form" autocomplete="off">
           <div class="github-form-scroll">
-            <h3 class="github-step" id="github-step-auth">1 · GitHub account</h3>
-            <label class="field" for="github-auth-source"><span id="github-auth-label">Authorization</span><select class="input" id="github-auth-source"><option value="cli" id="github-auth-cli">Use local GitHub CLI login</option><option value="token" id="github-auth-token">Use an access token</option></select></label>
+            <h3 class="github-step" id="github-step-auth">1 · Repository account</h3>
+            <label class="field" for="github-provider"><span id="github-provider-label">Platform</span><select class="input" id="github-provider"><option value="github" id="github-provider-github">GitHub</option><option value="gitea" id="github-provider-gitea">Gitea / Forgejo (Self-hosted HTTPS)</option></select></label>
+            <div id="github-server-url-section" class="hidden">
+              <label class="field" for="github-server-url"><span id="github-server-url-label">Server URL</span><input class="input" type="url" id="github-server-url" placeholder="https://git.example.com" maxlength="240" spellcheck="false" autocapitalize="off" /></label>
+            </div>
+            <label class="field" for="github-auth-source" id="github-auth-source-field"><span id="github-auth-label">Authorization</span><select class="input" id="github-auth-source"><option value="cli" id="github-auth-cli">Use local GitHub CLI login</option><option value="token" id="github-auth-token">Use an access token</option></select></label>
             <p class="github-note" id="github-cli-help"></p>
             <div id="github-token-section" class="hidden">
               <label class="field" for="github-token"><span id="github-token-label">GitHub access token</span><input class="input" type="password" id="github-token" maxlength="2048" autocomplete="off" spellcheck="false" /></label>
@@ -285,6 +232,7 @@
             <p class="github-note" id="github-recovery-help"></p>
             <label class="github-key-confirm"><input type="checkbox" id="github-key-saved" required /><span id="github-key-saved-label">Recovery key saved outside the repository</span></label>
             <label class="github-key-confirm" id="github-first-upload-field"><input type="checkbox" id="github-first-upload" checked /><span id="github-first-upload-label">Upload the first encrypted backup after connecting</span></label>
+            <label class="github-key-confirm" id="github-connect-auto-sync-field"><input type="checkbox" id="github-connect-auto-sync" /><span id="github-connect-auto-sync-label">Enable automatic two-way sync for this repository</span></label>
             <p class="github-error hidden" id="github-form-error" role="alert"></p>
           </div>
           <div class="modal-footer github-modal-footer"><span class="github-note" id="github-local-only"></span><button class="button primary" id="github-submit" type="submit">Connect repository</button></div>

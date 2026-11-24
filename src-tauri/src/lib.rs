@@ -21,6 +21,8 @@ pub mod vault;
 #[cfg(feature = "gui")]
 pub mod agent_registry;
 #[cfg(feature = "gui")]
+pub mod clipboard;
+#[cfg(feature = "gui")]
 pub mod commands;
 #[cfg(feature = "desktop-fill")]
 pub mod desktop;

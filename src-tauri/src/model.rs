@@ -28,6 +28,8 @@ pub struct Settings {
     pub browser_enabled: bool,
     pub browser_port: u16,
     pub browser_paired: bool,
+    pub browser_agent_passkey: bool,
+    pub owner_auto_lock_minutes: u32,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -37,6 +39,8 @@ pub struct SettingsPatch {
     pub close_behavior: Option<String>,
     pub browser_enabled: Option<bool>,
     pub browser_port: Option<u16>,
+    pub browser_agent_passkey: Option<bool>,
+    pub owner_auto_lock_minutes: Option<u32>,
 }
 
 impl Default for Settings {
@@ -47,6 +51,8 @@ impl Default for Settings {
             browser_enabled: false,
             browser_port: 39_272,
             browser_paired: false,
+            browser_agent_passkey: true,
+            owner_auto_lock_minutes: 0,
         }
     }
 }
@@ -63,6 +69,8 @@ mod settings_tests {
         .unwrap();
         assert_eq!(settings.language, "en");
         assert_eq!(settings.close_behavior, "tray");
+        assert!(settings.browser_agent_passkey);
+        assert_eq!(settings.owner_auto_lock_minutes, 0);
     }
 }
 
@@ -383,7 +391,7 @@ fn default_ssh_port() -> u16 {
     22
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ApiAuthHeader {
     pub name: String,
@@ -515,6 +523,9 @@ impl StoredConnection {
         }
         if can_fill {
             capabilities.push("http".to_owned());
+        }
+        if !secrets.passkeys.is_empty() {
+            capabilities.push("passkey".to_owned());
         }
         capabilities
     }
@@ -692,10 +703,28 @@ pub struct VaultDocument {
     pub connections: Vec<StoredConnection>,
     #[serde(default)]
     pub trash: Vec<StoredTrashItem>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deleted_ids: Vec<DeletedItemTombstone>,
     #[serde(default)]
     pub editor_drafts: Vec<StoredEditorDraft>,
     #[serde(default)]
     pub activities: Vec<Activity>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeletedItemTombstone {
+    pub id: Uuid,
+    pub deleted_at: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncMergeSummary {
+    pub added: usize,
+    pub updated: usize,
+    pub deleted: usize,
+    pub unchanged: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

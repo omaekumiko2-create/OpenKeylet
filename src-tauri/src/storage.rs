@@ -7,8 +7,21 @@ const LEGACY_DATA_DIR_OVERRIDE_ENV: &str = "KRU_DATA_DIR";
 pub fn app_data_dir() -> Result<PathBuf> {
     resolve_data_dir(
         env::var_os(DATA_DIR_OVERRIDE_ENV).or_else(|| env::var_os(LEGACY_DATA_DIR_OVERRIDE_ENV)),
-        dirs::data_dir().map(|path| path.join("mcp-vault").join("v2")),
+        default_app_data_dir(),
     )
+}
+
+pub fn default_app_data_dir() -> Option<PathBuf> {
+    dirs::data_dir().map(|path| path.join("mcp-vault").join("v2"))
+}
+
+pub fn uses_explicit_data_dir(data_dir: &std::path::Path) -> bool {
+    if env::var_os(DATA_DIR_OVERRIDE_ENV).is_some()
+        || env::var_os(LEGACY_DATA_DIR_OVERRIDE_ENV).is_some()
+    {
+        return true;
+    }
+    default_app_data_dir().is_some_and(|default_dir| default_dir != data_dir)
 }
 
 pub fn resolve_user_path(value: &str) -> Result<PathBuf> {

@@ -5,15 +5,25 @@ const HAN_TEXT = /[\u3400-\u9fff]/;
 
 const isMacOS = navigator.platform.startsWith('Mac') || navigator.userAgent.includes('Macintosh');
 document.documentElement.classList.toggle('platform-macos', isMacOS);
+window.addEventListener('blur', () => document.documentElement.classList.add('window-blurred'));
+window.addEventListener('focus', () => document.documentElement.classList.remove('window-blurred'));
 
 {
   const titleDragRegion = document.querySelector('.title-drag-region');
-  const isTitleControl = (target) => Boolean(target.closest?.('button, input, select, textarea, a, [role="button"]'));
+  const isTitleControl = (target) => Boolean(target.closest?.('button, input, select, textarea, a, [role="button"], #title-search'));
   titleDragRegion.addEventListener('mousedown', (event) => {
     if (event.button === 0 && !isTitleControl(event.target)) event.preventDefault();
   });
-  titleDragRegion.addEventListener('selectstart', (event) => event.preventDefault());
-  titleDragRegion.addEventListener('dragstart', (event) => event.preventDefault());
+  titleDragRegion.addEventListener('selectstart', (event) => {
+    if (!isTitleControl(event.target)) event.preventDefault();
+  });
+  titleDragRegion.addEventListener('dragstart', (event) => {
+    if (!isTitleControl(event.target)) event.preventDefault();
+  });
+  const titleSearch = document.getElementById('title-search');
+  titleSearch?.addEventListener('click', (event) => {
+    if (event.target === titleSearch) document.getElementById('title-search-input')?.focus();
+  });
 }
 
 // Keep the first paint deterministic. The persisted setting from the vault is
@@ -31,27 +41,22 @@ const staticCopy = [
   ['.activity-panel', 'aria-label', '操作记录', 'Activity log'],
   ['.settings-layout', 'aria-label', '设置', 'Settings'],
   ['#title-search-input', 'placeholder', '搜索项目…', 'Search items…'],
-  ['#page-activity .page-search-input', 'placeholder', '搜索记录…', 'Search activity…'],
-  ['#page-settings .page-search-input', 'placeholder', '搜索设置…', 'Search settings…'],
   ['#desktop-shortcut-enabled', 'aria-label', '创建桌面快捷方式', 'Create desktop shortcut'],
   ['#launch-at-login-enabled', 'aria-label', '开机自启动', 'Launch at login'],
   ['#pin-enabled', 'aria-label', '启用 PIN 锁', 'Enable PIN lock'],
   ['#browser-enabled', 'aria-label', '启用 Browser Bridge', 'Enable Browser Bridge'],
+  ['#browser-agent-passkey-enabled', 'aria-label', '允许 Agent 使用 Passkey', 'Allow Agent Passkey signing'],
   ['.window-control[data-window-action="minimize"]', 'aria-label', '最小化', 'Minimize'],
   ['.window-control[data-window-action="close"]', 'aria-label', '关闭', 'Close'],
   ['.nav-item[data-page="connections"] > span', 'text', '项目', 'ITEMS'],
   ['.nav-item[data-page="activity"] > span', 'text', '记录', 'LOG'],
   ['.nav-item[data-page="settings"] > span', 'text', '设置', 'SYSTEM'],
-  ['#page-connections .page-header h1', 'text', '秘密项目', 'VAULT ITEMS'],
   ['#title-search-input', 'aria-label', '搜索秘密项目', 'Search vault items'],
   ['#add-connection-button', 'text', '＋ 添加', '+ ADD'],
   ['#drafts-button', 'text', '草稿', 'DRAFT'],
-  ['.creation-control', 'aria-label', '添加 / 草稿切换', 'Add / draft selector'],
   ['#generator-open', 'text', '生成器', 'GENERATE'],
   ['#trash-open', 'text', '回收站', 'TRASH'],
   ['#delete-draft-button', 'aria-label', '删除草稿', 'Delete draft'],
-  ['#page-activity .page-search-input', 'aria-label', '搜索操作记录', 'Search activity'],
-  ['#page-settings .page-search-input', 'aria-label', '搜索系统设置', 'Search settings'],
   ['#header-export-backup-button', 'text', '一键打包', 'EXPORT'],
   ['#header-import-backup-button', 'text', '一键导入包', 'IMPORT'],
   ['[data-module="SYSTEM / 01"] .settings-heading h2', 'text', '系统入口', 'SYSTEM ACCESS'],
@@ -62,14 +67,25 @@ const staticCopy = [
   ['#launch-at-login-option small', 'text', '登录系统后自动启动 OpenKeylet，并保持单实例', 'Start OpenKeylet after sign-in while preserving single-instance behavior.'],
   ['[data-module="MCP / 02"] .settings-heading h2', 'text', 'Agent 接入', 'AGENT SETUP'],
   ['[data-module="MCP / 02"] .settings-heading p', 'text', '注册本地 stdio MCP；支持的 Agent 同时安装“认证任务优先使用 OpenKeylet”规则。', 'Register the local stdio MCP and install the OpenKeylet-first authentication rule where supported.'],
-  ['[data-module="APP / 03"] .settings-heading h2', 'text', '窗口与锁定', 'WINDOW & LOCK'],
-  ['[data-module="APP / 03"] .settings-heading p', 'text', '控制关闭按钮与本地 PIN 锁。', 'Control the close button and local PIN lock.'],
+  ['[data-module="APP / 03"] .settings-heading h2', 'text', '窗口与偏好', 'WINDOW & PREFERENCES'],
+  ['[data-module="APP / 03"] .settings-heading p', 'text', '控制界面语言、音效、关闭按钮与本地 PIN 锁。', 'Control language, sounds, close behavior and local PIN lock.'],
+  ['#language-option strong', 'text', '界面语言', 'INTERFACE LANGUAGE'],
+  ['#language-option small', 'text', '在中文与英文界面之间切换', 'Switch between English and Simplified Chinese.'],
+  ['#sound-option strong', 'text', '界面音效', 'INTERFACE SOUNDS'],
+  ['#sound-option small', 'text', '点击按钮与切换开关时播放轻提示音', 'Subtle click feedback for toggles and buttons.'],
   ['label[for="close-behavior"] strong', 'text', '关闭按钮', 'CLOSE BUTTON'],
   ['label[for="close-behavior"] small', 'text', '最小化可保留托盘菜单', 'Minimizing keeps tray controls available.'],
   ['#close-behavior option[value="tray"]', 'text', '最小化到托盘', 'MINIMIZE TO TRAY'],
   ['#close-behavior option[value="exit"]', 'text', '退出 OpenKeylet', 'QUIT OpenKeylet'],
   ['.pin-option strong', 'text', 'PIN 锁', 'PIN LOCK'],
-  ['.pin-option small', 'text', '关闭后移除当前 PIN；再次开启时设置新的 PIN', 'Turning this off removes the current PIN. Set a new PIN when enabling it again.'],
+  ['.pin-option small', 'text', '防他人在本机查看明文或管理条目；关闭将移除当前 PIN', 'Locks desktop viewing and management against others on this device. Turning off removes the PIN.'],
+  ['#owner-auto-lock-option strong', 'text', '空闲自动锁定', 'AUTO-LOCK'],
+  ['#owner-auto-lock-option small', 'text', '无操作超时后自动锁定桌面窗口（后台 MCP 保持可用）', 'Lock the desktop window after idle time (background MCP remains active).'],
+  ['#owner-auto-lock-minutes option[value="0"]', 'text', '从不（仅手动）', 'NEVER (MANUAL)'],
+  ['#owner-auto-lock-minutes option[value="5"]', 'text', '5 分钟', '5 MINUTES'],
+  ['#owner-auto-lock-minutes option[value="15"]', 'text', '15 分钟', '15 MINUTES'],
+  ['#owner-auto-lock-minutes option[value="30"]', 'text', '30 分钟', '30 MINUTES'],
+  ['#owner-auto-lock-minutes option[value="60"]', 'text', '60 分钟', '60 MINUTES'],
   ['.agent-restart-notice span', 'text', '完成后重启 Agent。', 'Restart the agent after setup.'],
   ['#agent-client-list .agent-scan-placeholder', 'text', '正在扫描本机 Agent', 'SCANNING LOCAL AGENTS'],
   ['.manual-mcp-config summary', 'text', '其他 Agent / 手动配置', 'OTHER AGENT / MANUAL SETUP'],
@@ -77,13 +93,15 @@ const staticCopy = [
   ['.manual-config-steps > div:nth-child(2) span', 'text', '按配置格式复制 JSON 或 TOML', 'Copy JSON or TOML to match its config format'],
   ['.manual-config-steps > div:nth-child(3) span', 'text', '粘贴保存并重新启动 Agent', 'Paste, save, and restart the agent'],
   ['[data-module="WEB / 04"] .settings-heading h2', 'text', '浏览器接入', 'BROWSER BRIDGE'],
-  ['[data-module="WEB / 04"] .settings-heading p', 'text', '通过已配对扩展填写当前浏览器控件。', 'Fill the focused browser field through the paired extension.'],
+  ['[data-module="WEB / 04"] .settings-heading p', 'text', '通过已配对扩展让 Agent 直接检查网页、填写登录表单/密钥并完成 Passkey 登录。', 'Let agents inspect pages, fill credentials and forms, and complete Passkey sign-in via the paired extension.'],
   ['label[for="browser-port"]', 'text', '本地端口', 'LOCAL PORT'],
   ['#save-browser-settings-button', 'text', '保存', 'SAVE'],
+  ['#browser-agent-passkey-option strong', 'text', '允许 Agent 使用 Passkey', 'AGENT PASSKEY SIGNING'],
+  ['#browser-agent-passkey-option small', 'text', '允许本地 AI Agent 为已启用项目自动完成网页 WebAuthn Passkey 登录与注册', 'Allow local AI agents to complete WebAuthn Passkey sign-in and registration for enabled items.'],
   ['#browser-install-heading', 'text', '安装插件 · 只需两步', 'INSTALL IN TWO STEPS'],
   ['#browser-step-open-title', 'text', '打开扩展页', 'Open the extensions page'],
-  ['#browser-step-open-description', 'text', '打开 Chrome 并复制扩展页地址，粘贴后开启右上角的“开发者模式”。', 'Open Chrome and copy the extensions page address. Paste it into the address bar, then turn on Developer mode.'],
-  ['#browser-open-help', 'text', '地址已复制。请粘贴到 Chrome 地址栏并按回车，然后开启“开发者模式”。', "Address copied. Paste it into Chrome's address bar and press Enter, then turn on Developer mode."],
+  ['#browser-step-open-description', 'text', '打开 Chrome / Edge 并复制扩展页地址，粘贴后开启右上角的“开发者模式”。', 'Open Chrome or Edge and copy the extensions page address. Paste it into the address bar, then turn on Developer mode.'],
+  ['#browser-open-help', 'text', '地址已复制。请粘贴到浏览器地址栏并按回车，然后开启“开发者模式”。', "Address copied. Paste it into your browser's address bar and press Enter, then turn on Developer mode."],
   ['#browser-step-drag-title', 'text', '拖入插件', 'Drag in the extension'],
   ['#browser-step-drag-description', 'text', '按住下方标识，拖到扩展页的空白区域，松开即可安装。', 'Hold the icon below, drag it onto an empty area of the extensions page, and release to install.'],
   ['#browser-install-complete', 'text', '安装后会自动连接，请保持 OpenKeylet 运行。', 'Once installed, the extension connects automatically. Keep OpenKeylet running.'],
@@ -91,17 +109,19 @@ const staticCopy = [
   ['#browser-fallback-description', 'text', '打开下方扩展目录，然后在扩展页点击“加载已解压的扩展程序”，选择该目录。', 'Open the extension folder below. On the extensions page, click Load unpacked and select that folder.'],
   ['#drag-extension-label', 'text', '按住此处，拖入扩展页', 'Hold and drag to the extensions page'],
   ['#drag-extension-button', 'aria-label', '拖动插件到 Chrome 扩展页；也可按回车打开扩展目录', 'Drag the extension to Chrome Extensions, or press Enter to open its folder'],
-  ['#quick-pairing-button', 'text', '打开浏览器并复制地址', 'OPEN CHROME & COPY ADDRESS'],
+  ['#quick-pairing-button', 'text', '打开浏览器并复制地址', 'OPEN BROWSER & COPY ADDRESS'],
   ['#open-extension-button', 'text', '扩展目录', 'EXTENSION FOLDER'],
+  ['#start-pairing-button', 'text', '开启配对', 'START PAIRING'],
+  ['#test-browser-bridge-button', 'text', '测试连接', 'TEST BRIDGE'],
   ['#reset-pairing-button', 'text', '重置', 'RESET'],
-  ['[data-module="SAFE / 05"] .settings-heading h2', 'text', '本地数据', 'LOCAL DATA'],
+  ['[data-module="SAFE / 06"] .settings-heading h2', 'text', '本地数据', 'LOCAL DATA'],
   ['#migration-open', 'text', '迁入密码库', 'IMPORT VAULT'],
-  ['[data-module="SAFE / 05"] .settings-heading p', 'text', '用独立备份密码加密导出全部项目与 Passkey，也可恢复旧版备份。', 'Export all items and passkeys encrypted with a separate backup password, or restore an existing backup.'],
+  ['[data-module="SAFE / 06"] .settings-heading p', 'text', '用独立备份密码加密导出全部项目与 Passkey，也可恢复旧版备份。', 'Export all items and passkeys encrypted with a separate backup password, or restore an existing backup.'],
   ['#open-data-button', 'text', '打开数据目录', 'OPEN DATA FOLDER'],
   ['#owner-lock-description', 'text', 'PIN 保护明文查看、浏览器密码库访问和 Passkey 验证；模块值默认对 Agent 隐藏。', 'The PIN protects plaintext viewing, browser vault access and passkey verification. Module values are hidden from agents by default.'],
   ['#owner-pin', 'label', '六位数字 PIN', 'SIX-DIGIT PIN'],
   ['#owner-pin-confirm', 'label', '再次输入 PIN', 'CONFIRM PIN'],
-  ['.lock-note span', 'text', '秘密由本机随机主密钥加密；PIN 用于本地解锁与验证。', 'Secrets are encrypted by the local random master key. The PIN is used for local unlocking and verification.'],
+  ['.lock-note span', 'text', 'PIN 用于防止他人在本机查看明文或修改密码库；请配合系统锁屏与加密备份保护离线安全。', 'PIN locks desktop viewing and editing against others on this computer; pair with OS screen lock and encrypted backups for offline security.'],
   ['#owner-pin-cancel', 'text', '取消', 'CANCEL'],
   ['[data-close-modal].icon-button', 'aria-label', '关闭编辑器', 'Close editor'],
   ['#connection-name', 'label', '名称', 'NAME'],
@@ -185,6 +205,7 @@ function updateSettings(patch) {
 const api = {
   state: () => invoke('get_state'),
   ownerStatus: () => invoke('owner_status'),
+  ownerTouch: () => invoke('owner_touch'),
   ownerSetPin: (pin) => invoke('owner_set_pin', { pin }),
   ownerDisablePin: () => invoke('owner_disable_pin'),
   ownerUnlock: (pin) => invoke('owner_unlock', { pin }),
@@ -193,7 +214,7 @@ const api = {
   drafts: () => invoke('owner_editor_drafts'),
   saveDraft: (draftId, input) => invoke('save_editor_draft', { draftId, input }),
   deleteDraft: (id) => invoke('delete_editor_draft', { id }),
-  copyOwnerValue: (value) => invoke('copy_owner_value', { value }),
+  copyOwnerValue: (value, sensitive = true) => invoke('copy_owner_value', { value, sensitive }),
   save: (input) => invoke('save_connection', { input, expectedUpdatedAt: editorExistingItem?.updatedAt || null }),
   setEnabled: (id, enabled) => invoke('set_connection_enabled', { id, enabled }),
   reorder: (ids, expectedOrder) => invoke('reorder_connections', { ids, expectedOrder }),
@@ -217,6 +238,7 @@ const api = {
   chooseKey: () => invoke('choose_private_key'),
   quickPair: (port) => invoke('quick_pair_browser', { port }),
   openChrome: () => invoke('open_chrome_browser'),
+  testBrowserBridge: () => invoke('test_browser_bridge'),
   resetPair: () => invoke('reset_browser_pairing'),
   extensionFolder: () => invoke('open_browser_extension_folder'),
   exportBackup: (password) => invoke('export_backup', { password }),
@@ -325,7 +347,7 @@ function confirmDestructiveAction({ title, message, acceptLabel = localized('删
   $('#confirmation-cancel').textContent = localized('取消', 'CANCEL');
   $('#confirmation-accept').textContent = acceptLabel;
   confirmationPreviousFocus = document.activeElement;
-  confirmationInertElements = [...document.body.children].filter((element) => element !== $('#confirmation-modal') && !element.inert && !['SCRIPT', 'STYLE'].includes(element.tagName));
+  confirmationInertElements = [...document.body.children].filter((element) => element !== $('#confirmation-modal') && !element.classList.contains('title-drag-region') && !element.inert && !['SCRIPT', 'STYLE'].includes(element.tagName));
   confirmationInertElements.forEach((element) => { element.inert = true; });
   $('#confirmation-modal').classList.remove('hidden');
   requestAnimationFrame(() => { if (confirmationResolver) $('#confirmation-cancel').focus(); });
@@ -391,9 +413,13 @@ function renderOwnerLock() {
 }
 
 async function refreshOwnerLock(showError = true) {
+  const wasUnlocked = Boolean(ownerLockState.unlocked);
   try {
     ownerLockState = await api.ownerStatus();
     renderOwnerLock();
+    if (wasUnlocked && ownerLockState.pinConfigured && !ownerLockState.unlocked) {
+      await refresh(false);
+    }
   } catch (error) {
     if (showError) toast(cleanError(error), 'error');
   }
@@ -402,6 +428,7 @@ async function refreshOwnerLock(showError = true) {
 async function lockOwner() {
   try { ownerLockState = await api.ownerLock(); } catch (_) { ownerLockState.unlocked = false; }
   renderOwnerLock();
+  await refresh(false);
 }
 
 async function refresh(showError = true) {
@@ -447,8 +474,8 @@ function sevenSegmentNumber(value, length = 4) {
   const exact = Math.max(0, Math.trunc(Number(value) || 0));
   const maximum = (10 ** length) - 1;
   const overflow = exact > maximum;
-  const digits = String(Math.min(exact, maximum)).padStart(length, '0');
-  return `<span class="seven-number ${overflow ? 'overflow' : ''}" role="img" aria-label="${exact}">${[...digits].map(sevenSegmentGlyph).join('')}${overflow ? '<b class="seven-overflow" aria-hidden="true">+</b>' : ''}</span>`;
+  const shown = String(Math.min(exact, maximum));
+  return `<span class="seven-number ${overflow ? 'overflow' : ''}" role="img" aria-label="${exact}"><span class="metric-val" aria-hidden="true">${shown}</span>${overflow ? '<b class="seven-overflow" aria-hidden="true">+</b>' : ''}</span>`;
 }
 
 function activityCode(action = '') {
@@ -478,50 +505,69 @@ function renderMetrics() {
   const brokenAgents = agentClients.filter((client) => ['stale', 'conflict', 'error'].includes(client.state)).length;
   const models = {
     connections: {
-      value: total, mode: localized('密码库', 'VAULT'), unit: localized('项目', 'ITEMS'),
+      value: total, mode: localized('密码库', 'VAULT'), unit: localized('项', 'ITEMS'),
       label: localized('密码库项目总数', 'Total vault items'),
-      secondary: { value: enabled, mode: localized('已启用', 'ENABLED'), unit: localized('项目', 'ITEMS'), label: localized('已启用项目数，包含所有类型', 'Enabled items across all item types') },
+      secondary: {
+        value: enabled, mode: localized('已启用', 'ENABLED'), unit: total > 0 ? `/ ${total}` : localized('项', 'ITEMS'),
+        tone: enabled > 0 ? 'active' : '',
+        ratio: total > 0 ? Math.round((enabled / total) * 100) : 0,
+        label: localized('已启用项目数，包含所有类型', 'Enabled items across all item types'),
+      },
     },
     activity: {
-      value: activities24h.length, mode: localized('操作', 'CALLS'), unit: '24H',
+      value: activities24h.length, mode: localized('近 24H 调用', 'CALLS · 24H'), unit: localized('次', ''),
       label: localized('本地日志中最近 24 小时的操作数', 'Operations in the local log from the last 24 hours'),
-      secondary: { value: errors24h, mode: localized('失败', 'ERRORS'), unit: '24H', label: localized('本地日志中最近 24 小时的失败数', 'Errors in the local log from the last 24 hours') },
+      secondary: {
+        value: errors24h, mode: localized('异常失败', 'ERRORS · 24H'), unit: errors24h > 0 ? localized('项', '') : localized('正常', 'CLEAR'),
+        tone: errors24h > 0 ? 'fault' : 'ok',
+        label: localized('本地日志中最近 24 小时的失败数', 'Errors in the local log from the last 24 hours'),
+      },
     },
     settings: {
-      value: registeredAgents, mode: localized('已接入', 'LINKED'), unit: 'AGENTS',
+      value: registeredAgents, mode: localized('已接入 Agent', 'LINKED'), unit: localized('个', 'AGENTS'),
       label: localized('已注册 OpenKeylet MCP 的 Agent 客户端数', 'Agent clients registered with OpenKeylet MCP'),
-      secondary: { value: brokenAgents, mode: localized('待修复', 'REPAIR'), unit: 'AGENTS', label: localized('需要修复接入配置的 Agent 客户端数', 'Agent clients whose connection configuration needs repair') },
+      secondary: {
+        value: brokenAgents, mode: localized('待修复配置', 'REPAIR'), unit: brokenAgents > 0 ? localized('个', 'NEED FIX') : localized('健康', 'OK'),
+        tone: brokenAgents > 0 ? 'warn' : 'ok',
+        label: localized('需要修复接入配置的 Agent 客户端数', 'Agent clients whose connection configuration needs repair'),
+      },
     },
   };
   const model = models[activePage] || models.connections;
   const secondary = model.secondary;
-  // These lamps describe current services, independently of historical operation errors.
+  // These indicators describe current services, independently of historical operation errors.
   const services = [
     {
-      name: 'MCP', value: mcpReady ? 'READY' : state.mcp.status === 'error' ? 'ERROR' : 'SETUP',
+      name: 'MCP', target: 'MCP', value: mcpReady ? 'READY' : state.mcp.status === 'error' ? 'ERROR' : 'SETUP',
       tone: mcpReady ? 'on' : state.mcp.status === 'error' ? 'fault' : 'warn',
-      label: mcpReady ? localized('本地 MCP 就绪', 'Local MCP is ready') : state.mcp.status === 'error' ? localized('本地 MCP 异常', 'Local MCP has an error') : localized('本地 MCP 需要配置', 'Local MCP needs setup'),
+      label: mcpReady ? localized('本地 MCP 就绪（点击查看设置）', 'Local MCP is ready (click to open setup)') : state.mcp.status === 'error' ? localized('本地 MCP 异常', 'Local MCP has an error') : localized('本地 MCP 需要配置', 'Local MCP needs setup'),
     },
     {
-      name: 'WEB', value: state.browserBridge.status === 'error' ? 'ERROR' : !browserOn ? 'OFF' : !state.browserBridge.paired ? 'PAIR' : state.browserBridge.connected ? 'ON' : 'WAIT',
+      name: 'WEB', target: 'WEB', value: state.browserBridge.status === 'error' ? 'ERROR' : !browserOn ? 'OFF' : !state.browserBridge.paired ? 'PAIR' : state.browserBridge.connected ? 'ON' : 'WAIT',
       tone: state.browserBridge.status === 'error' ? 'fault' : browserOn ? state.browserBridge.paired && state.browserBridge.connected ? 'on' : 'warn' : '',
-      label: state.browserBridge.status === 'error' ? localized('浏览器桥接异常', 'Browser Bridge has an error') : !browserOn ? localized('浏览器桥接已关闭', 'Browser Bridge is off') : !state.browserBridge.paired ? localized('浏览器扩展等待配对', 'Browser extension is waiting to pair') : state.browserBridge.connected ? localized('浏览器扩展已连接', 'Browser extension is connected') : localized('等待浏览器扩展连接', 'Waiting for the browser extension to connect'),
+      label: state.browserBridge.status === 'error' ? localized('浏览器桥接异常', 'Browser Bridge has an error') : !browserOn ? localized('浏览器桥接已关闭（点击前往开启）', 'Browser Bridge is off (click to configure)') : !state.browserBridge.paired ? localized('浏览器扩展等待配对', 'Browser extension is waiting to pair') : state.browserBridge.connected ? localized('浏览器扩展已连接', 'Browser extension is connected') : localized('等待浏览器扩展连接', 'Waiting for the browser extension to connect'),
     },
     {
-      name: 'PIN', value: ownerLockState.pinConfigured ? 'ON' : 'OFF', tone: ownerLockState.pinConfigured ? 'on' : '',
-      label: ownerLockState.pinConfigured ? localized('已设置本地 PIN 保护', 'Local PIN protection is configured') : localized('尚未设置本地 PIN', 'Local PIN protection is not configured'),
+      name: 'PIN', target: 'APP', value: ownerLockState.pinConfigured ? 'ON' : 'OFF', tone: ownerLockState.pinConfigured ? 'on' : '',
+      label: ownerLockState.pinConfigured ? localized('已开启本地 PIN 锁定', 'Local PIN protection is enabled') : localized('尚未设置本地 PIN（点击前往设置）', 'Local PIN protection is off (click to configure)'),
     },
   ];
+  const progress = typeof secondary.ratio === 'number'
+    ? `<span class="metric-bar" aria-hidden="true"><i style="width:${secondary.ratio}%"></i></span>`
+    : '';
   $('#metrics').innerHTML = `
     <div class="lcd-screen">
-      <div class="lcd-primary" role="group" aria-label="${escapeHtml(model.label)}" title="${escapeHtml(`${model.label}: ${model.value}`)}">
-        ${sevenSegmentNumber(model.value)}<div class="lcd-caption" aria-hidden="true"><span>${model.mode}</span><strong>${model.unit}</strong></div>
+      <div class="lcd-primary metric-cell" role="group" aria-label="${escapeHtml(model.label)}" title="${escapeHtml(`${model.label}: ${model.value}`)}">
+        <span class="metric-label" aria-hidden="true">${model.mode}</span>
+        <div class="metric-readout">${sevenSegmentNumber(model.value)}${model.unit ? `<span class="metric-unit" aria-hidden="true">${model.unit}</span>` : ''}</div>
       </div>
-      <div class="lcd-secondary" role="group" aria-label="${escapeHtml(secondary.label)}" title="${escapeHtml(`${secondary.label}: ${secondary.value}`)}">
-        ${sevenSegmentNumber(secondary.value, 3)}<div class="lcd-caption" aria-hidden="true"><span>${secondary.mode}</span><strong>${secondary.unit}</strong></div>
+      <div class="lcd-secondary metric-cell ${secondary.tone || ''}" role="group" aria-label="${escapeHtml(secondary.label)}" title="${escapeHtml(`${secondary.label}: ${secondary.value}`)}">
+        <span class="metric-label" aria-hidden="true">${secondary.mode}</span>
+        <div class="metric-readout">${sevenSegmentNumber(secondary.value, 3)}${secondary.unit ? `<span class="metric-unit" aria-hidden="true">${secondary.unit}</span>` : ''}</div>
+        ${progress}
       </div>
       <div class="lcd-system" role="group" aria-label="${localized('当前服务状态', 'Current service status')}">
-        ${services.map((service) => `<div class="lcd-service" role="group" aria-label="${escapeHtml(service.label)}" title="${escapeHtml(service.label)}"><span aria-hidden="true">${service.name}</span><strong class="lcd-status ${service.tone}" aria-hidden="true">${service.value}</strong></div>`).join('')}
+        ${services.map((service) => `<button type="button" class="lcd-service ${service.tone}" data-metric-section="${service.target}" aria-label="${escapeHtml(service.label)}" title="${escapeHtml(service.label)}"><i class="lcd-dot ${service.tone}" aria-hidden="true"></i><span class="lcd-service-name" aria-hidden="true">${service.name}</span><strong class="lcd-status ${service.tone}" aria-hidden="true">${service.value}</strong></button>`).join('')}
       </div>
     </div>`;
 }
@@ -611,7 +657,7 @@ function syncItemTypeFilter() {
 }
 
 function syncSettingsFilterControl() {
-  const labels = { all: ['全部设置', 'All settings'], SYSTEM: ['系统入口', 'System access'], MCP: ['Agent 接入', 'Agent setup'], APP: ['窗口与锁定', 'Window & lock'], WEB: ['浏览器', 'Browser'], CLOUD: ['云端备份', 'Cloud backup'], SAFE: ['本地数据', 'Local data'] };
+  const labels = { all: ['全部设置', 'All settings'], SYSTEM: ['系统入口', 'System access'], MCP: ['Agent 接入', 'Agent setup'], APP: ['窗口与偏好', 'Window & preferences'], WEB: ['浏览器', 'Browser'], CLOUD: ['云端备份', 'Cloud backup'], SAFE: ['本地数据', 'Local data'] };
   $('#settings-filter-switch').setAttribute('aria-label', localized('设置分组筛选', 'Settings section filter'));
   syncFilterStrip('#settings-filter-switch', settingsFilterOrder, currentSettingsFilter, 'data-settings-filter', kind => localized(...labels[kind]));
 }
@@ -680,7 +726,7 @@ function setModuleAgentVisibility(button, visible) {
 
 // Every travelling cap uses the same drag lifecycle and its existing action.
 function switchControlFor(target) {
-  const strip = target.closest?.('.filter-strip, .title-switch, .language-switch, .nav, .creation-options, .switch, .module-agent-toggle');
+  const strip = target.closest?.('.filter-strip, .title-switch, .language-switch, .nav, .switch, .module-agent-toggle');
   if (!strip || strip.closest('[inert]') || strip.matches(':disabled, [aria-disabled="true"]')) return null;
   if (strip.matches('.title-switch')) {
     return { strip, count: 2, read: () => Number(strip.getAttribute('aria-checked') === 'true'),
@@ -696,8 +742,9 @@ function switchControlFor(target) {
         input.checked = Boolean(index);
         if (input.id === 'desktop-shortcut-enabled') await setSystemIntegration('desktop', input.checked);
         else if (input.id === 'launch-at-login-enabled') await setSystemIntegration('startup', input.checked);
-        else if (input.id === 'browser-enabled') await saveBrowserSettings();
+        else if (input.id === 'browser-enabled' || input.id === 'browser-agent-passkey-enabled') await saveBrowserSettings();
         else if (input.id === 'pin-enabled') await savePinSettings();
+        else if (input.id === 'github-auto-sync') input.dispatchEvent(new Event('change', { bubbles: true }));
       } };
   }
   if (strip.matches('.module-agent-toggle')) {
@@ -801,30 +848,28 @@ document.addEventListener('click', event => {
 }, true);
 
 function syncTitleSearch() {
-  const open = titleSearchOpen;
   const labels = { connections: ['搜索项目', 'Search items'], activity: ['搜索记录', 'Search activity'], settings: ['搜索设置', 'Search settings'] };
   const label = localized(...labels[activePage]);
+  const shortcutHint = isMacOS ? '⌘K' : 'Ctrl+K';
+  const hasQuery = Boolean(pageSearch[activePage]);
   const control = $('#title-search');
-  control.classList.toggle('is-open', open);
-  control.classList.toggle('has-query', Boolean(pageSearch[activePage]));
-  $('.title-drag-region').classList.toggle('search-open', open);
+  control.classList.toggle('has-query', hasQuery);
   const input = $('#title-search-input');
-  input.hidden = !open;
+  input.hidden = false;
   input.dataset.pageSearch = activePage;
   input.placeholder = `${label}…`;
   input.setAttribute('aria-label', label);
+  input.title = `${label} (${shortcutHint})`;
   if (input.value !== pageSearch[activePage]) input.value = pageSearch[activePage];
   const button = $('#title-search-toggle');
-  button.setAttribute('aria-expanded', String(open));
-  button.title = open ? localized('收起搜索', 'Collapse search') : label;
-  if (pageSearch[activePage] && !open) button.title += localized(' · 筛选中', ' · Filter active');
-  button.setAttribute('aria-label', button.title);
+  button.title = hasQuery ? localized('清除搜索', 'Clear search') : `${label} (${shortcutHint})`;
+  button.setAttribute('aria-label', hasQuery ? localized('清除搜索', 'Clear search') : label);
 }
 
 function setTitleSearchOpen(open, focus = true) {
   titleSearchOpen = open;
   syncTitleSearch();
-  if (focus) (open ? $('#title-search-input') : $('#title-search-toggle')).focus({ preventScroll: true });
+  if (open && focus) $('#title-search-input').focus({ preventScroll: true });
 }
 
 function itemPermission(item) {
@@ -900,16 +945,16 @@ function draftSecretValues(secrets = {}) {
 
 function renderDrafts() {
   const button = $('#drafts-button');
+  const pill = $('#draft-pill');
   const hasDraft = Boolean(editorDrafts[0]);
   if (!hasDraft) creationMode = 'add';
   $('.creation-control').dataset.mode = creationMode;
-  $('#add-connection-button').setAttribute('aria-pressed', String(creationMode === 'add'));
-  button.setAttribute('aria-pressed', String(creationMode === 'draft'));
+  pill?.classList.toggle('hidden', !hasDraft);
   const deleteButton = $('#delete-draft-button');
   button.disabled = !hasDraft;
   button.textContent = localized('草稿', 'DRAFT');
   button.title = hasDraft ? localized('继续最近的草稿', 'Continue the most recent draft') : localized('暂无草稿', 'No draft');
-  deleteButton.classList.toggle('hidden', !hasDraft || creationMode !== 'draft');
+  deleteButton.classList.toggle('hidden', !hasDraft);
   deleteButton.title = localized('删除草稿', 'Delete draft');
 }
 
@@ -1003,14 +1048,19 @@ function renderSettings() {
   $('#desktop-shortcut-enabled').checked = Boolean(systemIntegrationState.desktopShortcut);
   $('#launch-at-login-enabled').checked = Boolean(systemIntegrationState.launchAtLogin);
   $('#pin-enabled').checked = ownerLockState.pinConfigured || ownerPinSetupRequested;
+  $('#owner-auto-lock-option').classList.toggle('hidden', !ownerLockState.pinConfigured);
+  const autoLockMinutes = Number(state.settings.ownerAutoLockMinutes || 0);
+  $('#owner-auto-lock-minutes').value = [0, 5, 15, 30, 60].includes(autoLockMinutes) ? String(autoLockMinutes) : '0';
   $('#close-behavior').value = state.settings.closeBehavior === 'exit' ? 'exit' : 'tray';
   $('#browser-enabled').checked = state.settings.browserEnabled;
   $('#browser-port').value = state.settings.browserPort;
+  $('#browser-agent-passkey-enabled').checked = state.settings.browserAgentPasskey !== false;
   const bridge = state.browserBridge;
   const online = ['listening', 'delegated'].includes(bridge.status);
   const strip = $('#browser-status-strip');
   strip.className = `status-strip ${bridge.status === 'error' ? 'error' : online ? '' : 'offline'}`;
   strip.innerHTML = `<span class="status-dot"></span><span class="status-key">${bridge.status === 'error' ? 'FAULT' : online ? (bridge.connected ? 'CONNECTED' : bridge.paired ? 'WAITING' : 'READY') : 'OFF'}</span><span>${bridge.status === 'error' ? escapeHtml(publicMessage(bridge.error)) : online ? escapeHtml(bridge.endpoint) : localized('Browser Bridge 已关闭', 'Browser Bridge is off')}</span>`;
+  $('#test-browser-bridge-button').disabled = !bridge.connected;
   $('#reset-pairing-button').disabled = !bridge.paired;
   renderAgents();
   applySettingsSearch();
@@ -1154,6 +1204,7 @@ function renderModules() {
         : `<div class="secret-input-control module-secret-control"><input class="input" data-secret-value type="password" autocomplete="off" value="${escapeHtml(module.secretValue || '')}" placeholder="${placeholder}" /></div>`;
       actions = `${secretActionButton('reveal')}${secretActionButton('copy')}`;
       if (module.kind === 'password') control += `<button class="small-button" type="button" data-generate-password>${localized('生成密码', 'GENERATE')}</button>`;
+      if (module.kind === 'totp') control += `<button class="small-button" type="button" data-copy-totp-code>${localized('复制 2FA 验证码', 'COPY 2FA CODE')}</button>`;
     } else {
       const inputType = module.kind === 'port' ? 'number' : 'text';
       const placeholder = module.kind === 'url' ? 'api.example.com/v1/' : module.kind === 'host' ? 'host.example.com' : '22';
@@ -1432,8 +1483,18 @@ async function saveDraftAndCloseEditor() {
 }
 
 async function saveBrowserSettings() {
+  const port = Number($('#browser-port').value);
+  if (!Number.isInteger(port) || port < 1024 || port > 65535) {
+    toast(localized('本地端口须在 1024–65535 之间', 'Local port must be between 1024 and 65535'), 'error');
+    if (state) $('#browser-port').value = state.settings.browserPort;
+    return;
+  }
   try {
-    state.settings = await api.settings({ browserEnabled: $('#browser-enabled').checked, browserPort: Number($('#browser-port').value) });
+    state.settings = await api.settings({
+      browserEnabled: $('#browser-enabled').checked,
+      browserPort: port,
+      browserAgentPasskey: $('#browser-agent-passkey-enabled').checked,
+    });
     toast(localized('Browser Bridge 设置已保存', 'Browser Bridge settings saved'));
     await refresh();
   } catch (error) {
@@ -1446,9 +1507,10 @@ async function saveDesktopSettings() {
   try {
     state.settings = await api.settings({
       closeBehavior: $('#close-behavior').value,
+      ownerAutoLockMinutes: Number($('#owner-auto-lock-minutes').value || 0),
     });
     renderSettings();
-    toast(localized('窗口设置已保存', 'Window settings saved'));
+    toast(localized('窗口与锁屏设置已保存', 'Window & lock settings saved'));
   } catch (error) {
     toast(cleanError(error), 'error');
     await refresh(false);
@@ -1615,7 +1677,7 @@ async function openVaultManagement(mode, id = null) {
         const reveal=document.createElement('button'); reveal.type='button'; reveal.className='button'; reveal.textContent=localized('显示','SHOW');
         reveal.onclick=()=>{ input.type=input.type==='password'?'text':'password'; reveal.textContent=input.type==='password'?localized('显示','SHOW'):localized('隐藏','HIDE'); };
         const copy=document.createElement('button'); copy.type='button'; copy.className='button'; copy.textContent=localized('复制','COPY');
-        copy.onclick=async()=>{ try { await api.copyOwnerValue(input.value); toast(localized('已复制','Copied')); } catch(error){toast(cleanError(error),'error');} };
+        copy.onclick=async()=>{ try { await api.copyOwnerValue(input.value, true); toast(localized('已复制（30 秒后自动清除）','Copied · clears in 30s')); } catch(error){toast(cleanError(error),'error');} };
         row.append(input); actions.append(reveal,copy);
       }
       row.append(actions); list.append(row);
@@ -1700,14 +1762,35 @@ $('#migration-confirm').onclick = async () => {
 };
 
 document.addEventListener('click', async (event) => {
-  if (event.target.closest('#title-search-toggle')) setTitleSearchOpen(!titleSearchOpen);
-  else if (titleSearchOpen && !event.target.closest('#title-search')) setTitleSearchOpen(false, false);
+  if (event.target.closest('#title-search-toggle')) {
+    const input = $('#title-search-input');
+    if (pageSearch[activePage]) {
+      pageSearch[activePage] = '';
+      input.value = '';
+      syncTitleSearch();
+      if (activePage === 'connections') renderConnections();
+      if (activePage === 'activity') { activityVisibleCount = ACTIVITY_PAGE_SIZE; renderActivity(); }
+      if (activePage === 'settings') applySettingsSearch();
+    }
+    input.focus({ preventScroll: true });
+  }
   const filterButton = event.target.closest('.filter-strip button');
   if (filterButton && !switchSelectionPending) await selectFilterButton(filterButton);
   const languageButton = event.target.closest('[data-language]');
   if (languageButton) await setLanguage(languageButton.dataset.language);
   const nav = event.target.closest('[data-page]');
   if (nav) await selectPage(nav.dataset.page);
+  const metricService = event.target.closest('[data-metric-section]');
+  if (metricService) {
+    const targetSection = metricService.dataset.metricSection;
+    await selectPage('settings');
+    if (settingsFilterOrder.includes(targetSection)) {
+      currentSettingsFilter = targetSection;
+      syncSettingsFilterControl();
+      applySettingsSearch();
+      $('.settings-layout').scrollTop = 0;
+    }
+  }
   const windowButton = event.target.closest('[data-window-action]');
   if (windowButton) {
     if (windowButton.dataset.windowAction === 'close' && !$('#connection-modal').classList.contains('hidden')) await closeEditorWithDraft();
@@ -1747,12 +1830,21 @@ document.addEventListener('click', async (event) => {
     await selectCreationMode('add');
   }
   if (event.target === $('#connection-modal')) await closeEditorWithDraft();
+  if (event.target === $('#confirmation-modal') && confirmationResolver) finishConfirmation(false);
+  if (event.target === $('#generator-modal')) closeGenerator();
+  if (event.target === $('#backup-password-modal')) finishBackupPassword(null);
+  if (event.target === $('#migration-modal')) closeMigration();
+  if (event.target === $('#vault-management-modal')) closeVaultManagement();
   if (event.target.closest('[data-close-modal]')) await closeEditorWithDraft();
   const copyInput = event.target.closest('[data-copy-input]');
   const copyModule = event.target.closest('[data-copy-module-secret], [data-copy-module-value]');
   if (copyInput || copyModule) {
     const input = copyInput ? $(`#${copyInput.dataset.copyInput}`) : $('[data-secret-value], [data-module-value]', copyModule.closest('.module-row'));
-    try { await api.copyOwnerValue(input.value); toast(localized('已复制', 'Copied')); } catch (error) { toast(cleanError(error), 'error'); }
+    const isSensitive = Boolean(copyModule?.hasAttribute('data-copy-module-secret') || input?.hasAttribute('data-secret-value'));
+    try {
+      await api.copyOwnerValue(input.value, isSensitive);
+      toast(isSensitive ? localized('已复制（30 秒后自动清除）', 'Copied · clears in 30s') : localized('已复制', 'Copied'));
+    } catch (error) { toast(cleanError(error), 'error'); }
   }
   const toggleModuleSecret = event.target.closest('[data-toggle-module-secret]');
   if (toggleModuleSecret) {
@@ -1831,7 +1923,7 @@ document.addEventListener('click', async (event) => {
     if (action.dataset.action === 'history') await openVaultManagement('history', item.id);
     if (action.dataset.action === 'copy-name') {
       try {
-        await api.copyOwnerValue(`use ${item.name} in OpenKeylet MCP`);
+        await api.copyOwnerValue(`use ${item.name} in OpenKeylet MCP`, false);
         toast(localized('OpenKeylet MCP 使用提示已复制', 'OpenKeylet MCP use prompt copied'));
       } catch (error) { toast(cleanError(error), 'error'); }
     }
@@ -1994,7 +2086,7 @@ function itemDragFrame() {
   }
   updateItemDropSeam();
   const x = Math.max(8, Math.min(drag.x + 14, innerWidth - drag.previewWidth - 8));
-  const y = Math.max(8, Math.min(drag.y + 14, innerHeight - drag.previewHeight - 8));
+  const y = Math.max(44, Math.min(drag.y + 14, innerHeight - drag.previewHeight - 8));
   drag.preview.style.transform = `translate3d(${x}px, ${y}px, 0)`;
   if (itemList.scrollTop !== previousScroll) scheduleItemDragFrame();
 }
@@ -2052,6 +2144,9 @@ document.addEventListener('pointermove', event => {
     try { itemList.setPointerCapture(event.pointerId); } catch (_) { /* Document tracking remains active. */ }
     drag.previewWidth = drag.preview.offsetWidth;
     drag.previewHeight = drag.preview.offsetHeight;
+    const initX = Math.max(8, Math.min(drag.x + 14, innerWidth - drag.previewWidth - 8));
+    const initY = Math.max(44, Math.min(drag.y + 14, innerHeight - drag.previewHeight - 8));
+    drag.preview.style.transform = `translate3d(${initX}px, ${initY}px, 0)`;
   }
   scheduleItemDragFrame();
 }, { passive: false });
@@ -2075,6 +2170,7 @@ itemList.addEventListener('keydown', event => {
   const ids = visibleItemIds(), id = handle.dataset.itemReorder, from = ids.indexOf(id);
   const step = { ArrowUp: -4, ArrowDown: 4, ArrowLeft: -1, ArrowRight: 1 }[event.key];
   const to = event.key === 'Home' ? 0 : event.key === 'End' ? ids.length - 1 : Math.max(0, Math.min(ids.length - 1, from + step));
+  if (to === from) return;
   ids.splice(from, 1); ids.splice(to, 0, id);
   void saveItemOrder(ids, state.connections.map(item => item.id), id);
 });
@@ -2103,6 +2199,7 @@ function beginModulePointerDrag(event) {
   moduleDragPreview.innerHTML = `<b>${escapeHtml(definition.code)}</b><span>${escapeHtml(moduleLabel(draggedModuleRow.dataset.kind))}</span>`;
   document.body.appendChild(moduleDragPreview);
   modulePointerDrag.started = true;
+  positionModuleDragPreview(event.clientX, event.clientY);
   try { draggedModuleRow.setPointerCapture(event.pointerId); } catch (_) { /* document tracking remains active */ }
 }
 
@@ -2120,7 +2217,12 @@ function updateModuleDropSeam(clientY) {
 }
 
 function positionModuleDragPreview(clientX, clientY) {
-  if (moduleDragPreview) moduleDragPreview.style.transform = `translate3d(${Math.round(clientX + 14)}px, ${Math.round(clientY + 14)}px, 0)`;
+  if (!moduleDragPreview) return;
+  const w = moduleDragPreview.offsetWidth || 176;
+  const h = moduleDragPreview.offsetHeight || 38;
+  const x = Math.max(8, Math.min(Math.round(clientX + 14), window.innerWidth - w - 8));
+  const y = Math.max(44, Math.min(Math.round(clientY + 14), window.innerHeight - h - 8));
+  moduleDragPreview.style.transform = `translate3d(${x}px, ${y}px, 0)`;
 }
 
 function autoScrollModuleEditor(clientY) {
@@ -2228,6 +2330,32 @@ document.addEventListener('paste', (event) => {
   (inputs[Math.min(digits.length, inputs.length) - 1] || inputs[0])?.focus();
 });
 
+function trapFocusInContainer(container, event, extraElements = []) {
+  const selector = 'button:not(:disabled), input:not(:disabled):not([type="hidden"]), select:not(:disabled), textarea:not(:disabled), summary, [tabindex="0"]';
+  const controls = [...$$(selector, container), ...extraElements.flatMap(el => $$(selector, el))]
+    .filter(control => control.getClientRects().length && !control.closest('[inert], .hidden'));
+  if (!controls.length) return;
+  const first = controls[0], last = controls.at(-1);
+  if ((event.shiftKey && (document.activeElement === first || !controls.includes(document.activeElement))) ||
+    (!event.shiftKey && (document.activeElement === last || !controls.includes(document.activeElement)))) {
+    event.preventDefault();
+    (event.shiftKey ? last : first).focus();
+  }
+}
+
+function topSecondaryModal() {
+  for (const [id, close] of [
+    ['#backup-password-modal', () => finishBackupPassword(null)],
+    ['#generator-modal', closeGenerator],
+    ['#migration-modal', closeMigration],
+    ['#vault-management-modal', closeVaultManagement],
+  ]) {
+    const el = $(id);
+    if (el && !el.classList.contains('hidden')) return { el, close };
+  }
+  return null;
+}
+
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && switchPointerDrag) {
     event.preventDefault(); void finishSwitchDrag(false); return;
@@ -2254,17 +2382,50 @@ document.addEventListener('keydown', (event) => {
     finishModulePointerDrag(false);
     return;
   }
-  if (event.key === 'Escape' && vaultManagement) {
-    event.preventDefault();
-    closeVaultManagement();
+  const lockedOverlayVisible = !$('#owner-lock-layer').classList.contains('hidden');
+  if (lockedOverlayVisible) {
+    if (event.key === 'Tab') trapFocusInContainer($('#owner-lock-layer'), event);
+    if (event.key === 'Escape' && ownerPinSetupRequested && !ownerLockState.pinConfigured) {
+      event.preventDefault();
+      $('#owner-pin-cancel')?.click();
+    }
     return;
+  }
+  const secondaryModal = topSecondaryModal();
+  if (secondaryModal && !event.defaultPrevented) {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      secondaryModal.close();
+      return;
+    }
+    if (event.key === 'Tab') {
+      trapFocusInContainer(secondaryModal.el, event);
+      return;
+    }
+    if (isMacOS && event.metaKey && !event.ctrlKey && !event.altKey && event.key.toLowerCase() === 'w') {
+      event.preventDefault();
+      secondaryModal.close();
+      return;
+    }
+  }
+  if (githubBackup.isOpen() && !event.defaultPrevented) {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      $('#github-modal-close')?.click();
+      return;
+    }
+    if (isMacOS && event.metaKey && !event.ctrlKey && !event.altKey && event.key.toLowerCase() === 'w') {
+      event.preventDefault();
+      $('#github-modal-close')?.click();
+      return;
+    }
   }
   // Like Bricktone's WorkspaceDialog, keep keyboard navigation in the editor.
   // Nested dialogs keep their own keyboard handling and draft saving stays intact.
   const editor = $('#connection-modal');
   const editorIsTopmost = !editor.classList.contains('hidden') &&
     !$$('.modal-backdrop:not(.hidden)').some(modal => modal !== editor);
-  if (editorIsTopmost && ['Tab', 'Escape'].includes(event.key) && !event.defaultPrevented) {
+  if (editorIsTopmost && !event.defaultPrevented) {
     const menu = $('#module-menu');
     if (event.key === 'Escape') {
       event.preventDefault();
@@ -2272,14 +2433,19 @@ document.addEventListener('keydown', (event) => {
       else void closeEditorWithDraft();
       return;
     }
-    const selector = 'button:not(:disabled), input:not(:disabled):not([type="hidden"]), select:not(:disabled), textarea:not(:disabled), summary, [tabindex="0"]';
-    const controls = [...$$(selector, editor), ...(!editor.contains(menu) && !menu.classList.contains('hidden') ? $$(selector, menu) : [])]
-      .filter(control => control.getClientRects().length && !control.closest('[inert], .hidden'));
-    const first = controls[0], last = controls.at(-1);
-    if (first && (event.shiftKey && (document.activeElement === first || !controls.includes(document.activeElement)) ||
-      !event.shiftKey && (document.activeElement === last || !controls.includes(document.activeElement)))) {
+    if (event.key === 'Tab') {
+      trapFocusInContainer(editor, event, !editor.contains(menu) && !menu.classList.contains('hidden') ? [menu] : []);
+      return;
+    }
+    if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 's') {
       event.preventDefault();
-      (event.shiftKey ? last : first).focus();
+      $('#connection-form')?.requestSubmit();
+      return;
+    }
+    if (isMacOS && event.metaKey && !event.ctrlKey && !event.altKey && event.key.toLowerCase() === 'w') {
+      event.preventDefault();
+      void closeEditorWithDraft();
+      return;
     }
   }
   if (event.target.closest('.creation-options') && ['ArrowLeft', 'ArrowRight'].includes(event.key)) {
@@ -2310,14 +2476,42 @@ document.addEventListener('keydown', (event) => {
     void selectFilterButton(buttons[next]).then(() => $('[aria-pressed="true"]', strip).focus());
     return;
   }
-  const pageSearchAvailable = $('#connection-modal').classList.contains('hidden') && $('#owner-lock-layer').classList.contains('hidden') && !githubBackup.isOpen();
-  if (pageSearchAvailable && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f' && !event.altKey) {
-    event.preventDefault();
-    setTitleSearchOpen(true);
-    const search = $(`[data-page-search="${activePage}"]`);
-    search?.focus();
-    search?.select();
-    return;
+  const noModalOpen = !$$('.modal-backdrop:not(.hidden)').length && $('#owner-lock-layer').classList.contains('hidden');
+  if (noModalOpen && (event.ctrlKey || event.metaKey) && !event.altKey) {
+    const key = event.key.toLowerCase();
+    if (key === 'f' || key === 'k') {
+      event.preventDefault();
+      setTitleSearchOpen(true);
+      const search = $(`[data-page-search="${activePage}"]`);
+      search?.focus();
+      search?.select();
+      return;
+    }
+    if (key === 'n' && !event.shiftKey) {
+      event.preventDefault();
+      void selectPage('connections').then(() => selectCreationMode('add'));
+      return;
+    }
+    if (key === ',') {
+      event.preventDefault();
+      void selectPage('settings');
+      return;
+    }
+    if (key === '1' || key === '2' || key === '3') {
+      event.preventDefault();
+      void selectPage({ 1: 'connections', 2: 'activity', 3: 'settings' }[key]);
+      return;
+    }
+    if (key === 'l' && event.shiftKey && ownerLockState.pinConfigured && ownerLockState.unlocked) {
+      event.preventDefault();
+      void lockOwner();
+      return;
+    }
+    if (isMacOS && event.metaKey && !event.ctrlKey && key === 'w') {
+      event.preventDefault();
+      void api.window('close');
+      return;
+    }
   }
   if (event.key === 'Escape') {
     const search = event.target.closest?.('[data-page-search]');
@@ -2362,13 +2556,9 @@ $('#owner-lock-form').addEventListener('submit', async (event) => {
     ownerLockState = ownerLockState.pinConfigured ? await api.ownerUnlock(pin) : await api.ownerSetPin(pin);
     ownerPinSetupRequested = false;
     renderOwnerLock();
-    if (state) {
-      renderMetrics();
-      renderSettings();
-    }
     if (settingPin) toast(localized('PIN 锁已开启', 'PIN lock enabled'));
+    await refresh(false);
     await refreshDrafts(true);
-    await githubBackup.refresh();
   } catch (error) {
     toast(cleanError(error), 'error');
     clearPin('owner-pin');
@@ -2405,10 +2595,50 @@ $('#clear-activity-button').addEventListener('click', async () => {
 });
 $('#save-browser-settings-button').addEventListener('click', saveBrowserSettings);
 $('#browser-enabled').addEventListener('change', saveBrowserSettings);
+$('#browser-agent-passkey-enabled').addEventListener('change', saveBrowserSettings);
+$('#start-pairing-button').addEventListener('click', async (event) => {
+  const port = Number($('#browser-port').value);
+  if (!Number.isInteger(port) || port < 1024 || port > 65535) {
+    toast(localized('本地端口须在 1024–65535 之间', 'Local port must be between 1024 and 65535'), 'error');
+    return;
+  }
+  const button = event.currentTarget;
+  button.disabled = true;
+  try {
+    await api.quickPair(port);
+    $('#browser-enabled').checked = true;
+    toast(localized('已开启 120 秒配对窗口，已安装的扩展会自动连接', '120s pairing window open. Installed extensions will connect automatically.'));
+    await refresh(false);
+  } catch (error) {
+    toast(cleanError(error), 'error');
+  } finally {
+    button.disabled = false;
+  }
+});
+$('#test-browser-bridge-button').addEventListener('click', async (event) => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  try {
+    const info = await api.testBrowserBridge();
+    const tabCount = Array.isArray(info?.tabs) ? info.tabs.length : 0;
+    const formCount = Array.isArray(info?.loginForms) ? info.loginForms.length : 0;
+    const passkeyCount = Array.isArray(info?.pendingPasskeys) ? info.pendingPasskeys.length : 0;
+    const activeTarget = info?.origin || localized('当前标签页非网页', 'Active tab is not a web page');
+    toast(localized(
+      `扩展连接正常 · ${activeTarget}（${tabCount} 个网页标签，${formCount} 个登录表单，${passkeyCount} 个待处理 Passkey）`,
+      `Extension connected · ${activeTarget} (${tabCount} web tabs, ${formCount} login forms, ${passkeyCount} pending passkeys)`,
+    ));
+  } catch (error) {
+    toast(cleanError(error), 'error');
+  } finally {
+    renderSettings();
+  }
+});
 if (!isMacOS) $('#desktop-shortcut-enabled').addEventListener('change', (event) => setSystemIntegration('desktop', event.currentTarget.checked));
 $('#launch-at-login-enabled').addEventListener('change', (event) => setSystemIntegration('startup', event.currentTarget.checked));
 $('#pin-enabled').addEventListener('change', savePinSettings);
 $('#close-behavior').addEventListener('change', saveDesktopSettings);
+$('#owner-auto-lock-minutes').addEventListener('change', saveDesktopSettings);
 $('#quick-pairing-button').addEventListener('click', async event => {
   const button = event.currentTarget;
   button.disabled = true;
@@ -2416,7 +2646,7 @@ $('#quick-pairing-button').addEventListener('click', async event => {
     $('#browser-open-help').hidden = true;
     let copyError = null;
     try {
-      await api.copyOwnerValue('chrome://extensions/');
+      await api.copyOwnerValue('chrome://extensions/', false);
       $('#browser-open-help').hidden = false;
     } catch (error) { copyError = error; }
     let pairingError = null;
@@ -2460,6 +2690,7 @@ function finishBackupPassword(result) {
   const resolve = backupPasswordResolve; backupPasswordResolve = null; resolve?.(result);
 }
 function askBackupPassword(exporting) {
+  setModuleMenu(false);
   finishBackupPassword(null); backupPasswordExport = exporting;
   $('#backup-password-title').textContent = exporting ? localized('导出加密备份', 'EXPORT ENCRYPTED BACKUP') : localized('恢复备份', 'RESTORE BACKUP');
   $('#backup-password-help').textContent = exporting
@@ -2493,13 +2724,15 @@ async function generatePassword() {
   } catch (error) { toast(cleanError(error), 'error'); }
 }
 function openGenerator(target = null) {
+  setModuleMenu(false);
   generatorTarget = target; $('#generator-use').classList.toggle('hidden', !target);
   $('#generator-modal').classList.remove('hidden'); generatePassword();
+  requestAnimationFrame(() => $('#generator-length')?.focus());
 }
 $('#generator-open').onclick = () => openGenerator();
 $('#generator-close').onclick = closeGenerator;
 $('#generator-regenerate').onclick = generatePassword;
-$('#generator-copy').onclick = async () => { try { if ($('#generator-result').value) { await api.copyOwnerValue($('#generator-result').value); toast(localized('已复制', 'Copied')); } } catch(error) { toast(cleanError(error), 'error'); } };
+$('#generator-copy').onclick = async () => { try { if ($('#generator-result').value) { await api.copyOwnerValue($('#generator-result').value, true); toast(localized('已复制（30 秒后自动清除）', 'Copied · clears in 30s')); } } catch(error) { toast(cleanError(error), 'error'); } };
 $('#generator-use').onclick = () => {
   if (generatorTarget?.isConnected && $('#generator-result').value) { generatorTarget.value = $('#generator-result').value; generatorTarget.dispatchEvent(new Event('input', { bubbles:true })); syncModuleDraft(); }
   closeGenerator();
@@ -2507,6 +2740,14 @@ $('#generator-use').onclick = () => {
 document.addEventListener('click', e => {
   const button = e.target.closest('[data-generate-password]');
   if (button) openGenerator($('[data-secret-value]', button.closest('.module-row')));
+  const totpButton = e.target.closest('[data-copy-totp-code]');
+  if (totpButton) {
+    const secret = $('[data-secret-value]', totpButton.closest('.module-row'))?.value?.trim() || '';
+    if (!secret) { toast(localized('请先输入 TOTP 密钥', 'Enter a TOTP setup key first'), 'error'); return; }
+    invoke('copy_totp_code', { secret })
+      .then((res) => toast(localized(`2FA 验证码已复制（剩余 ${res?.remainingSeconds ?? 30}s，30 秒后清除）`, `2FA code copied (${res?.remainingSeconds ?? 30}s left · clears in 30s)`)))
+      .catch((error) => toast(cleanError(error), 'error'));
+  }
 });
 
 $('#page-activity .activity-panel').addEventListener('scroll', (event) => {
@@ -2528,6 +2769,30 @@ $('.form-scroll', $('#connection-modal')).addEventListener('scroll', positionMod
 $('#connections-list').addEventListener('scroll', positionModuleMenu, { passive: true });
 setInterval(() => { if ($('#page-activity').classList.contains('active')) refresh(false); }, 2000);
 setInterval(() => { if (!document.hidden && $('#connection-modal').classList.contains('hidden') && $('#page-connections').classList.contains('active')) refresh(false); }, 2000);
+let lastOwnerTouchAt = 0;
+function touchOwnerActivity() {
+  if (!ownerLockState.pinConfigured || !ownerLockState.unlocked || !Number(state?.settings?.ownerAutoLockMinutes || 0)) return;
+  const now = Date.now();
+  if (now - lastOwnerTouchAt < 20_000) return;
+  lastOwnerTouchAt = now;
+  api.ownerTouch().then((next) => {
+    if (next && typeof next.unlocked === 'boolean') {
+      const wasUnlocked = ownerLockState.unlocked;
+      ownerLockState = next;
+      if (wasUnlocked && next.pinConfigured && !next.unlocked) {
+        renderOwnerLock();
+        refresh(false);
+      }
+    }
+  }).catch(() => {});
+}
+window.addEventListener('pointerdown', touchOwnerActivity, { passive: true });
+window.addEventListener('keydown', touchOwnerActivity, { passive: true });
+setInterval(() => {
+  if (ownerLockState.pinConfigured && ownerLockState.unlocked && Number(state?.settings?.ownerAutoLockMinutes || 0) > 0) {
+    refreshOwnerLock(false);
+  }
+}, 15_000);
 let extensionDragStart = null, extensionDragBusy = false;
 $('#drag-extension-button').addEventListener('pointerdown', event => { if(event.button === 0) extensionDragStart = {x:event.clientX,y:event.clientY}; });
 window.addEventListener('pointerup', () => { extensionDragStart = null; });

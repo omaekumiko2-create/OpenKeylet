@@ -38,23 +38,45 @@ const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(40);
 const HEALTH_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 pub(crate) const EXTENSION_ORIGIN: &str = "chrome-extension://knkjojeijgalhpdkfapohofobfomenmi";
 
+fn default_job_kind() -> String {
+    "fill_focused".to_owned()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BrowserJob {
     id: Uuid,
+    #[serde(default = "default_job_kind")]
+    kind: String,
+    #[serde(default)]
     value: String,
     #[serde(default)]
     submit: bool,
+    #[serde(default)]
+    payload: serde_json::Value,
     #[serde(default)]
     expires_at: u64,
 }
 
 impl BrowserJob {
+    #[cfg(test)]
     fn with_deadline(id: Uuid, value: String, submit: bool) -> Self {
+        Self::action(id, "fill_focused", value, submit, serde_json::Value::Null)
+    }
+
+    fn action(
+        id: Uuid,
+        kind: &str,
+        value: String,
+        submit: bool,
+        payload: serde_json::Value,
+    ) -> Self {
         Self {
             id,
+            kind: kind.to_owned(),
             value,
             submit,
+            payload,
             expires_at: unix_millis().saturating_add(JOB_TIMEOUT.as_millis() as u64),
         }
     }
@@ -81,6 +103,8 @@ impl BrowserJob {
 pub struct BrowserFillResult {
     pub status: String,
     pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -109,6 +133,8 @@ struct ExtensionMessage {
     ok: bool,
     #[serde(default)]
     message: String,
+    #[serde(default)]
+    data: Option<serde_json::Value>,
 }
 
 struct PairingWindow {
@@ -333,6 +359,17 @@ impl BrowserBridge {
     }
 
     pub async fn fill_value(&self, value: String, submit: bool) -> Result<BrowserFillResult> {
+        self.execute_job("fill_focused", value, submit, serde_json::Value::Null)
+            .await
+    }
+
+    pub async fn execute_job(
+        &self,
+        kind: &str,
+        value: String,
+        submit: bool,
+        payload: serde_json::Value,
+    ) -> Result<BrowserFillResult> {
         let settings = self.vault.settings()?;
         if !settings.browser_enabled {
             bail!("Browser Bridge is not enabled");
@@ -341,7 +378,7 @@ impl BrowserBridge {
             bail!("Chromium extension has not been paired");
         }
         self.ensure_started(settings.browser_port).await?;
-        let job = BrowserJob::with_deadline(Uuid::new_v4(), value, submit);
+        let job = BrowserJob::action(Uuid::new_v4(), kind, value, submit, payload);
         let response = self
             .client
             .post(format!(
@@ -352,10 +389,10 @@ impl BrowserBridge {
             .json(&job)
             .send()
             .await
-            .context("Unable to submit browser fill task")?;
+            .context("Unable to submit browser task")?;
         if !response.status().is_success() {
             bail!(
-                "Browser fill failed:{}",
+                "Browser operation failed: {}",
                 response.text().await.unwrap_or_default()
             );
         }
@@ -363,6 +400,63 @@ impl BrowserBridge {
             .json()
             .await
             .context("Invalid browser result format")
+    }
+
+    pub async fn inspect_page(
+        &self,
+        tab_id: Option<i64>,
+        url: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        let result = self
+            .execute_job(
+                "inspect_page",
+                String::new(),
+                false,
+                serde_json::json!({
+                    "tabId": tab_id,
+                    "url": url,
+                }),
+            )
+            .await?;
+        Ok(result.data.unwrap_or_else(|| serde_json::json!({})))
+    }
+
+    pub async fn fill_login(&self, payload: serde_json::Value) -> Result<BrowserFillResult> {
+        self.execute_job("fill_login", String::new(), false, payload)
+            .await
+    }
+
+    pub async fn fill_field(
+        &self,
+        value: String,
+        submit: bool,
+        payload: serde_json::Value,
+    ) -> Result<BrowserFillResult> {
+        self.execute_job("fill_field", value, submit, payload).await
+    }
+
+    pub async fn fill_personal(&self, payload: serde_json::Value) -> Result<BrowserFillResult> {
+        self.execute_job("fill_personal", String::new(), false, payload)
+            .await
+    }
+
+    pub async fn click(&self, payload: serde_json::Value) -> Result<BrowserFillResult> {
+        self.execute_job("click", String::new(), false, payload)
+            .await
+    }
+
+    pub async fn passkey_capture(&self, payload: serde_json::Value) -> Result<serde_json::Value> {
+        let result = self
+            .execute_job("passkey_capture", String::new(), false, payload)
+            .await?;
+        result
+            .data
+            .context("Browser extension did not return passkey request details")
+    }
+
+    pub async fn passkey_resolve(&self, payload: serde_json::Value) -> Result<BrowserFillResult> {
+        self.execute_job("passkey_resolve", String::new(), false, payload)
+            .await
     }
 
     async fn ensure_started(&self, port: u16) -> Result<()> {
@@ -650,9 +744,25 @@ async fn reset_pairing(
 
 async fn extension_upgrade(
     ws: WebSocketUpgrade,
+    headers: HeaderMap,
     State(state): State<BridgeServerState>,
-) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| extension_socket(socket, state))
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let origin = headers
+        .get(header::ORIGIN)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+    if origin != EXTENSION_ORIGIN {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "Only the OpenKeylet Chromium extension can connect to Browser Bridge".to_owned(),
+        ));
+    }
+    Ok(ws.on_upgrade(move |socket| extension_socket(socket, state)))
+}
+
+fn constant_time_eq(left: &str, right: &str) -> bool {
+    left.len() == right.len()
+        && subtle::ConstantTimeEq::ct_eq(left.as_bytes(), right.as_bytes()).into()
 }
 
 async fn extension_socket(socket: WebSocket, state: BridgeServerState) {
@@ -667,7 +777,7 @@ async fn extension_socket(socket: WebSocket, state: BridgeServerState) {
         let _ = sender.send(Message::Close(None)).await;
         return;
     };
-    if message.kind != "auth" || message.token != state.extension_token {
+    if message.kind != "auth" || !constant_time_eq(&message.token, &state.extension_token) {
         let _ = sender
             .send(Message::Text(
                 serde_json::json!({"type":"auth-error"}).to_string().into(),
@@ -725,6 +835,7 @@ async fn extension_socket(socket: WebSocket, state: BridgeServerState) {
                             let _ = pending.send(BrowserFillResult {
                                 status: if message.ok { "ok" } else { "error" }.to_owned(),
                                 message: message.message,
+                                data: message.data,
                             });
                         }
                     }
@@ -775,14 +886,25 @@ fn unix_millis() -> u64 {
 }
 
 pub fn current_totp(secret: &str) -> Result<String> {
+    let (code, _, _) = current_totp_details(secret)?;
+    Ok(code)
+}
+
+pub fn current_totp_details(secret: &str) -> Result<(String, u64, u64)> {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .context("Invalid system time")?
         .as_secs();
-    totp_at(secret, timestamp)
+    totp_details_at(secret, timestamp)
 }
 
+#[cfg(test)]
 fn totp_at(secret: &str, timestamp: u64) -> Result<String> {
+    let (code, _, _) = totp_details_at(secret, timestamp)?;
+    Ok(code)
+}
+
+fn totp_details_at(secret: &str, timestamp: u64) -> Result<(String, u64, u64)> {
     let mut seed = secret.trim().to_owned();
     let (mut digits, mut period, mut algorithm) = (6usize, 30u64, "SHA1".to_owned());
     if seed.starts_with("otpauth://") {
@@ -836,7 +958,9 @@ fn totp_at(secret: &str, timestamp: u64) -> Result<String> {
         | (u32::from(digest[offset + 1]) << 16)
         | (u32::from(digest[offset + 2]) << 8)
         | u32::from(digest[offset + 3]);
-    Ok(format!("{:0digits$}", value % 10u32.pow(digits as u32)))
+    let code = format!("{:0digits$}", value % 10u32.pow(digits as u32));
+    let remaining = period - (timestamp % period);
+    Ok((code, remaining, period))
 }
 
 fn decode_base32(value: &str) -> Result<Vec<u8>> {
@@ -1138,12 +1262,24 @@ mod tests {
         assert!(!bridge.status().await.connected);
 
         let url = format!("ws://127.0.0.1:{port}/extension");
+        // WebSocket upgrade must reject missing or non-extension origins.
+        assert!(tokio_tungstenite::connect_async(&url).await.is_err());
+
+        let ws_request = || {
+            use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+            let mut req = url.as_str().into_client_request().unwrap();
+            req.headers_mut().insert(
+                header::ORIGIN,
+                EXTENSION_ORIGIN.parse().unwrap(),
+            );
+            req
+        };
         let auth = serde_json::json!({
             "type": "auth",
             "token": bridge.extension_token().unwrap()
         })
         .to_string();
-        let (mut first, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        let (mut first, _) = tokio_tungstenite::connect_async(ws_request()).await.unwrap();
         first
             .send(ClientMessage::Text(auth.clone().into()))
             .await
@@ -1162,7 +1298,7 @@ mod tests {
         assert!(bridge.status().await.connected);
         assert!(bridge.status().await.connected);
 
-        let (mut second, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        let (mut second, _) = tokio_tungstenite::connect_async(ws_request()).await.unwrap();
         second.send(ClientMessage::Text(auth.into())).await.unwrap();
         assert!(
             second

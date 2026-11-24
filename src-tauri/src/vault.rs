@@ -76,6 +76,7 @@ impl Vault {
                     owner_pin: None,
                     connections: Vec::new(),
                     trash: Vec::new(),
+                    deleted_ids: Vec::new(),
                     editor_drafts: Vec::new(),
                     activities: Vec::new(),
                 };
@@ -282,10 +283,19 @@ impl Vault {
                 next.browser_enabled = browser_enabled;
             }
             if let Some(browser_port) = patch.browser_port {
-                if browser_port == 0 {
-                    bail!("Local port must be between 1–65535");
+                if browser_port < 1024 {
+                    bail!("Local port must be between 1024–65535");
                 }
                 next.browser_port = browser_port;
+            }
+            if let Some(browser_agent_passkey) = patch.browser_agent_passkey {
+                next.browser_agent_passkey = browser_agent_passkey;
+            }
+            if let Some(minutes) = patch.owner_auto_lock_minutes {
+                if !matches!(minutes, 0 | 5 | 15 | 30 | 60) {
+                    bail!("Auto-lock timeout must be 0, 5, 15, 30, or 60 minutes");
+                }
+                next.owner_auto_lock_minutes = minutes;
             }
             document.settings = next.clone();
             Ok(next)
@@ -605,6 +615,15 @@ impl Vault {
                 .position(|entry| entry.connection.id == id && entry.deleted_at == deleted_at)
                 .context("Trash item changed; refresh before deleting permanently")?;
             document.trash.remove(index);
+            document.deleted_ids.retain(|entry| entry.id != id);
+            document.deleted_ids.insert(
+                0,
+                crate::model::DeletedItemTombstone {
+                    id,
+                    deleted_at: Utc::now().to_rfc3339(),
+                },
+            );
+            document.deleted_ids.truncate(500);
             Ok(())
         })
     }
@@ -750,6 +769,226 @@ impl Vault {
             })
             .collect::<Result<Vec<_>>>()?;
         Ok((active, trash))
+    }
+
+    pub fn export_tombstones(&self) -> Result<Vec<crate::model::DeletedItemTombstone>> {
+        Ok(self.read_document()?.deleted_ids)
+    }
+
+    pub fn sync_content_fingerprint(&self) -> Result<String> {
+        use sha2::{Digest, Sha256};
+        let (active, trash) = self.export_backup_entries()?;
+        let tombstones = self.export_tombstones()?;
+        let mut active_sorted = active;
+        active_sorted.sort_by_key(|(c, _)| c.id);
+        let mut trash_sorted = trash;
+        trash_sorted.sort_by_key(|t| (t.connection.id, t.deleted_at.clone()));
+        let mut tombstones_sorted = tombstones;
+        tombstones_sorted.sort_by_key(|t| t.id);
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "active": active_sorted,
+            "trash": trash_sorted,
+            "deletedIds": tombstones_sorted,
+        }))?;
+        let digest = Sha256::digest(&bytes);
+        Ok(digest.iter().map(|b| format!("{b:02x}")).collect())
+    }
+
+    pub fn sync_merge_entries(
+        &self,
+        remote_active: Vec<(PortableConnection, SecretBundle)>,
+        remote_trash: Vec<crate::model::PortableTrashItem>,
+        remote_tombstones: Vec<crate::model::DeletedItemTombstone>,
+    ) -> Result<crate::model::SyncMergeSummary> {
+        let parse_ts = |value: &str| chrono::DateTime::parse_from_rfc3339(value).ok();
+        let is_newer = |candidate: &str, baseline: &str| match (parse_ts(candidate), parse_ts(baseline)) {
+            (Some(a), Some(b)) => a > b,
+            _ => candidate > baseline,
+        };
+
+        self.update_document_with_result(|document| {
+            let mut summary = crate::model::SyncMergeSummary::default();
+
+            // 1. Merge remote tombstones first and purge older local active/trash items.
+            for tomb in remote_tombstones {
+                if parse_ts(&tomb.deleted_at).is_none() {
+                    continue;
+                }
+                if let Some(existing) = document.deleted_ids.iter_mut().find(|t| t.id == tomb.id) {
+                    if is_newer(&tomb.deleted_at, &existing.deleted_at) {
+                        existing.deleted_at = tomb.deleted_at.clone();
+                    }
+                } else {
+                    document.deleted_ids.push(tomb.clone());
+                }
+                if let Some(pos) = document.connections.iter().position(|c| c.id == tomb.id)
+                    && is_newer(&tomb.deleted_at, &document.connections[pos].updated_at)
+                {
+                    document.connections.remove(pos);
+                    summary.deleted += 1;
+                }
+                if let Some(pos) = document.trash.iter().position(|t| t.connection.id == tomb.id)
+                    && is_newer(&tomb.deleted_at, &document.trash[pos].deleted_at)
+                {
+                    document.trash.remove(pos);
+                    summary.deleted += 1;
+                }
+            }
+            document.deleted_ids.sort_by(|a, b| b.deleted_at.cmp(&a.deleted_at));
+            document.deleted_ids.truncate(500);
+
+            // 2. Merge remote active connections by UUID + updatedAt (preserving local edits & tombstones).
+            for (public, secrets) in remote_active {
+                let mut stored = stored_from_portable(&public, &secrets, &self.inner.key)?;
+                let imported_secrets: SecretBundle =
+                    self.inner.key.decrypt(&stored.encrypted_secrets)?;
+                let requested_name = clean_text(&stored.name, 80);
+                stored.name = if requested_name.is_empty() {
+                    "Synced item".to_owned()
+                } else {
+                    requested_name
+                };
+
+                // Skip if a newer tombstone exists locally.
+                if let Some(tomb) = document.deleted_ids.iter().find(|t| t.id == stored.id)
+                    && is_newer(&tomb.deleted_at, &stored.updated_at)
+                {
+                    summary.unchanged += 1;
+                    continue;
+                }
+
+                // Check if currently in local trash.
+                if let Some(trash_pos) = document
+                    .trash
+                    .iter()
+                    .position(|entry| entry.connection.id == stored.id)
+                {
+                    if is_newer(&stored.updated_at, &document.trash[trash_pos].deleted_at) {
+                        document.trash.remove(trash_pos);
+                        document.deleted_ids.retain(|t| t.id != stored.id);
+                        if document
+                            .connections
+                            .iter()
+                            .any(|c| same_item_name(&c.name, &stored.name))
+                        {
+                            stored.name = unique_import_name(&document.connections, &stored.name);
+                        }
+                        document.connections.push(stored);
+                        summary.updated += 1;
+                    } else {
+                        summary.unchanged += 1;
+                    }
+                    continue;
+                }
+
+                // Check if already active locally with the same UUID.
+                if let Some(pos) = document.connections.iter().position(|c| c.id == stored.id) {
+                    let existing = &document.connections[pos];
+                    let existing_secrets: SecretBundle =
+                        self.inner.key.decrypt(&existing.encrypted_secrets)?;
+                    if same_synced_state(
+                        existing,
+                        &existing_secrets,
+                        &stored,
+                        &imported_secrets,
+                    ) {
+                        summary.unchanged += 1;
+                    } else if is_newer(&stored.updated_at, &existing.updated_at) {
+                        let name_collision = document
+                            .connections
+                            .iter()
+                            .enumerate()
+                            .any(|(idx, c)| idx != pos && same_item_name(&c.name, &stored.name));
+                        if name_collision {
+                            stored.name = unique_import_name(&document.connections, &stored.name);
+                        }
+                        document.connections[pos] = stored;
+                        summary.updated += 1;
+                    } else {
+                        summary.unchanged += 1;
+                    }
+                    continue;
+                }
+
+                // Unknown UUID: avoid duplicating identical item imported previously under another ID.
+                let mut identical_exists = false;
+                for existing in document
+                    .connections
+                    .iter()
+                    .filter(|c| same_item_name(&c.name, &stored.name))
+                {
+                    let existing_secrets: SecretBundle =
+                        self.inner.key.decrypt(&existing.encrypted_secrets)?;
+                    if same_portable_content(
+                        existing,
+                        &existing_secrets,
+                        &stored,
+                        &imported_secrets,
+                    ) {
+                        identical_exists = true;
+                        break;
+                    }
+                }
+                if identical_exists {
+                    summary.unchanged += 1;
+                    continue;
+                }
+
+                document.deleted_ids.retain(|t| t.id != stored.id);
+                if document
+                    .connections
+                    .iter()
+                    .any(|c| same_item_name(&c.name, &stored.name))
+                {
+                    stored.name = unique_import_name(&document.connections, &stored.name);
+                }
+                document.connections.push(stored);
+                summary.added += 1;
+            }
+
+            // 3. Merge remote trash entries (trashing local active items if remote deletion is newer).
+            for entry in remote_trash {
+                if parse_ts(&entry.deleted_at).is_none() {
+                    continue;
+                }
+                let id = entry.connection.id;
+                if let Some(tomb) = document.deleted_ids.iter().find(|t| t.id == id)
+                    && is_newer(&tomb.deleted_at, &entry.deleted_at)
+                {
+                    summary.unchanged += 1;
+                    continue;
+                }
+                if let Some(pos) = document.connections.iter().position(|c| c.id == id) {
+                    if is_newer(&entry.deleted_at, &document.connections[pos].updated_at) {
+                        let removed = document.connections.remove(pos);
+                        document.trash.insert(
+                            0,
+                            crate::model::StoredTrashItem {
+                                deleted_at: entry.deleted_at,
+                                connection: removed,
+                            },
+                        );
+                        summary.deleted += 1;
+                    } else {
+                        summary.unchanged += 1;
+                    }
+                    continue;
+                }
+                if document.trash.iter().any(|t| t.connection.id == id) {
+                    summary.unchanged += 1;
+                    continue;
+                }
+                let stored =
+                    stored_from_portable(&entry.connection, &entry.secrets, &self.inner.key)?;
+                document.trash.push(crate::model::StoredTrashItem {
+                    deleted_at: entry.deleted_at,
+                    connection: stored,
+                });
+                summary.added += 1;
+            }
+
+            Ok(summary)
+        })
     }
 
     pub fn merge_connections(
@@ -1231,6 +1470,25 @@ fn stored_from_portable(
     stored.created_at = portable.created_at.clone();
     stored.encrypted_secrets = key.encrypt(&secrets)?;
     Ok(stored)
+}
+
+fn same_synced_state(
+    left: &StoredConnection,
+    left_secrets: &SecretBundle,
+    right: &StoredConnection,
+    right_secrets: &SecretBundle,
+) -> bool {
+    left.name == right.name
+        && left.enabled == right.enabled
+        && left.description == right.description
+        && left.http_auth_type == right.http_auth_type
+        && left.private_key_name == right.private_key_name
+        && left.auth_header == right.auth_header
+        && left.auth_location == right.auth_location
+        && left.auth_prefix == right.auth_prefix
+        && left.api_auth_headers == right.api_auth_headers
+        && left.test_path == right.test_path
+        && same_portable_content(left, left_secrets, right, right_secrets)
 }
 
 fn same_portable_content(

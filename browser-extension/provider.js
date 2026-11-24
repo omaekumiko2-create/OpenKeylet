@@ -2,6 +2,7 @@
 const bridgeRequests = new Map();
 const credentialRequests = new Map();
 const preparingCredentials = new Map();
+const agentPasskeyWaiters = [];
 function bridgeCall(method, params = {}) {
   if (socket?.readyState !== WebSocket.OPEN) return Promise.reject(new Error("Open OpenKeylet and connect Browser Bridge first"));
   if (bridgeRequests.size >= 32) return Promise.reject(new Error("Too many pending requests"));
@@ -23,6 +24,11 @@ function failBridgeRequests() {
   for (const p of bridgeRequests.values()) { clearTimeout(p.timer); p.reject(new Error("OpenKeylet disconnected")); }
   bridgeRequests.clear();
   preparingCredentials.clear();
+  while (agentPasskeyWaiters.length) {
+    const waiter = agentPasskeyWaiters.pop();
+    clearTimeout(waiter.timer);
+    waiter.reject(new Error("OpenKeylet disconnected"));
+  }
   for (const [id] of credentialRequests) finishCredentialRequest(id, { fallback: true });
 }
 function trustedUi(sender, page) { return sender.id === chrome.runtime.id && sender.url?.split("?")[0] === chrome.runtime.getURL(page); }
@@ -105,6 +111,10 @@ async function popupAction(message) {
     await pageStillMatches(tab.id, origin);
     return formAction(tab, origin, "fill", login, target);
   }
+  if (message.action === "totp") {
+    const target = await loginPage(tab, origin);
+    return bridgeCall("password.totp", { origin: target.url, id: message.id });
+  }
   if (message.action === "read-form") return formAction(tab, origin, "read");
   if (message.action === "save") {
     const target = await loginPage(tab, origin);
@@ -126,6 +136,7 @@ function usePersonalForm(expectedOrigin, kind, values) {
   const identity = {
     "honorific-prefix": "identityTitle", "given-name": "firstName", "additional-name": "middleName",
     "family-name": "lastName", "organization": "company", "email": "email", "tel": "phone",
+    "tel-national": "phone", "tel-local": "phone",
     "address-line1": "address1", "address-line2": "address2", "address-line3": "address3",
     "address-level2": "city", "address-level1": "state", "postal-code": "postalCode",
     "country": "country", "country-name": "country",
@@ -133,21 +144,35 @@ function usePersonalForm(expectedOrigin, kind, values) {
   const tokens = kind === "card" ? card : identity;
   const aliases = kind === "card" ? {
     "cc-name":["cardholder","cardholdername","nameoncard","ccname","持卡人","持卡人姓名"],
-    "cc-number":["cardnumber","creditcardnumber","ccnumber","ccnum","cardno","卡号"],
-    "cc-exp":["cardexpiry","cardexpiration","expirationdate","expirydate","expiry","ccexp","有效期"],
+    "cc-number":["cardnumber","creditcardnumber","ccnumber","ccnum","cardnum","cardno","卡号","信用卡号","银行卡号"],
+    "cc-exp":["cardexpiry","cardexpiration","expirationdate","expirydate","expiration","expdate","expiry","ccexp","mmyy","mmyyyy","有效期","有效期限","到期日","到期年月"],
     "cc-exp-month":["expmonth","expirymonth","expirationmonth","cardexpmonth","ccmonth"],
     "cc-exp-year":["expyear","expiryyear","expirationyear","cardexpyear","ccyear"],
     "cc-csc":["cvv","cvv2","cvc","cvc2","ccv","cccsc","securitycode","cardsecuritycode","安全码"],
   } : {
     "given-name":["firstname","givenname","名字"],"family-name":["lastname","surname","familyname","姓氏"],
     "additional-name":["middlename"],"name":["fullname","contactname","姓名"],
-    "email":["email","emailaddress","contactemail","邮箱","电子邮箱"],"tel":["phone","phonenumber","telephone","mobile","电话","手机号码"],
+    "email":["email","emailaddress","contactemail","邮箱","电子邮箱"],"tel":["phone","phonenumber","telephone","mobile","电话","手机号码","手机号"],
     "organization":["company","companyname","organization","公司"],
     "address-line1":["address","address1","addressline1","streetaddress","地址"],
     "address-line2":["address2","addressline2"],"address-line3":["address3","addressline3"],
-    "address-level2":["city","town","城市"],"address-level1":["state","province","region","省份"],
-    "postal-code":["zip","zipcode","postalcode","postcode","邮编"],"country":["country","countrycode","countryname","国家"],
+    "address-level2":["city","town","城市"],"address-level1":["state","province","region","省份","省","州"],
+    "postal-code":["zip","zipcode","postalcode","postcode","邮编","邮政编码"],"country":["country","countrycode","countryname","国家","国家地区"],
   };
+  const countryAliases = [
+    ["cn", "chn", "china", "prc", "中国", "中华人民共和国"],
+    ["us", "usa", "united states", "united states of america", "美国"],
+    ["gb", "uk", "gbr", "united kingdom", "great britain", "英国"],
+    ["jp", "jpn", "japan", "日本"],
+    ["kr", "kor", "south korea", "korea", "韩国"],
+    ["de", "deu", "germany", "deutschland", "德国"],
+    ["fr", "fra", "france", "法国"],
+    ["ca", "can", "canada", "加拿大"],
+    ["au", "aus", "australia", "澳大利亚"],
+    ["sg", "sgp", "singapore", "新加坡"],
+    ["hk", "hkg", "hong kong", "香港", "中国香港"],
+    ["tw", "twn", "taiwan", "台湾", "中国台湾"],
+  ];
   function tokenFor(element) {
     const explicit = (element.autocomplete || "").toLowerCase().split(/\s/).at(-1);
     if (explicit && !["on","off"].includes(explicit)) return explicit;
@@ -176,25 +201,40 @@ function usePersonalForm(expectedOrigin, kind, values) {
     const token = tokenFor(element);
     let value = values[tokens[token]];
     if (kind === "card" && token === "cc-exp" && values.cardExpMonth && values.cardExpYear) {
-      const month = values.cardExpMonth.padStart(2,"0"), year = values.cardExpYear.length === 2 ? `20${values.cardExpYear}` : values.cardExpYear;
+      const rawMonth = values.cardExpMonth.trim(), rawYear = values.cardExpYear.trim();
+      const month = rawMonth.padStart(2,"0"), year = rawYear.length === 2 ? `20${rawYear}` : rawYear;
       const hint = (element.placeholder || "").replace(/\s/g,"").toUpperCase();
       value = element.type === "month" ? `${year}-${month}`
         : hint === "MMYYYY" ? `${month}${year}` : hint === "MMYY" || element.maxLength === 4 ? `${month}${year.slice(-2)}`
         : hint.includes("YYYY") || element.maxLength === 7 ? `${month}/${year}` : `${month}/${year.slice(-2)}`;
     }
-    if (kind === "card" && token === "cc-exp-year" && value && element.maxLength === 2) value = value.slice(-2);
-    if (kind === "identity" && token === "name")
-      value = [values.firstName, values.middleName, values.lastName].filter(Boolean).join(" ");
+    if (kind === "card" && token === "cc-exp-year" && value && element.maxLength === 2) value = value.trim().slice(-2);
+    if (kind === "identity" && token === "name") {
+      const cjk = s => /[\u3400-\u9fff]/.test(s || "");
+      value = !values.middleName && cjk(values.firstName) && cjk(values.lastName)
+        ? `${values.lastName.trim()}${values.firstName.trim()}`
+        : [values.firstName, values.middleName, values.lastName].filter(Boolean).join(" ");
+    }
     if (kind === "identity" && token === "street-address")
       value = [values.address1, values.address2, values.address3].filter(Boolean).join("\n");
     if (!value) continue;
     if (element instanceof HTMLSelectElement) {
       const normalized = value.trim().toLowerCase();
       const monthNames = ["january","february","march","april","may","june","july","august","september","october","november","december"];
-      const option = [...element.options].find(o => !o.disabled && (o.value.toLowerCase() === normalized || o.textContent.trim().toLowerCase() === normalized
-        || (token === "cc-exp-month" && Number(o.value) === Number(value))
-        || (token === "cc-exp-month" && monthNames[Number(value)-1]?.startsWith(o.textContent.trim().toLowerCase()) && o.textContent.trim().length >= 3)
-        || (token === "cc-exp-year" && o.value.slice(-2) === value.slice(-2))));
+      const countryGroup = (token === "country" || token === "country-name")
+        ? countryAliases.find(group => group.includes(normalized)) : null;
+      const option = [...element.options].find(o => {
+        if (o.disabled) return false;
+        const optVal = o.value.trim().toLowerCase();
+        const optText = o.textContent.trim().toLowerCase();
+        if (optVal === normalized || optText === normalized) return true;
+        if (countryGroup && (countryGroup.includes(optVal) || countryGroup.includes(optText))) return true;
+        if (token === "cc-exp-month" && (Number(o.value) === Number(value)
+          || parseInt(optText, 10) === Number(value)
+          || (monthNames[Number(value)-1]?.startsWith(optText) && optText.length >= 3))) return true;
+        if (token === "cc-exp-year" && optVal.slice(-2) === normalized.slice(-2)) return true;
+        return false;
+      });
       if (!option) continue;
       value = option.value;
     }
@@ -206,6 +246,137 @@ function usePersonalForm(expectedOrigin, kind, values) {
     filled++;
   }
   return { filled };
+}
+
+function takeMatchingPasskeyWaiter(tabId, operation) {
+  const index = agentPasskeyWaiters.findIndex(w =>
+    (w.tabId == null || w.tabId === tabId) && (!w.operation || w.operation === operation));
+  if (index === -1) return null;
+  const [waiter] = agentPasskeyWaiters.splice(index, 1);
+  clearTimeout(waiter.timer);
+  return waiter;
+}
+
+function listPendingCredentialRequests() {
+  return [...credentialRequests.entries()].map(([requestId, p]) => ({
+    requestId,
+    tabId: p.tabId,
+    origin: p.params.origin,
+    operation: p.params.operation,
+    rpId: p.info.rpId,
+    account: p.params.options?.user?.name || "",
+    verificationRequired: Boolean(p.info.verificationRequired),
+    agentManaged: Boolean(p.agentManaged),
+    matchingCredentials: (p.info.entries || []).map(e => ({
+      itemId: e.itemId,
+      itemName: e.name,
+      credentialId: e.passkey.credentialId,
+      userName: e.passkey.userName,
+      displayName: e.passkey.displayName,
+    })),
+  }));
+}
+
+async function captureAgentPasskey(payload = {}, expiresAt) {
+  const requestedId = typeof payload.requestId === "string" ? payload.requestId.trim() : "";
+  const requestedOp = typeof payload.operation === "string" && ["create", "get"].includes(payload.operation)
+    ? payload.operation : "";
+  let targetTab = null;
+  if (requestedId) {
+    const existing = credentialRequests.get(requestedId);
+    if (!existing) throw new Error("Pending passkey request not found or already expired");
+    return {
+      requestId: requestedId,
+      tabId: existing.tabId,
+      origin: existing.params.origin,
+      operation: existing.params.operation,
+      rpId: existing.info.rpId,
+      options: existing.params.options,
+      verificationRequired: Boolean(existing.info.verificationRequired),
+    };
+  }
+  if (payload.tabId != null || payload.url) {
+    targetTab = await resolveTargetTab(payload);
+  }
+  for (const [id, p] of credentialRequests.entries()) {
+    if (targetTab && p.tabId !== targetTab.id) continue;
+    if (requestedOp && p.params.operation !== requestedOp) continue;
+    return {
+      requestId: id,
+      tabId: p.tabId,
+      origin: p.params.origin,
+      operation: p.params.operation,
+      rpId: p.info.rpId,
+      options: p.params.options,
+      verificationRequired: Boolean(p.info.verificationRequired),
+    };
+  }
+
+  targetTab ||= await resolveTargetTab(payload);
+  if (!targetTab?.id || !/^https?:\/\//.test(targetTab.url || "")) {
+    throw new Error("No active HTTP/HTTPS browser tab for WebAuthn passkey");
+  }
+  const hasTrigger = Boolean((payload.triggerSelector || "").trim() || (payload.triggerText || "").trim());
+  const defaultWait = hasTrigger ? 15000 : 12000;
+  const maxRemaining = Number.isFinite(expiresAt) ? Math.max(500, expiresAt - Date.now() - 500) : defaultWait;
+  const waitMs = Math.min(Math.max(Number(payload.waitMs) || defaultWait, 1000), maxRemaining);
+
+  const waitPromise = new Promise((resolve, reject) => {
+    const waiter = {
+      tabId: targetTab.id,
+      operation: requestedOp,
+      resolve,
+      reject,
+      timer: null,
+    };
+    waiter.timer = setTimeout(() => {
+      const idx = agentPasskeyWaiters.indexOf(waiter);
+      if (idx !== -1) agentPasskeyWaiters.splice(idx, 1);
+      reject(new Error("Timed out waiting for the webpage to trigger a WebAuthn Passkey request"));
+    }, waitMs);
+    agentPasskeyWaiters.push(waiter);
+  });
+
+  if (hasTrigger) {
+    const clickResult = await clickJob({
+      tabId: targetTab.id,
+      selector: payload.triggerSelector || "",
+      text: payload.triggerText || "",
+    }, expiresAt);
+    if (!clickResult?.ok) {
+      // Cancel waiter cleanly if clicking the trigger button failed.
+      const idx = agentPasskeyWaiters.findIndex(w => w.tabId === targetTab.id && w.operation === requestedOp);
+      if (idx !== -1) {
+        const [w] = agentPasskeyWaiters.splice(idx, 1);
+        clearTimeout(w.timer);
+      }
+      throw new Error(clickResult?.message || "Failed to click passkey trigger button");
+    }
+  }
+
+  return waitPromise;
+}
+
+async function resolveAgentPasskey(payload = {}) {
+  const id = typeof payload.requestId === "string" ? payload.requestId : "";
+  const p = credentialRequests.get(id);
+  if (!p) throw new Error("This passkey request has expired or was cancelled");
+  if (payload.fallback) {
+    finishCredentialRequest(id, { fallback: true });
+    return { resolved: true, fallback: true };
+  }
+  if (payload.error) {
+    finishCredentialRequest(id, { error: payload.error, name: payload.name || "NotAllowedError" });
+    return { resolved: true, rejected: true };
+  }
+  await pageStillMatches(p.tabId, p.params.origin);
+  finishCredentialRequest(id, { credential: payload.credential });
+  return {
+    resolved: true,
+    origin: p.params.origin,
+    operation: p.params.operation,
+    rpId: p.info.rpId,
+  };
 }
 
 function finishCredentialRequest(id, result) {
@@ -224,23 +395,49 @@ async function startCredentialRequest(message, sender) {
   // Register before the first await so an immediate AbortSignal cannot leave an orphan prompt.
   const preparation = {};
   preparingCredentials.set(preparingKey, preparation);
-  let info;
+  let info, prepareError = null;
   try {
     await pageStillMatches(sender.tab.id, origin);
     if (preparingCredentials.get(preparingKey) === preparation) info = await bridgeCall("passkey.prepare", params);
     await pageStillMatches(sender.tab.id, origin);
-  } catch {
+  } catch (err) {
+    if (err?.message?.startsWith("InvalidStateError:")) {
+      prepareError = { error: err.message, name: "InvalidStateError" };
+    }
     // Unsupported options and an unavailable vault use the browser's native provider.
     info = null;
   }
   if (preparingCredentials.get(preparingKey) !== preparation) return { error: "Aborted", name: "AbortError" };
   preparingCredentials.delete(preparingKey);
-  if (!info) return { fallback: true };
-  if (message.operation === "get" && !info.entries.length) return { fallback: true };
+  const waiter = takeMatchingPasskeyWaiter(sender.tab.id, message.operation);
+  if (prepareError) {
+    if (waiter) waiter.reject(new Error(prepareError.error));
+    return prepareError;
+  }
+  if (!info) {
+    if (waiter) waiter.reject(new Error("WebAuthn request is unsupported by OpenKeylet or bridge is unavailable"));
+    return { fallback: true };
+  }
+  if (message.operation === "get" && !info.entries.length) {
+    if (waiter) waiter.reject(new Error(`No matching passkey saved in OpenKeylet for ${info.rpId}`));
+    return { fallback: true };
+  }
   const id = crypto.randomUUID();
   return new Promise((resolve) => {
     const timer = setTimeout(() => finishCredentialRequest(id, { error: "Passkey request expired", name: "NotAllowedError" }), Math.min(Math.max(Number(message.options.timeout) || 120000, 1000), 120000));
-    credentialRequests.set(id, { params, info, tabId: sender.tab.id, pageRequestId: message.requestId, resolve, timer, busy: false });
+    credentialRequests.set(id, { params, info, tabId: sender.tab.id, pageRequestId: message.requestId, resolve, timer, busy: false, agentManaged: Boolean(waiter) });
+    if (waiter) {
+      waiter.resolve({
+        requestId: id,
+        tabId: sender.tab.id,
+        origin,
+        operation: message.operation,
+        rpId: info.rpId,
+        options: message.options,
+        verificationRequired: Boolean(info.verificationRequired),
+      });
+      return;
+    }
     chrome.windows.create({ url: chrome.runtime.getURL(`request.html?id=${id}`), type: "popup", width: 420, height: 640, focused: true }).then(w => {
       const p = credentialRequests.get(id); if (p) p.windowId = w.id; else chrome.windows.remove(w.id).catch(() => {});
     }).catch(() => finishCredentialRequest(id, { fallback: true }));

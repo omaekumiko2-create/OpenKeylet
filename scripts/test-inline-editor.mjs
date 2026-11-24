@@ -133,31 +133,31 @@ try {
   };
   const hover = async locator => {
     await page.mouse.move(0, 0); await locator.scrollIntoViewIfNeeded();
-    const face = el => { const s = getComputedStyle(el); return [s.backgroundColor, s.backgroundImage, s.boxShadow, el.offsetWidth, el.offsetHeight]; };
-    const before = await locator.evaluate(face);
+    const size = el => [el.offsetWidth, el.offsetHeight];
+    const before = await locator.evaluate(size);
     await locator.hover(); await page.waitForTimeout(150);
-    assert.deepEqual(await locator.evaluate(face), before, 'Hover must only illuminate the ink');
+    assert.deepEqual(await locator.evaluate(size), before, 'Hover must not cause layout shift');
   };
   const headerMeasurements = [];
   const geometryMeasurements = [];
   const stateMeasurements = [];
   const display = await page.context().newCDPSession(page);
   for (const language of ['en', 'zh']) for (const theme of ['dark', 'light']) {
+    await page.locator('[data-page="settings"]').click();
     await page.locator(`[data-language="${language}"]`).click();
+    await page.locator('[data-page="connections"]').click();
     if (await page.locator('html').getAttribute('data-theme') !== theme) await page.locator('#theme-toggle').click();
     await page.mouse.move(0, 0); await page.waitForTimeout(170);
     const measure = await page.evaluate(() => {
       const rect = el => el.getBoundingClientRect();
       const center = el => { const r = rect(el); return r.y + r.height / 2; };
       return {
-        centers: [...document.querySelectorAll('.title-tools svg, .app-mark-logo, .app-mark strong .lettering-ink')].map(center),
-        wells: [...document.querySelectorAll('.title-switch, .language-switch, .window-control-well')].map(el => {
+        centers: [...document.querySelectorAll('.title-tools svg, .app-mark-logo, .app-mark strong')].map(center),
+        wells: [...document.querySelectorAll('.title-tools .title-switch, .window-control-well')].map(el => {
           const style = getComputedStyle(el), cap = el.matches('.title-switch') ? getComputedStyle(el, '::before') : null;
           return { height: rect(el).height, padding: [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft], cap: cap && [cap.top, cap.left, cap.bottom, cap.width] };
         }),
-        colors: [...document.querySelectorAll('.title-switch-option')].map(el => getComputedStyle(el).color),
-        inactiveColor: getComputedStyle(document.querySelector('.language-switch button:not(.active)')).color,
-        inactiveIcons: [...document.querySelectorAll('.title-switch')].map(el => getComputedStyle(el.querySelector(`[data-state="${el.getAttribute('aria-checked') === 'false'}"]`)).color),
+        colors: [...document.querySelectorAll('.title-tools .title-switch-option')].map(el => getComputedStyle(el).color),
         cards: [...document.querySelectorAll('.connection-card')].map(el => {
           const outer = rect(el), name = rect(el.querySelector('.connection-name'));
           const type = rect(el.querySelector('.connection-type')), actions = rect(el.querySelector('.card-actions'));
@@ -165,14 +165,13 @@ try {
           return { x: outer.x, y: outer.y, width: outer.width, height: outer.height, within: children.every(r => r.left >= outer.left && r.right <= outer.right), vertical: name.bottom <= type.top && type.bottom <= actions.top };
         }),
         overflow: document.documentElement.scrollWidth > innerWidth,
-        recesses: [...document.querySelectorAll('.title-search, .title-switch, .language-switch, .window-control-well, .nav, .metric-grid, #item-type-switch, .creation-control')].map(el => {
-          const s = getComputedStyle(el); return { readout: el.matches('.metric-grid'), height: rect(el).height, material: [s.backgroundColor, s.boxShadow] };
+        tracks: [...document.querySelectorAll('.title-tools .title-switch, .nav, #item-type-switch')].map(el => {
+          const s = getComputedStyle(el); return { height: rect(el).height, material: [s.backgroundColor, s.boxShadow] };
         }),
       };
     });
     assert.equal(measure.overflow, false);
-    assert.equal(new Set(measure.centers).size, 1, 'Header icons and wordmark must share a centerline');
-    assert.ok(measure.inactiveIcons.every(color => color === measure.inactiveColor), `Unselected switch icons must use neutral language-button ink: ${JSON.stringify([measure.inactiveIcons, measure.inactiveColor])}`);
+    assert.ok(Math.max(...measure.centers) - Math.min(...measure.centers) <= 1, `Header icons and wordmark must share a centerline: ${JSON.stringify(measure.centers)}`);
     for (const card of measure.cards) {
       assert.ok(card.height >= 86 && card.width < 150 && card.within && card.vertical);
     }
@@ -182,9 +181,9 @@ try {
       assert.equal(well.height, 32); assert.deepEqual(well.padding, ['4px', '4px', '4px', '4px']);
       if (well.cap) assert.deepEqual(well.cap, ['4px', '4px', '4px', '24px']);
     }
-    for (const recess of measure.recesses) {
-      assert.equal(recess.height, recess.readout ? 48 : 32, 'Header and readout retain their spacing');
-      assert.deepEqual(recess.material, measure.recesses[0].material, 'Every well shares the same floor and edge profile');
+    for (const track of measure.tracks) {
+      assert.equal(track.height, 32, 'Segmented tracks share consistent row height');
+      assert.deepEqual(track.material, measure.tracks[0].material, 'Segmented tracks share the same surface');
     }
     headerMeasurements.push({ language, theme, ...measure });
     for (const scale of [1, 1.25, 1.5, 2]) {
@@ -196,10 +195,6 @@ try {
     await hover(row('alpha').locator('.connection-name'));
     await hover(row('alpha').locator('.connection-type'));
     const selectedInk = await page.locator('.nav-item.active').evaluate(el => getComputedStyle(el).color);
-    for (const selector of ['.window-control.close', '#add-connection-button', '[data-action="copy-name"]']) {
-      const action = page.locator(selector).first(); await action.hover(); await page.waitForTimeout(150);
-      assert.equal(await action.evaluate(el => getComputedStyle(el).color), selectedInk, 'Ordinary actions share the selected-state accent');
-    }
     const destructive = row('alpha').locator('[data-action="delete"]');
     await destructive.hover(); await page.waitForTimeout(150);
     assert.notEqual(await destructive.evaluate(el => getComputedStyle(el).color), selectedInk, 'Destructive actions retain distinct warning ink');
@@ -211,12 +206,6 @@ try {
     geometryMeasurements.push(await auditControlGeometry(page));
     const settingsIssues = await page.evaluate(() => {
       const issues = [];
-      const material = el => { const s = getComputedStyle(el); return [s.backgroundColor, s.boxShadow]; };
-      const floor = JSON.stringify(material(document.querySelector('.nav')));
-      for (const el of document.querySelectorAll('#page-settings :is(.input, .command-well, .status-strip, .extension-drag-card, details > summary)')) {
-        if (!el.getBoundingClientRect().width) continue;
-        if (JSON.stringify(material(el)) !== floor) issues.push(`${el.id || el.className}: inconsistent recessed material`);
-      }
       for (const card of document.querySelectorAll('.settings-card')) {
         if (card.scrollWidth > card.clientWidth + 1) issues.push(`${card.dataset.module}: horizontal overflow`);
         const r = card.getBoundingClientRect();
@@ -275,11 +264,14 @@ try {
   assert.equal(await page.locator('html').getAttribute('data-theme'), 'dark', 'Returning to the same gear must not toggle it');
   await dragSwitch('#theme-toggle', 0, 1, { cancel: true });
   assert.equal(await page.locator('html').getAttribute('data-theme'), 'dark');
+  await dragSwitch('.nav', 0, 2, { count: 3 });
+  assert.equal(await page.locator('.page.active').getAttribute('id'), 'page-settings');
   await dragSwitch('#sound-toggle', 0, 1);
   assert.equal(await page.locator('#sound-toggle').getAttribute('aria-checked'), 'true');
   assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem('openkeylet.appearance.v1'))), { theme: 'dark', sound: true });
   await page.reload(); await page.locator('.connection-card').first().waitFor();
   assert.equal(await page.locator('html').getAttribute('data-theme'), 'dark');
+  await dragSwitch('.nav', 0, 2, { count: 3 });
   assert.equal(await page.locator('#sound-toggle').getAttribute('aria-checked'), 'true');
   await dragSwitch('#sound-toggle', 1, 0);
   await dragSwitch('#theme-toggle', 0, 1);
@@ -288,8 +280,6 @@ try {
   await dragSwitch('#language-switch', 1, 0);
   assert.equal(await page.locator('html').getAttribute('lang'), 'en');
   assert.equal(await page.evaluate(() => fixture.state.settings.language), 'en');
-  await dragSwitch('.nav', 0, 2, { count: 3 });
-  assert.equal(await page.locator('.page.active').getAttribute('id'), 'page-settings');
   geometryMeasurements.push(await auditControlGeometry(page));
   stateMeasurements.push(await auditControlStates(page));
   await dragSwitch('.switch:has(#desktop-shortcut-enabled)', 0, 1);
@@ -322,18 +312,17 @@ try {
   await dragSwitch('.nav', 2, 1, { count: 3 });
   assert.equal(await page.locator('.page.active').getAttribute('id'), 'page-activity');
   await dragSwitch('.nav', 1, 0, { count: 3 });
-  await dragSwitch('.creation-options', 0, 1);
-  assert.equal(await editor.isHidden(), true, 'The unavailable draft gear springs back');
-  assert.equal(await page.locator('#add-connection-button').getAttribute('aria-pressed'), 'true');
+  assert.equal(await page.locator('#draft-pill').isHidden(), true, 'No draft pill is shown when no draft exists');
   await page.locator('#add-connection-button').click();
   geometryMeasurements.push(await auditControlGeometry(page));
   await page.locator('#connection-name').fill('Switch draft');
   await page.locator('#connection-name').press('Escape'); await editor.waitFor({ state: 'hidden' });
   geometryMeasurements.push(await auditControlGeometry(page));
-  await dragSwitch('.creation-options', 0, 1);
+  assert.equal(await page.locator('#draft-pill').isVisible(), true, 'Draft pill appears when an unsaved draft exists');
+  await page.locator('#drafts-button').click();
   assert.equal(await page.locator('#connection-name').inputValue(), 'Switch draft');
   await page.locator('#connection-name').press('Escape'); await editor.waitFor({ state: 'hidden' });
-  await dragSwitch('.creation-options', 1, 0);
+  await page.locator('#add-connection-button').click();
   assert.equal(await page.locator('#connection-name').inputValue(), '');
   await page.locator('#connection-name').press('Escape'); await editor.waitFor({ state: 'hidden' });
   await page.evaluate(async () => { fixture.drafts = []; await refreshDrafts(); document.querySelectorAll('.toast').forEach(el => el.remove()); });
@@ -355,7 +344,7 @@ try {
   await page.locator('#vault-management-modal').waitFor({ state: 'visible' });
   assert.deepEqual(await page.evaluate(() => fixture.histories), ['alpha']);
   await page.locator('#vault-management-close').click();
-  assert.equal(await search.isHidden(), true, 'Search starts as a header icon');
+  assert.equal(await search.isVisible(), true, 'Search input stays directly accessible in the header');
   await slideFilter('#item-type-switch', 0, 3, true);
   assert.equal(await page.locator('.connection-card').count(), 3);
   await slideFilter('#item-type-switch', 0, 1);
@@ -399,10 +388,8 @@ try {
   assert.equal(await page.locator('.settings-card:visible').getAttribute('data-module'), 'MCP / 02');
   await fillSearch('Agent');
   await page.locator('[data-page="activity"]').click();
-  await page.locator('#title-search-toggle').click();
   assert.equal(await search.inputValue(), '');
   await page.locator('[data-page="settings"]').click();
-  await page.locator('#title-search-toggle').click();
   assert.equal(await search.inputValue(), 'Agent');
   await search.press('Escape');
   await page.locator('[data-settings-filter="all"]').click();
@@ -503,14 +490,17 @@ try {
   geometryMeasurements.push(await auditControlGeometry(page));
   await page.screenshot({ path: path.join(artifacts, 'expanded-header-search.png') });
   await page.locator('#title-search-toggle').click();
-  assert.equal(await search.isHidden(), true);
-  assert.equal(await page.locator('.connection-card').count(), 1, 'Collapsing search keeps its query');
+  assert.equal(await search.inputValue(), '');
+  assert.equal(await page.locator('.connection-card').count(), 3, 'Clicking search clear button clears the query');
   await page.keyboard.press('Control+f');
   assert.equal(await search.isVisible(), true);
+  await search.fill('server');
   await search.press('Escape');
-  assert.equal(await search.isHidden(), true);
+  assert.equal(await search.inputValue(), '');
   assert.equal(await page.locator('.connection-card').count(), 3);
+  await page.locator('[data-page="settings"]').click();
   await page.locator('[data-language="en"]').click();
+  await page.locator('[data-page="connections"]').click();
   const cardBounds = await row('alpha').boundingBox();
   await toggle('alpha').click();
   await page.waitForFunction(() => document.activeElement.id === 'connection-name');

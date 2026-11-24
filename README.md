@@ -22,7 +22,7 @@
 
 ---
 
-OpenKeylet is a free, open-source, cross-platform password manager, credential vault, and local `stdio` MCP server for AI agents. It lets MCP clients such as Codex, Claude Code, Cursor, OpenCode, and OpenClaw use saved passwords, API credentials, SSH keys, TOTP codes, and custom secrets while hidden plaintext stays outside the normal model context.
+OpenKeylet is a free, open-source, cross-platform password manager, credential vault, and local `stdio` MCP server for AI agents. It lets MCP clients such as Codex, Claude Code, Cursor, OpenCode, Antigravity, and DeepSeek Harness use saved passwords, API credentials, SSH keys, TOTP codes, and custom secrets while hidden plaintext stays outside the normal model context.
 
 Use OpenKeylet when an agent needs to sign in to a website, connect to a server, call an authenticated API, or finish a terminal prompt without asking you to paste a secret into the conversation.
 
@@ -84,7 +84,7 @@ OpenKeylet registers a local `stdio` MCP command. The MCP process starts on dema
 
 ## MCP client compatibility
 
-OpenKeylet's Agent connection screen can detect, connect, and repair local configuration for **Codex**, **Claude Code**, **Cursor**, **OpenCode**, and **OpenClaw**. Other AI assistants and coding agents can connect through the manual configuration below whenever they support a local `stdio` MCP server.
+OpenKeylet's Agent connection screen can detect, connect, and repair local configuration for **Codex**, **Claude Code**, **Cursor**, **OpenCode**, **Antigravity**, and **DeepSeek Harness**. Other AI assistants and coding agents can connect through the manual configuration below whenever they support a local `stdio` MCP server.
 
 ## One item, several actions
 
@@ -106,7 +106,7 @@ Every module has its own Agent visibility switch:
 - **Visible** — the value may be returned to the agent only after you explicitly enable the switch.
 - **TOTP** — OpenKeylet derives the current six-digit code; the permanent seed is never returned.
 
-The eye and copy controls in the editor are for the local owner. The optional six-digit PIN protects GUI plaintext viewing and extension vault access, and verifies each passkey operation. It does not replace vault encryption or disable MCP actions.
+The eye and copy controls in the editor are for the local owner. Copying a secret, TOTP code, generated password, or recovery key marks the entry to stay out of Windows clipboard history and automatically clears the clipboard after 30 seconds (only if unchanged, or immediately when locking/quitting). The optional six-digit PIN locks desktop viewing and management against other users on the same computer (with optional idle auto-lock and failed-attempt cooldown) and verifies extension vault / passkey access; it does not replace OS screen lock, vault encryption, or disable background MCP actions.
 
 Reorder modules using the drag handle on the left, or focus a handle and press the Up/Down arrow keys. Text fields support normal typing, selection, and copying. Deleting an item, module, or draft requires confirmation; module removal takes effect when you save the item.
 
@@ -169,21 +169,21 @@ Replacing or upgrading the executable does not remove your vault. OpenKeylet int
 
 Desktop `.mvault` exports use a separate backup password (at least 12 characters), Argon2id (64 MiB, 3 iterations, 1 lane), and XChaCha20-Poly1305. The file contains no unlock key; restoration requires the password. Older and current CLI automatically unlocked packages remain importable but contain their own unlock material and must be protected like the original credentials.
 
-### Optional GitHub encrypted backup
+### Optional personal vault repository (GitHub / Gitea / Forgejo)
 
-In **Settings → GitHub backup**, connect a private repository that you own:
+In **Settings → Cloud / 05**, you can optionally connect a private repository that you own to store and synchronize your encrypted vault across devices:
 
-1. Choose **Set up GitHub backup** and select authorization. Reuse an existing [GitHub CLI login](https://cli.github.com/manual/gh_auth_login), or supply a [fine-grained GitHub token](https://github.com/settings/personal-access-tokens/new). Installing Git alone does not sign you into GitHub.
+1. Choose **Set up GitHub backup** and select the platform (**GitHub** or self-hosted HTTPS **Gitea / Forgejo**) and authorization. On GitHub, you can reuse an existing [GitHub CLI login](https://cli.github.com/manual/gh_auth_login) or supply a [fine-grained GitHub token](https://github.com/settings/personal-access-tokens/new). On Gitea/Forgejo, provide your HTTPS server URL and an access token.
 2. Choose **Check account**, verify the account, and enter `owner/repository`. For an existing private repository, grant the token **Contents: Read and write** for that repository.
-3. To create a repository, select **Create this private repository in my account**. This requires repository creation authorization (**Administration: Write** for fine-grained tokens). Create organization repositories on GitHub first. An existing repository is never adopted or made private automatically; uncheck creation to connect one you already own.
-4. Choose **Create a new backup**, generate a recovery key, and acknowledge saving it outside the repository. Leave **Upload the first encrypted backup after connecting** selected to use **Connect & upload**, or deselect it to save the connection and upload later.
-5. On another device, choose **Connect an existing backup**, provide authorization, the same repository and the original recovery key, then choose **Restore**. Upload is disabled until restoration completes.
+3. To create a repository, select **Create this private repository in my account**. This requires repository creation authorization (**Administration: Write** for GitHub fine-grained tokens). Create organization repositories on the host first. An existing repository is never adopted or made private automatically; uncheck creation to connect one you already own.
+4. Choose **Create a new backup**, generate a recovery key, and acknowledge saving it outside the repository. Optionally enable **Automatic two-way sync** so local edits and startup synchronize in the background. Leave **Upload the first encrypted backup after connecting** selected to use **Connect & upload**, or deselect it to save the connection and upload/sync later.
+5. On another device, choose **Connect an existing backup**, provide authorization, the same repository and the original recovery key, then choose **Sync now** or **Restore**. Manual upload is disabled until the first restore or sync completes.
 
-GitHub CLI authorization is read only when you check the account or submit the connection. Its token never enters the renderer or logs and is stored encrypted locally after connecting. A failed first upload retains the connection so you can retry without recreating the repository. If repository creation cannot be confirmed, check GitHub before reconnecting.
+GitHub CLI authorization is read only when you check the account or submit the connection. Its token never enters the renderer or logs and is stored encrypted locally after connecting. A failed first upload retains the connection so you can retry without recreating the repository. If repository creation cannot be confirmed, check the host before reconnecting.
 
-The entire portable payload, including item names, addresses, notes and credentials, is encrypted locally with XChaCha20-Poly1305 and a separate random 256-bit recovery key. GitHub receives `openkeylet.vault.json` without any unlock key. The token and recovery key are encrypted under the device's local vault key and never included in backups. Browser pairing, PIN, agent configuration, activity logs and editor drafts stay local. You can view the saved recovery key from the unlocked GUI.
+The entire portable payload, including item names, addresses, notes, tombstones, and credentials, is encrypted locally with XChaCha20-Poly1305 and a separate random 256-bit recovery key. The repository receives `openkeylet.vault.json` without any unlock key. The token and recovery key are encrypted under the device's local vault key and never included in backups. Browser pairing, PIN, agent configuration, activity logs and editor drafts stay local. You can view the saved recovery key from the unlocked GUI.
 
-This first version provides **manual snapshots and merge restore**, not automatic two-way synchronization. Restoring skips identical items and keeps conflicting items separately; it never deletes or overwrites local items. A newly connected device must restore an existing snapshot before uploading. Remote version changes and concurrent writes stop the upload instead of forcing an overwrite. Repository privacy is checked before every upload and restore. GitHub.com repositories are supported, with an 8 MiB encrypted snapshot limit.
+You can use **Sync now** (and optional **Automatic two-way sync**) for bidirectional multi-device synchronization, or **Back up now** / **Restore** for manual snapshot operations. Two-way sync merges entries by `id` and `updatedAt`, propagates permanent deletions via tombstones, retries automatically on `409 Conflict` by re-pulling and merging, and skips empty commits when local and remote fingerprints match. Manual **Restore** still keeps conflicting items separately without deleting local items. Repository privacy (`private: true`) is verified before every upload, restore, and sync. Both GitHub.com and self-hosted HTTPS Gitea/Forgejo repositories are supported, with an 8 MiB encrypted snapshot limit.
 
 Keep the recovery key: without it or a still-connected device, a backup cannot be recovered. Git history retains older encrypted snapshots, including deleted credentials. Disconnecting removes this device's saved connection only; it does not delete repository history or revoke the GitHub token. Legacy and CLI self-unlocking `.mvault` exports must not be uploaded as cloud-safe encrypted backups.
 

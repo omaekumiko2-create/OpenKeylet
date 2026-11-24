@@ -24,7 +24,7 @@ New-Item -ItemType Directory -Path $stage,$output -Force | Out-Null
 try {
   # Explicit allowlist: no tests, desktop binary, private keys, backups or repository files.
   $files = @('manifest.json','service-worker.js','content-script.js','webauthn-main.js',
-    'form-reader.js','provider.js','capture.js','popup.html','popup.js','popup.css',
+    'form-reader.js','provider.js','capture.js','agent-actions.js','popup.html','popup.js','popup.css',
     'vault.js','request.html','request.js','privacy.html')
   foreach ($file in $files) {
     Copy-Item -LiteralPath (Join-Path $source $file) -Destination (Join-Path $stage $file)

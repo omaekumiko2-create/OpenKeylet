@@ -14,14 +14,17 @@ window.OpenKeyletGithubBackup = {
     let accountLogin = '';
 
     const copy = {
-      'github-heading': ['GitHub 加密备份', 'GITHUB BACKUP'],
-      'github-description': ['将保险库加密备份到自己的私有仓库。', 'Encrypted snapshots in your own private repository.'],
+      'github-heading': ['个人加密仓库（可选）', 'PERSONAL VAULT REPO (OPTIONAL)'],
+      'github-description': ['将密码库加密存放到你自己的私有 GitHub / Gitea 仓库，支持多端自动双向同步。', 'Store your encrypted vault in your own private GitHub or Gitea repo with optional two-way sync.'],
       'github-repository-label': ['仓库', 'Repository'],
-      'github-backup-label': ['上次上传', 'Last upload'],
-      'github-restore-label': ['上次恢复', 'Last restore'],
-      'github-connect': ['设置 GitHub 备份', 'SET UP GITHUB BACKUP'],
-      'github-upload': ['立即备份', 'BACK UP NOW'],
-      'github-restore': ['从云端恢复', 'RESTORE'],
+      'github-backup-label': ['上次同步/上传', 'Last upload'],
+      'github-restore-label': ['上次拉取/恢复', 'Last restore'],
+      'github-auto-sync-label': ['自动双向同步', 'AUTO TWO-WAY SYNC'],
+      'github-auto-sync-help': ['打开软件自动拉取合并，修改/删除项目后自动加密推送到私有仓库', 'Pull and merge on open; push encrypted changes automatically after edits.'],
+      'github-connect': ['配置私有密码仓库', 'SET UP VAULT REPO'],
+      'github-sync': ['立即同步', 'SYNC NOW'],
+      'github-upload': ['仅上传', 'BACK UP NOW'],
+      'github-restore': ['仅恢复', 'RESTORE'],
       'github-show-key': ['查看恢复密钥', 'RECOVERY KEY'],
       'github-reconfigure': ['更新连接', 'RECONNECT'],
       'github-disconnect': ['断开', 'DISCONNECT'],
@@ -29,8 +32,12 @@ window.OpenKeyletGithubBackup = {
       'github-copy-saved-key': ['复制密钥', 'COPY KEY'],
       'github-hide-key': ['隐藏', 'HIDE'],
       'github-key-warning': ['请保存在仓库之外。拥有此密钥及备份文件的人可以读取整个备份。', 'Keep this outside the repository. Anyone with this key and the backup can read its contents.'],
-      'github-modal-title': ['连接 GitHub', 'Connect GitHub'],
-      'github-step-auth': ['1 · 连接 GitHub 账号', '1 · Connect your GitHub account'],
+      'github-modal-title': ['配置私有密码仓库', 'Connect Vault Repository'],
+      'github-step-auth': ['1 · 选择平台与账号', '1 · Platform & account'],
+      'github-provider-label': ['仓库平台', 'Platform'],
+      'github-provider-github': ['GitHub', 'GitHub'],
+      'github-provider-gitea': ['Gitea / Forgejo（自建 HTTPS）', 'Gitea / Forgejo (Self-hosted HTTPS)'],
+      'github-server-url-label': ['服务器地址（HTTPS）', 'Server URL (HTTPS)'],
       'github-step-repository': ['2 · 选择私有仓库', '2 · Choose a private repository'],
       'github-step-key': ['3 · 保管恢复密钥', '3 · Keep your recovery key'],
       'github-auth-label': ['授权方式', 'Authorization'],
@@ -41,20 +48,21 @@ window.OpenKeyletGithubBackup = {
       'github-login-help': ['GitHub 登录帮助 ↗', 'LOGIN HELP ↗'],
       'github-create-repository-label': ['由 OpenKeylet 在我的账号下创建此私有仓库', 'Create this private repository in my account'],
       'github-first-upload-label': ['连接成功后，立即上传第一份加密备份', 'Upload the first encrypted backup after connecting'],
+      'github-connect-auto-sync-label': ['连接后开启自动双向同步（多端修改与删除自动合并）', 'Enable automatic two-way sync after connecting'],
       'github-repository-input-label': ['私有仓库', 'Private repository'],
       'github-create-repo': ['创建私有仓库 ↗', 'CREATE PRIVATE REPO ↗'],
       'github-create-token': ['创建访问令牌 ↗', 'CREATE ACCESS TOKEN ↗'],
-      'github-token-label': ['GitHub 访问令牌', 'GitHub access token'],
-      'github-token-help': ['连接现有仓库：细粒度令牌选择该仓库，授予 Contents 读写权限。由程序创建新仓库还需创建仓库的授权（Administration 写入）；也可在 GitHub 网页先建仓库。令牌仅在本机加密保存。', 'For an existing repository, use a fine-grained token with Contents read/write. Creating a repository also requires repository creation authorization (Administration write); alternatively create it on GitHub first. Tokens are stored encrypted locally.'],
+      'github-token-label': ['访问令牌（PAT）', 'Access token'],
+      'github-token-help': ['连接现有仓库：细粒度令牌选择该仓库，授予 Contents 读写权限。由程序创建新仓库还需创建仓库的授权（Administration 写入）；也可在网页先建私有仓库。令牌仅在本机加密保存。', 'For an existing repository, use a token with repository Contents read/write permission. Creating a repository also requires repository creation permission. Tokens are stored encrypted locally.'],
       'github-mode-label': ['连接方式', 'Connection mode'],
-      'github-mode-new': ['创建新备份', 'Create a new backup'],
-      'github-mode-existing': ['连接已有备份', 'Connect an existing backup'],
+      'github-mode-new': ['创建新仓库备份', 'Create a new vault backup'],
+      'github-mode-existing': ['连接已有密码仓库', 'Connect an existing vault repo'],
       'github-key-label': ['恢复密钥', 'Recovery key'],
       'github-generate-key': ['生成恢复密钥', 'GENERATE KEY'],
       'github-copy-key': ['复制密钥', 'COPY KEY'],
-      'github-recovery-help': ['换机时需要这把密钥。请另行保管；密钥丢失且没有已连接设备时，无法恢复云端备份。', 'You need this key on a new device. Keep a separate copy: without it or a connected device, the backup cannot be recovered.'],
+      'github-recovery-help': ['换机时需要这把密钥。请另行保管；密钥丢失且没有已连接设备时，无法恢复云端密码库。', 'You need this key on a new device. Keep a separate copy: without it or a connected device, the encrypted repo cannot be recovered.'],
       'github-key-saved-label': ['已将恢复密钥保存到仓库之外', 'I saved the recovery key outside the repository'],
-      'github-local-only': ['连接成功后，手动点击“立即备份”。', 'Connect first, then choose Back up now.'],
+      'github-local-only': ['连接成功后，可随时同步或手动备份。', 'Connect first, then sync or back up anytime.'],
       'github-submit': ['连接仓库', 'CONNECT'],
     };
 
@@ -112,31 +120,45 @@ window.OpenKeyletGithubBackup = {
       const connected = status.connected && isUnlocked();
       const strip = $('github-status');
       strip.className = `status-strip ${lastError ? 'error' : connected ? '' : 'offline'}`;
-      strip.textContent = busy ? localized('正在处理，请稍候…', 'Working, please wait…')
-        : connected ? (status.needsRestore ? localized('先恢复云端备份', 'RESTORE REQUIRED') : localized('已连接 · 手动备份', 'CONNECTED · MANUAL BACKUP'))
-          : localized('未连接 · 仅本地', 'NOT CONNECTED · LOCAL ONLY');
+      strip.textContent = busy ? localized('正在同步处理，请稍候…', 'Working, please wait…')
+        : connected ? (status.needsRestore ? localized('待同步/恢复云端数据', 'SYNC / RESTORE REQUIRED')
+          : status.autoSync ? localized('已连接 · 自动双向同步', 'CONNECTED · AUTO-SYNC')
+            : localized('已连接 · 手动模式', 'CONNECTED · MANUAL'))
+          : localized('未配置 · 仅本地离线（可选）', 'NOT CONNECTED · LOCAL ONLY');
       $('github-connect').classList.toggle('hidden', connected);
-      for (const id of ['github-upload', 'github-restore', 'github-details', 'github-manage']) $(id).classList.toggle('hidden', !connected);
-      $('github-repository-value').textContent = connected ? `${status.repository} · ${status.branch}` : '';
-      $('github-backup-value').textContent = dateText(status.lastBackupAt);
+      for (const id of ['github-sync', 'github-upload', 'github-restore', 'github-details', 'github-auto-sync-section', 'github-manage']) $(id)?.classList.toggle('hidden', !connected);
+      const providerPrefix = status.provider === 'gitea' && status.serverUrl ? `${status.serverUrl.replace(/^https?:\/\//, '')} · ` : '';
+      $('github-repository-value').textContent = connected ? `${providerPrefix}${status.repository} · ${status.branch}` : '';
+      $('github-backup-value').textContent = dateText(status.lastSyncedAt || status.lastBackupAt);
       $('github-restore-value').textContent = dateText(status.lastRestoreAt);
+      if ($('github-auto-sync')) $('github-auto-sync').checked = Boolean(status.autoSync);
       $('github-note').textContent = connected && status.needsRestore
-        ? localized('此设备需要先恢复合并云端内容，才能上传。现有本地项目会保留。', 'Restore and merge the remote contents before uploading. Existing local items are kept.')
-        : localized('只在你确认上传时备份。换机恢复需要独立密钥；本机配对、PIN 和 Agent 接入配置不会上传。', 'Backups upload only when you confirm. Restore requires your recovery key. Pairing, PIN and agent setup stay on this device.');
+        ? localized('此设备需要先同步或恢复合并云端内容，才能上传。现有本地项目会保留。', 'Sync or restore the remote contents before uploading. Existing local items are kept.')
+        : connected && status.autoSync
+          ? localized('已开启自动同步：增删改后会自动加密推送，打开时自动拉取并按时间合并。本机 PIN、配对和 Agent 配置不会上传。', 'Auto-sync is on: edits push encrypted automatically and remote changes merge on open. Local PIN, pairing and agent setup never leave this device.')
+          : localized('完全可选：所有条目经独立恢复密钥在本地端到端加密后才存入你的私有仓库。本机配对、PIN 和 Agent 配置不会上传。', 'Optional: your vault is encrypted end-to-end with your recovery key before touching your private repo. Pairing, PIN and agent setup stay local.');
       $('github-error').textContent = lastError ? errorText(lastError) : '';
       $('github-error').classList.toggle('hidden', !lastError);
       $('github-form-error').textContent = formError ? errorText(formError) : '';
       $('github-form-error').classList.toggle('hidden', !formError);
       for (const button of document.querySelectorAll('#github-backup-card button, #github-modal button')) button.disabled = busy || !isUnlocked();
       for (const input of document.querySelectorAll('#github-form input, #github-form select, #github-form textarea')) input.disabled = busy;
+      if ($('github-auto-sync')) $('github-auto-sync').disabled = busy || !isUnlocked() || !connected;
       $('github-upload').disabled = busy || !isUnlocked() || status.needsRestore;
       $('github-restore').disabled = busy || !isUnlocked() || !status.hasRemoteBackup;
+      const isGitea = $('github-provider')?.value === 'gitea';
       const isNew = $('github-mode').value === 'new';
-      const useCli = $('github-auth-source').value === 'cli';
+      if (isGitea && $('github-auth-source').value === 'cli') $('github-auth-source').value = 'token';
+      const useCli = !isGitea && $('github-auth-source').value === 'cli';
+      $('github-server-url-section')?.classList.toggle('hidden', !isGitea);
+      if ($('github-server-url')) $('github-server-url').required = isGitea;
+      $('github-auth-source-field')?.classList.toggle('hidden', isGitea);
+      $('github-check-account').classList.toggle('hidden', isGitea);
+      $('github-create-repo').classList.toggle('hidden', isGitea);
       $('github-token-section').classList.toggle('hidden', useCli);
       $('github-cli-help').classList.toggle('hidden', !useCli);
       $('github-login-help').classList.toggle('hidden', !useCli);
-      $('github-create-token').classList.toggle('hidden', useCli);
+      $('github-create-token').classList.toggle('hidden', useCli || isGitea);
       $('github-token').required = !useCli;
       $('github-account-status').textContent = accountLogin ? localized(`已验证 GitHub 账号：${accountLogin}`, `Verified GitHub account: ${accountLogin}`) : '';
       $('github-create-repository-field').classList.toggle('hidden', !isNew);
@@ -182,6 +204,9 @@ window.OpenKeyletGithubBackup = {
       if (busy || !isUnlocked()) return;
       clearSecrets();
       previousFocus = document.activeElement;
+      $('github-provider').value = status.provider || 'github';
+      if ($('github-server-url')) $('github-server-url').value = status.serverUrl || '';
+      if ($('github-connect-auto-sync')) $('github-connect-auto-sync').checked = Boolean(status.autoSync);
       $('github-repository').value = status.repository || '';
       $('github-mode').value = status.hasRemoteBackup ? 'existing' : 'new';
       inertElements = [...document.body.children].filter((element) => element !== modal && !element.inert && !['SCRIPT', 'STYLE'].includes(element.tagName));
@@ -224,6 +249,9 @@ window.OpenKeyletGithubBackup = {
       render();
     });
     $('github-first-upload').addEventListener('change', render);
+    $('github-provider')?.addEventListener('change', () => {
+      secretEpoch++; accountLogin = ''; formError = ''; render();
+    });
     $('github-auth-source').addEventListener('change', () => {
       secretEpoch++; accountLogin=''; formError=''; $('github-token').value=''; render();
     });
@@ -255,7 +283,7 @@ window.OpenKeyletGithubBackup = {
     async function copyKey(id) {
       const value = $(id).value;
       if (!value || !isUnlocked()) return;
-      try { await invoke('copy_owner_value', { value }); toast(localized('密钥已复制，请保存在仓库之外', 'Key copied. Save it outside the repository.')); }
+      try { await invoke('copy_owner_value', { value, sensitive: true }); toast(localized('密钥已复制（30 秒后自动清除），请保存在仓库之外', 'Key copied (clears in 30s). Save it outside the repository.')); }
       catch (error) { toast(errorText(error), 'error'); }
     }
     $('github-copy-key').addEventListener('click', () => copyKey('github-recovery-key'));
@@ -281,8 +309,19 @@ window.OpenKeyletGithubBackup = {
       if (!/^okv1_[A-Za-z0-9_-]{43}$/.test($('github-recovery-key').value.trim())) {
         formError = 'GITHUB_KEY_INVALID'; render(); return;
       }
-      const input = { repository: $('github-repository').value.trim(), token: $('github-token').value.trim(), recoveryKey: $('github-recovery-key').value.trim(), mode: $('github-mode').value, recoveryKeySaved: $('github-key-saved').checked,
-        authSource:$('github-auth-source').value,createRepository:$('github-mode').value==='new'&&$('github-create-repository').checked };
+      const provider = $('github-provider')?.value || 'github';
+      const input = {
+        repository: $('github-repository').value.trim(),
+        token: $('github-token').value.trim(),
+        recoveryKey: $('github-recovery-key').value.trim(),
+        mode: $('github-mode').value,
+        recoveryKeySaved: $('github-key-saved').checked,
+        authSource: provider === 'gitea' ? 'token' : $('github-auth-source').value,
+        createRepository: $('github-mode').value === 'new' && $('github-create-repository').checked,
+        autoSync: Boolean($('github-connect-auto-sync')?.checked),
+        provider,
+        serverUrl: provider === 'gitea' ? ($('github-server-url')?.value.trim() || '') : '',
+      };
       const firstUpload = input.mode==='new' && $('github-first-upload').checked;
       busy = true; formError = ''; render();
       let connected = false;
@@ -302,6 +341,35 @@ window.OpenKeyletGithubBackup = {
       }
       finally { input.token = ''; input.recoveryKey = ''; busy = false; render(); }
     });
+    $('github-sync')?.addEventListener('click', async () => {
+      await operate(async () => {
+        const result = await invoke('github_backup_sync');
+        status = result.status;
+        const labels = {
+          up_to_date: localized('已是最新状态，无需上传', 'Already up to date'),
+          pushed: localized('已加密推送到私有仓库', 'Encrypted vault pushed to repository'),
+          pulled: localized(`已拉取云端更新（新增 ${result.merge.added}，更新 ${result.merge.updated}，删除 ${result.merge.deleted}）`, `Pulled remote changes (+${result.merge.added}, ~${result.merge.updated}, -${result.merge.deleted})`),
+          merged: localized(`双向同步完成（新增 ${result.merge.added}，更新 ${result.merge.updated}，删除 ${result.merge.deleted}）`, `Two-way sync complete (+${result.merge.added}, ~${result.merge.updated}, -${result.merge.deleted})`),
+        };
+        toast(labels[result.action] || localized('同步完成', 'Sync complete'));
+        if (result.merge.added || result.merge.updated || result.merge.deleted) await onRestore();
+      });
+    });
+    $('github-auto-sync')?.addEventListener('change', async (event) => {
+      const enabled = event.currentTarget.checked;
+      await operate(async () => {
+        status = await invoke('github_backup_set_auto_sync', { enabled });
+        toast(enabled ? localized('已开启私有仓库自动双向同步', 'Automatic two-way sync enabled') : localized('已切换为手动备份模式', 'Switched to manual backup mode'));
+      });
+    });
+    if (window.__TAURI__?.event?.listen) {
+      window.__TAURI__.event.listen('cloud-sync-updated', (event) => {
+        if (event?.payload && !busy) { status = event.payload; lastError = ''; render(); }
+      });
+      window.__TAURI__.event.listen('cloud-sync-error', (event) => {
+        if (event?.payload && !busy) { lastError = event.payload; render(); }
+      });
+    }
     $('github-upload').addEventListener('click', async () => {
       if (busy || !await confirmAction({ title: localized('上传加密备份？', 'Upload encrypted backup?'), message: localized(`将整个保险库加密上传到 ${status.repository}。GitHub 历史会保留旧版密文。`, `Encrypt and upload the entire vault to ${status.repository}. GitHub history retains older encrypted snapshots.`), acceptLabel: localized('立即备份', 'BACK UP'), tag: localized('手动云端备份', 'MANUAL CLOUD BACKUP') })) return;
       await operate(async () => { status = await invoke('github_backup_upload'); toast(localized('加密备份已上传', 'Encrypted backup uploaded')); });

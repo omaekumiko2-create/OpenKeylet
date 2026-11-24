@@ -11,7 +11,11 @@
     if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k,v]) => [k,encode(v)]));
     return value;
   }
-  function decode(text) { return Uint8Array.from(atob(text.replaceAll("-", "+").replaceAll("_", "/")), c => c.charCodeAt(0)).buffer; }
+  function decode(text) {
+    const base64 = text.replaceAll("-", "+").replaceAll("_", "/");
+    const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, "=");
+    return Uint8Array.from(atob(padded), c => c.charCodeAt(0)).buffer;
+  }
   function credential(data, operation) {
     const r = data.response;
     const response = Object.create((operation === "create" ? AuthenticatorAttestationResponse : AuthenticatorAssertionResponse).prototype);
@@ -28,12 +32,20 @@
     if (event.source !== window || event.data?.type !== "openkeylet-webauthn-result") return;
     const p = pending.get(event.data.requestId); if (p) p.resolve(event.data.result);
   });
+  if (typeof PublicKeyCredential === "function") {
+    try {
+      Object.defineProperty(PublicKeyCredential, "isUserVerifyingPlatformAuthenticatorAvailable", {
+        value: () => Promise.resolve(true),
+        configurable: true,
+      });
+    } catch {}
+  }
   for (const operation of ["create", "get"]) {
     const native = navigator.credentials[operation].bind(navigator.credentials);
     navigator.credentials[operation] = async function(options) {
       // Conditional mediation remains with the browser until an explicit sign-in is requested.
       if (!options?.publicKey || options.mediation === "conditional") return native(options);
-      if (Object.keys(options.publicKey.extensions || {}).some(name => name !== "credProps")) return native(options);
+      if (options.publicKey.extensions?.largeBlob?.support === "required") return native(options);
       if (options.signal?.aborted) throw new DOMException("Aborted", "AbortError");
       const requestId = crypto.randomUUID();
       let timer, abort;

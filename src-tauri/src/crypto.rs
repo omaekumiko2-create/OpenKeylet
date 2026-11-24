@@ -90,7 +90,10 @@ impl MasterKey {
         }
 
         #[cfg(not(target_os = "macos"))]
-        Self::load_or_create_inner(data_dir, vault_exists, true)
+        {
+            let use_keyring = !crate::storage::uses_explicit_data_dir(data_dir);
+            Self::load_or_create_inner(data_dir, vault_exists, use_keyring)
+        }
     }
 
     #[cfg(any(target_os = "macos", test))]
@@ -406,6 +409,24 @@ mod tests {
             reopened.decrypt::<String>(&envelope).unwrap(),
             "migrated secret"
         );
+    }
+
+    #[test]
+    fn explicit_data_directory_uses_directory_master_key_without_os_keyring() {
+        let directory = tempdir().unwrap();
+        assert!(crate::storage::uses_explicit_data_dir(directory.path()));
+        let key = MasterKey::load_or_create(directory.path(), false).unwrap();
+        assert!(directory.path().join("master.key").is_file());
+        let envelope = key.encrypt(&"shared-vault-secret").unwrap();
+        drop(key);
+        let reopened = MasterKey::load_or_create(directory.path(), true).unwrap();
+        assert_eq!(
+            reopened.decrypt::<String>(&envelope).unwrap(),
+            "shared-vault-secret"
+        );
+        // Existing vault without master.key in an explicit directory must fail closed.
+        fs::remove_file(directory.path().join("master.key")).unwrap();
+        assert!(MasterKey::load_or_create(directory.path(), true).is_err());
     }
 
     #[cfg(unix)]
