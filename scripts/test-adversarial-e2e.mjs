@@ -339,7 +339,7 @@ try {
     // - secret module copy passes sensitive=true + 30s auto-clear hint
     // - TOTP copy shows remaining seconds + 30s auto-clear hint
     await page.evaluate(() => { document.querySelector('#connections-list').scrollTop = 0; });
-    await page.locator('.connection-card').first().locator('[data-action="edit"]').click();
+    await page.locator('.connection-card').first().locator('.connection-name').click();
     await page.locator('#connection-modal').waitFor({ state: 'visible' });
     await page.locator('[data-copy-module-value]').first().click();
     await page.waitForFunction(() => window.__stress.copies.length === 1);

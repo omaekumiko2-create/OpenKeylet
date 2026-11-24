@@ -120,61 +120,12 @@ pub async fn handle(
     }
     ensure!(unlocked, "OpenKeylet is locked; enter your PIN");
     match method {
-        "vault.list" => Ok(json!({"items":vault.list_connections()?,"trash":vault.trash_items()?})),
-        "vault.get" => {
-            let id = Uuid::parse_str(text(p, "id")?)?;
-            let item = vault.get_connection(id)?;
-            Ok(
-                json!({"item":item.stored.public(Some(&item.secrets)),"fields":Vault::owner_secret_view_for(&item).fields}),
-            )
-        }
-        "vault.save" => {
-            let input: ConnectionInput = serde_json::from_value(p["input"].clone())?;
-            ensure!(
-                input.private_key_import_path.is_empty(),
-                "Private key file imports require the desktop app"
-            );
-            let expected = if input.id.is_some() {
-                Some(text(p, "expectedUpdatedAt")?)
-            } else {
-                None
-            };
-            Ok(json!(vault.save_connection_checked(input, expected)?))
-        }
-        "vault.trash" => {
-            vault.trash_connection(
-                Uuid::parse_str(text(p, "id")?)?,
-                Some(text(p, "expectedUpdatedAt")?),
-            )?;
-            Ok(json!({"ok":true}))
-        }
-        "vault.restore" | "vault.purge" => {
-            let id = Uuid::parse_str(text(p, "id")?)?;
-            let deleted_at = text(p, "deletedAt")?;
-            if method == "vault.restore" {
-                vault.restore_connection(id, deleted_at)?;
-            } else {
-                vault.purge_connection(id, deleted_at)?;
-            }
-            Ok(json!({"ok":true}))
-        }
-        "vault.history" => {
-            let item = vault.get_connection(Uuid::parse_str(text(p, "id")?)?)?;
-            Ok(json!({"updatedAt":item.stored.updated_at,"entries":item.secrets.password_history}))
-        }
-        "vault.clearHistory" => {
-            vault.clear_password_history(
-                Uuid::parse_str(text(p, "id")?)?,
-                text(p, "expectedUpdatedAt")?,
-            )?;
-            Ok(json!({"ok":true}))
-        }
         "password.generate" => Ok(json!(crate::generator::password(&serde_json::from_value(
             p.clone()
         )?)?)),
         "personal.list" => {
             let entries = vault.list_decrypted_connections()?.into_iter()
-                .filter(|c| c.stored.enabled && matches!(c.stored.item_type(), "card" | "identity" | "secureNote"))
+                .filter(|c| c.stored.enabled && matches!(c.stored.item_type(), "card" | "identity"))
                 .map(|c| {
                     let subtitle = if c.stored.item_type() == "card" {
                         let digits: String = c.secrets.get("cardNumber").unwrap_or_default().chars().filter(char::is_ascii_digit).collect();
@@ -204,7 +155,6 @@ pub async fn handle(
                 "fields":values,"updatedAt":c.stored.updated_at}),
             )
         }
-        "personal.save" => vault.save_personal_item(p),
         "password.list" => list(vault, text(p, "origin")?),
         "password.get" => {
             let c = vault.get_connection(Uuid::parse_str(text(p, "id")?)?)?;
@@ -227,44 +177,6 @@ pub async fn handle(
             Ok(json!({"code": code, "remainingSeconds": remaining_seconds, "period": period}))
         }
         "password.save" => vault.save_browser_login(p),
-        "password.attachTotp" => vault.attach_browser_totp(p),
-        "quick.parse" => {
-            let raw = text(p, "text")?;
-            let origin = p["origin"].as_str().filter(|s| !s.trim().is_empty());
-            let parsed = crate::smart_ingest::smart_parse(raw, None, origin)?;
-            Ok(serde_json::to_value(parsed)?)
-        }
-        "quick.save" => {
-            let mut input: ConnectionInput = serde_json::from_value(p["input"].clone())?;
-            ensure!(
-                input.private_key_import_path.is_empty(),
-                "Private key file imports require the desktop app"
-            );
-            // Auto-disambiguate name if an item with the same name already exists.
-            let existing_names: Vec<String> = vault
-                .list_connections()?
-                .into_iter()
-                .map(|c| c.name)
-                .collect();
-            let base = input.name.trim().to_owned();
-            if !base.is_empty()
-                && existing_names
-                    .iter()
-                    .any(|n| n.eq_ignore_ascii_case(&base))
-            {
-                let mut suffix = 2;
-                let mut candidate = format!("{base} ({suffix})");
-                while existing_names
-                    .iter()
-                    .any(|n| n.eq_ignore_ascii_case(&candidate))
-                {
-                    suffix += 1;
-                    candidate = format!("{base} ({suffix})");
-                }
-                input.name = candidate;
-            }
-            Ok(json!(vault.save_connection(input)?))
-        }
         _ => bail!("Unsupported browser operation"),
     }
 }
@@ -273,8 +185,7 @@ fn personal_fields(kind: &str) -> Result<&'static [&'static str]> {
     match kind {
         "card" => Ok(crate::item_types::CARD_FIELDS),
         "identity" => Ok(crate::item_types::IDENTITY_FIELDS),
-        "secureNote" => Ok(&["secureNote"]),
-        _ => bail!("Expected a card, identity or secure note"),
+        _ => bail!("Only card and identity items can be autofilled"),
     }
 }
 
@@ -368,68 +279,6 @@ impl Vault {
         })
     }
 
-    pub fn save_personal_item(&self, p: &Value) -> Result<Value> {
-        let kind = text(p, "itemType")?;
-        let fields = personal_fields(kind)?;
-        let values = p["fields"].as_object().context("Missing fields")?;
-        ensure!(
-            values.keys().all(|k| fields.contains(&k.as_str())),
-            "Unsupported personal field"
-        );
-        let existing = p["id"]
-            .as_str()
-            .map(|id| self.get_connection(Uuid::parse_str(id)?))
-            .transpose()?;
-        if let Some(c) = &existing {
-            ensure!(
-                c.stored.enabled && c.stored.item_type() == kind,
-                "Item type changed or item is disabled"
-            );
-        }
-        let mut input: ConnectionInput = serde_json::from_value(json!({
-            "id": existing.as_ref().map(|c| c.stored.id), "itemType":kind, "name":text(p,"name")?,
-            "modules": existing.as_ref().map(|c| &c.stored.modules).cloned().unwrap_or_default(),
-            "folder": existing.as_ref().map(|c| c.stored.folder.as_str()).unwrap_or_default(),
-            "favorite": existing.as_ref().is_some_and(|c| c.stored.favorite),
-            "loginUris": existing.as_ref().map(|c| &c.stored.login_uris).cloned().unwrap_or_default(),
-            "description": existing.as_ref().map(|c| c.stored.description.as_str()).unwrap_or_default(),
-            "httpAuthType": existing.as_ref().map(|c| c.stored.http_auth_type.as_str()).unwrap_or_default(),
-            "authHeader": existing.as_ref().map(|c| c.stored.auth_header.as_str()).unwrap_or_default(),
-            "authLocation": existing.as_ref().map(|c| c.stored.auth_location.as_str()).unwrap_or_default(),
-            "authPrefix": existing.as_ref().map(|c| c.stored.auth_prefix.as_str()).unwrap_or_default(),
-            "apiAuthHeaders": existing.as_ref().map(|c| &c.stored.api_auth_headers).cloned().unwrap_or_default(),
-            "testPath": existing.as_ref().map(|c| c.stored.test_path.as_str()).unwrap_or_default()
-        }))?;
-        for (name, value) in values {
-            let value = value.as_str().context("Invalid personal field")?;
-            ensure!(
-                value.len() <= if name == "secureNote" { 262144 } else { 4096 },
-                "Personal field is too long"
-            );
-            if !input.modules.iter().any(|m| m.kind == *name) {
-                input.modules.push(ItemModule {
-                    kind: name.clone(),
-                    ..Default::default()
-                });
-            }
-            if value.is_empty() {
-                input.remove_secret_names.push(name.clone());
-            } else {
-                input
-                    .secrets
-                    .named_secrets
-                    .insert(name.clone(), value.to_owned());
-            }
-        }
-        let expected = if existing.is_some() {
-            Some(text(p, "expectedUpdatedAt")?)
-        } else {
-            None
-        };
-        let saved = self.save_connection_checked(input, expected)?;
-        Ok(json!({"id":saved.id,"updatedAt":saved.updated_at}))
-    }
-
     pub fn save_browser_login(&self, p: &Value) -> Result<Value> {
         let website = text(p, "origin")?;
         passkey::origin(website)?;
@@ -503,69 +352,6 @@ impl Vault {
         })
     }
 
-    pub fn attach_browser_totp(&self, p: &Value) -> Result<Value> {
-        let website = text(p, "origin")?;
-        passkey::origin(website)?;
-        let totp = text(p, "totp")?.trim();
-        ensure!(!totp.is_empty() && totp.len() <= 2048, "Invalid TOTP value");
-        crate::browser::current_totp(totp)?;
-        let id = p["id"]
-            .as_str()
-            .filter(|s| !s.trim().is_empty())
-            .map(Uuid::parse_str)
-            .transpose()?;
-        self.update_document_with_result(|document| {
-            let index = id
-                .map(|id| {
-                    document
-                        .connections
-                        .iter()
-                        .position(|c| c.id == id)
-                        .context("Login was deleted; reload the extension")
-                })
-                .transpose()?;
-            let (mut stored, mut secrets) = if let Some(i) = index {
-                let c = &document.connections[i];
-                ensure!(c.enabled, "This item is disabled");
-                ensure!(
-                    Some(c.updated_at.as_str()) == p["expectedUpdatedAt"].as_str(),
-                    "Item changed in OpenKeylet; reload before saving"
-                );
-                (
-                    c.clone(),
-                    self.unprotect_local_state::<SecretBundle>(&c.encrypted_secrets)?,
-                )
-            } else {
-                new_item(
-                    self,
-                    document,
-                    website,
-                    p["username"].as_str().unwrap_or_default(),
-                    p["name"].as_str().unwrap_or_default(),
-                    false,
-                )?
-            };
-            if !stored.modules.iter().any(|m| m.kind == "totp") {
-                stored.modules.push(ItemModule {
-                    kind: "totp".into(),
-                    name: "totp".into(),
-                    agent_visible: Some(false),
-                    ..Default::default()
-                });
-            }
-            secrets.named_secrets.insert("totp".into(), totp.to_owned());
-            stored.updated_at = chrono::Utc::now().to_rfc3339();
-            stored.encrypted_secrets = self.protect_local_state(&secrets)?;
-            let result = json!({"id":stored.id,"name":stored.name,"updatedAt":stored.updated_at});
-            if let Some(i) = index {
-                document.connections[i] = stored;
-            } else {
-                document.connections.push(stored);
-            }
-            Ok(result)
-        })
-    }
-
     pub fn store_browser_passkey(
         &self,
         website: &str,
@@ -600,88 +386,84 @@ impl Vault {
 mod tests {
     use super::*;
     #[tokio::test]
-    async fn personal_items_are_encrypted_locked_versioned_and_backed_up() {
+    async fn personal_items_list_only_autofillable_cards_and_identities_when_unlocked() {
         let d = tempfile::tempdir().unwrap();
         let v = Vault::open(d.path().join("original")).unwrap();
         v.set_owner_pin("123456").unwrap();
         let mut session = Session::default();
         let throttle = Mutex::new(Instant::now());
-        let mut input = json!({"itemType":"card","name":"Test card","fields":{
-            "cardNumber":"4111111111111111","cardholderName":"Synthetic Cardholder","cardSecurityCode":"987","cardExpMonth":"07","cardExpYear":"2030"
-        }});
-        assert!(
-            handle(&v, &mut session, &throttle, "personal.save", &input)
-                .await
-                .is_err()
-        );
-        handle(
-            &v,
-            &mut session,
-            &throttle,
-            "unlock",
-            &json!({"pin":"123456"}),
-        )
-        .await
+
+        // Cards, identities and secure notes are managed in the desktop vault.
+        let card_input: ConnectionInput = serde_json::from_value(json!({
+            "name": "Test card",
+            "itemType": "card",
+            "folder": "Wallet",
+            "favorite": true,
+            "modules": [
+                {"kind": "cardNumber"},
+                {"kind": "cardholderName"},
+                {"kind": "cardSecurityCode"},
+                {"kind": "cardExpMonth"},
+                {"kind": "cardExpYear"}
+            ],
+            "secrets": {
+                "namedSecrets": {
+                    "cardNumber": "4111111111111111",
+                    "cardholderName": "Synthetic Cardholder",
+                    "cardSecurityCode": "987",
+                    "cardExpMonth": "07",
+                    "cardExpYear": "2030"
+                }
+            }
+        }))
         .unwrap();
-        let saved = handle(&v, &mut session, &throttle, "personal.save", &input)
+        let saved_card = v.save_connection(card_input).unwrap();
+        let note_input: ConnectionInput = serde_json::from_value(json!({
+            "name": "Private note",
+            "itemType": "secureNote",
+            "modules": [{"kind": "secureNote", "value": "must never persist"}],
+            "secrets": {"namedSecrets": {"secureNote": "Synthetic private\nmultiline note"}}
+        }))
+        .unwrap();
+        let saved_note = v.save_connection(note_input).unwrap();
+
+        // Locked browser session cannot list or read personal items.
+        assert!(handle(&v, &mut session, &throttle, "personal.list", &json!({})).await.is_err());
+
+        handle(&v, &mut session, &throttle, "unlock", &json!({"pin": "123456"}))
             .await
             .unwrap();
-        let id = Uuid::parse_str(saved["id"].as_str().unwrap()).unwrap();
-        let public = serde_json::to_string(&v.list_connections().unwrap()).unwrap();
-        let disk = std::fs::read_to_string(d.path().join("original/vault.json")).unwrap();
-        for secret in ["4111111111111111", "Synthetic Cardholder", "987"] {
-            let quoted = serde_json::to_string(secret).unwrap();
-            assert!(!public.contains(&quoted));
-            assert!(!disk.contains(&quoted));
-        }
+
         let listed = handle(&v, &mut session, &throttle, "personal.list", &json!({}))
             .await
             .unwrap();
-        assert_eq!(listed[0]["subtitle"], "•••• 1111");
-        assert!(listed[0].get("fields").is_none());
-        input["id"] = saved["id"].clone();
-        input["expectedUpdatedAt"] = saved["updatedAt"].clone();
-        input["fields"]["cardSecurityCode"] = json!("");
-        handle(&v, &mut session, &throttle, "personal.save", &input)
-            .await
-            .unwrap();
-        assert!(
-            v.get_connection(id)
-                .unwrap()
-                .secrets
-                .get("cardSecurityCode")
-                .is_none()
-        );
-        assert!(
-            handle(&v, &mut session, &throttle, "personal.save", &input)
-                .await
-                .is_err()
-        );
-        let card = v.get_connection(id).unwrap();
-        let desktop: ConnectionInput = serde_json::from_value(json!({
-            "id":id,"name":"Test card","itemType":"card","modules":card.stored.modules,
-            "folder":"Wallet","favorite":true
-        }))
+        let items = listed.as_array().unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["itemType"], "card");
+        assert_eq!(items[0]["subtitle"], "•••• 1111");
+        assert!(items[0].get("fields").is_none());
+
+        // Cards can be fetched for autofill; secure notes are strictly rejected by the bridge.
+        let card_fields = handle(
+            &v,
+            &mut session,
+            &throttle,
+            "personal.get",
+            &json!({"id": saved_card.id}),
+        )
+        .await
         .unwrap();
-        v.save_connection(desktop).unwrap();
-        let note: ConnectionInput = serde_json::from_value(json!({
-            "name":"Private note","itemType":"secureNote","modules":[{"kind":"secureNote","value":"must never persist"}],
-            "secrets":{"namedSecrets":{"secureNote":"Synthetic private\nmultiline note"}}
-        })).unwrap();
-        v.save_connection(note).unwrap();
-        let backup = d.path().join("personal.mvault");
-        crate::backup::export_to_file(&v, &backup).unwrap();
-        let restored = Vault::open(d.path().join("restored")).unwrap();
-        crate::backup::import_from_file(&restored, &backup).unwrap();
-        let card = restored.get_connection(id).unwrap();
-        assert_eq!(card.stored.item_type(), "card");
-        assert_eq!(card.stored.folder, "Wallet");
-        assert!(card.stored.favorite);
-        assert_eq!(card.secrets.get("cardNumber"), Some("4111111111111111"));
+        assert_eq!(card_fields["fields"]["cardNumber"], "4111111111111111");
         assert!(
-            !std::fs::read_to_string(d.path().join("original/vault.json"))
-                .unwrap()
-                .contains("Synthetic private")
+            handle(
+                &v,
+                &mut session,
+                &throttle,
+                "personal.get",
+                &json!({"id": saved_note.id}),
+            )
+            .await
+            .is_err()
         );
     }
 
@@ -927,85 +709,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn browser_quick_parse_save_and_attach_totp_work() {
+    async fn full_vault_crud_and_quick_rpcs_are_rejected_for_least_privilege() {
         let dir = tempfile::tempdir().unwrap();
         let vault = Vault::open(dir.path().to_path_buf()).unwrap();
         let mut session = Session::default();
         let throttle = Mutex::new(Instant::now());
 
-        // 1. quick.parse recognizes an API key and quick.save persists it with unique naming
-        let parsed = handle(
-            &vault,
-            &mut session,
-            &throttle,
+        // Extension bridge must never expose desktop vault management, trash, history, or quick-ingest CRUD.
+        for blocked in [
+            "vault.list",
+            "vault.get",
+            "vault.save",
+            "vault.trash",
+            "vault.restore",
+            "vault.purge",
+            "vault.history",
+            "vault.clearHistory",
+            "personal.save",
             "quick.parse",
-            &json!({"text": "sk-ant-api03-browser-quick-999", "origin": "https://console.anthropic.com"}),
-        )
-        .await
-        .unwrap();
-        assert_eq!(parsed["kind"], "apiKey");
-        let saved_api = handle(
-            &vault,
-            &mut session,
-            &throttle,
             "quick.save",
-            &json!({"input": parsed["input"]}),
-        )
-        .await
-        .unwrap();
-        assert_eq!(saved_api["name"], "Anthropic API");
-
-        // Saving a duplicate name automatically disambiguates to "(2)"
-        let saved_api_2 = handle(
-            &vault,
-            &mut session,
-            &throttle,
-            "quick.save",
-            &json!({"input": parsed["input"]}),
-        )
-        .await
-        .unwrap();
-        assert_eq!(saved_api_2["name"], "Anthropic API (2)");
-
-        // 2. password.attachTotp attaches a scanned otpauth URI to an existing website login
-        let login = handle(
-            &vault,
-            &mut session,
-            &throttle,
-            "password.save",
-            &json!({
-                "origin": "https://github.com/login",
-                "name": "GitHub",
-                "username": "octocat",
-                "password": "pw"
-            }),
-        )
-        .await
-        .unwrap();
-        let attached = handle(
-            &vault,
-            &mut session,
-            &throttle,
             "password.attachTotp",
-            &json!({
-                "origin": "https://github.com/settings/security",
-                "id": login["id"],
-                "expectedUpdatedAt": login["updatedAt"],
-                "totp": "otpauth://totp/GitHub:octocat?secret=JBSWY3DPEHPK3PXP&issuer=GitHub"
-            }),
-        )
-        .await
-        .unwrap();
-        assert_eq!(attached["id"], login["id"]);
-        let totp = handle(
-            &vault,
-            &mut session,
-            &throttle,
-            "password.totp",
-            &json!({"origin": "https://github.com/sessions/two-factor", "id": login["id"]}),
-        )
-        .await
-        .unwrap();
-        assert_eq!(totp["code"].as_str().unwrap().len(), 6);
+        ] {
+            let err = handle(&vault, &mut session, &throttle, blocked, &json!({}))
+                .await
+                .unwrap_err();
+            assert!(
+                err.to_string().contains("Unsupported browser operation"),
+                "expected {blocked} to be rejected, got: {err}"
+            );
+        }
     }
 }

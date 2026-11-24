@@ -1,10 +1,16 @@
-// Vault access is handled by the authenticated extension service worker.
+// OpenKeylet Agent Browser Bridge & Current-Site Autofill popup controller.
 const $ = s => document.querySelector(s);
 const { t, localizeMessage, icon } = OpenKeyletUI;
 
-let currentOrigin = "", entries = [], saving = false, reading = false, loading = false, editingVersion = "";
-let refreshError = false;
+let currentOrigin = "";
+let entries = [];
 let personalEntries = [];
+let lastAgentAction = null;
+let saving = false;
+let reading = false;
+let loading = false;
+let editingVersion = "";
+let refreshError = false;
 let bridgeConnected = false;
 let vaultLocked = true;
 let pageAvailableState = false;
@@ -14,14 +20,15 @@ let toastTimer = null;
 
 const captureParams = new URLSearchParams(location.search);
 let captureContext = captureParams.get("capture") || "";
-let quickContext = captureParams.get("quick") || "";
 document.body.classList.toggle("capture-page", Boolean(captureContext));
-document.body.classList.toggle("quick-page", Boolean(quickContext));
 const captureTabId = captureParams.has("tab") ? Number(captureParams.get("tab")) : undefined;
 
-let pendingCapture = null, savingCapture = null, saveEntries = [], detectedForms = [], readSource = null, openedCapture = "";
-let quickParsed = null, quickParseTimer = null, openedQuick = "", quickOrigin = "";
-let genDebounceTimer = null;
+let pendingCapture = null;
+let savingCapture = null;
+let saveEntries = [];
+let detectedForms = [];
+let readSource = null;
+let openedCapture = "";
 
 function showError(e, tone = "") {
   refreshError = false;
@@ -45,7 +52,6 @@ async function call(action, fields = {}) {
     action,
     origin: currentOrigin,
     captureId: captureContext || undefined,
-    quickId: quickContext || undefined,
     captureTabId,
     ...fields,
   });
@@ -54,15 +60,11 @@ async function call(action, fields = {}) {
 }
 
 function hasOpenSheet() {
-  return !$("#save-form").hidden
-    || !$("#quick-store-form").hidden
-    || !$("#vault-editor").hidden
-    || !$("#vault-history").hidden;
+  return !$("#save-form").hidden;
 }
 
 function isStandaloneWindow() {
-  return document.body.classList.contains("capture-page")
-    || document.body.classList.contains("quick-page");
+  return document.body.classList.contains("capture-page");
 }
 
 function syncChromeVisibility() {
@@ -73,7 +75,6 @@ function syncChromeVisibility() {
     ? (!sheetOpen && activeTab === "settings")
     : settingsOverlayWhenUnavailable;
 
-  // Nav bar: shown when unlocked & connected & not in sheet or standalone window
   $("#main-nav").hidden = !unlockedReady || sheetOpen || standalone;
   $("#main-nav").dataset.active = activeTab;
   for (const btn of document.querySelectorAll("#main-nav .nav-item")) {
@@ -83,7 +84,6 @@ function syncChromeVisibility() {
     else btn.removeAttribute("aria-current");
   }
 
-  // Offline & Lock panels
   const wasLockHidden = $("#unlock-form").hidden;
   $("#offline-panel").hidden = bridgeConnected || showingSettings;
   $("#unlock-form").hidden = !bridgeConnected || !vaultLocked || showingSettings;
@@ -92,28 +92,20 @@ function syncChromeVisibility() {
     $("#pin")?.focus();
   }
 
-  // Page hint visibility:
-  // - When connected & locked on non-web page: show compact hint above unlock card
-  // - When unlocked on Site tab & non-web page & no sheet open: show hint with quick buttons
-  const showHintLocked = bridgeConnected && vaultLocked && !pageAvailableState && !showingSettings && !standalone;
   const showHintSite = unlockedReady && !sheetOpen && activeTab === "site" && !pageAvailableState && !standalone;
-  $("#page-hint").hidden = !(showHintLocked || showHintSite);
-  $("#page-hint-actions").hidden = vaultLocked;
+  $("#page-hint").hidden = !showHintSite;
 
-  // Capture notice banner (hidden while in settings or save sheet)
   $("#capture-notice").hidden = !pendingCapture || showingSettings || !$("#save-form").hidden || !$("#capture-complete").hidden;
 
-  // Tab views inside #vault-panel
   for (const view of document.querySelectorAll("#vault-panel > .tab-view")) {
     view.hidden = sheetOpen || view.dataset.tabView !== activeTab;
   }
 
-  // Settings tab (lives outside #vault-panel so it works when locked or offline)
   $("#tab-settings").hidden = !showingSettings;
 }
 
 function setActiveTab(tab) {
-  if (!["site", "vault", "generator", "settings"].includes(tab)) return;
+  if (!["site", "settings"].includes(tab)) return;
   if (!bridgeConnected || vaultLocked) {
     settingsOverlayWhenUnavailable = tab === "settings";
     syncChromeVisibility();
@@ -122,9 +114,6 @@ function setActiveTab(tab) {
   activeTab = tab;
   settingsOverlayWhenUnavailable = false;
   syncChromeVisibility();
-  if (tab === "generator" && !$("#generator-output").value) {
-    void triggerGeneratePassword();
-  }
 }
 
 function updateBridgeStatusUI(statusKey, lampClass, stripClass) {
@@ -135,35 +124,45 @@ function updateBridgeStatusUI(statusKey, lampClass, stripClass) {
   $("#settings-status-strip").className = `status-strip ${stripClass}`.trim();
 }
 
-function updateStrengthMeter() {
-  const pw = $("#generator-output").value || "";
-  const len = pw.length;
-  let pool = 0;
-  if (/[A-Z]/.test(pw)) pool += 26;
-  if (/[a-z]/.test(pw)) pool += 26;
-  if (/[0-9]/.test(pw)) pool += 10;
-  if (/[^A-Za-z0-9]/.test(pw)) pool += 32;
-  const entropy = len > 0 && pool > 0 ? len * Math.log2(pool) : 0;
-  const fill = $("#gen-strength-fill");
-  const label = $("#gen-strength-label");
-  if (!len) {
-    fill.style.width = "0%";
-    fill.className = "";
-    label.textContent = "";
+function formatActionKind(kind) {
+  const map = {
+    inspect_page: "inspect",
+    fill_login: "fill_login",
+    fill_field: "fill_field",
+    fill_personal: "fill_card_addr",
+    click: "click",
+    passkey_capture: "passkey",
+    passkey_resolve: "passkey",
+    fill: "fill",
+  };
+  return map[kind] || kind || "";
+}
+
+function renderAgentChannel() {
+  const stateEl = $("#agent-channel-state");
+  const lastRow = $("#agent-last-row");
+  const lastVal = $("#agent-last-value");
+  if (stateEl) {
+    stateEl.textContent = t(pageAvailableState ? "agent.ready" : "agent.standby");
+    stateEl.classList.toggle("active", pageAvailableState);
+  }
+  if (!lastRow || !lastVal) return;
+  if (!lastAgentAction?.kind) {
+    lastRow.hidden = true;
     return;
   }
-  const pct = Math.min(100, Math.max(15, Math.round((entropy / 120) * 100)));
-  fill.style.width = `${pct}%`;
-  if (entropy >= 90) {
-    fill.className = "";
-    label.textContent = t("gen.strengthMax");
-  } else if (entropy >= 60) {
-    fill.className = "warn";
-    label.textContent = t("gen.strengthGood");
-  } else {
-    fill.className = "danger";
-    label.textContent = t("gen.strengthWeak");
+  let host = "";
+  try {
+    host = lastAgentAction.origin ? new URL(lastAgentAction.origin).host : "";
+  } catch {
+    host = "";
   }
+  const ageSec = Math.max(0, Math.round((Date.now() - Number(lastAgentAction.at || Date.now())) / 1000));
+  const ageText = ageSec < 60 ? `${ageSec}s` : `${Math.round(ageSec / 60)}m`;
+  const parts = [formatActionKind(lastAgentAction.kind), host, ageText].filter(Boolean);
+  lastVal.textContent = parts.join(" · ");
+  lastRow.classList.toggle("is-error", lastAgentAction.ok === false);
+  lastRow.hidden = false;
 }
 
 function renderSiteEntries() {
@@ -263,7 +262,7 @@ function renderSiteAutofill() {
   }
 
   section.hidden = false;
-  for (const item of fillable.slice(0, 4)) {
+  for (const item of fillable.slice(0, 6)) {
     const chip = document.createElement("button");
     chip.type = "button";
     chip.className = "quick-fill-chip";
@@ -282,7 +281,7 @@ function renderSiteAutofill() {
 
     const actionTag = document.createElement("span");
     actionTag.className = "chip-action";
-    actionTag.textContent = t("vault.fill");
+    actionTag.textContent = t("site.fillHint");
 
     chip.append(ico, txt, actionTag);
     chip.addEventListener("click", async () => {
@@ -341,24 +340,18 @@ async function refresh() {
     bridgeConnected = true;
     vaultLocked = Boolean(state.locked);
     pageAvailableState = Boolean(state.pageAvailable);
+    lastAgentAction = state.lastAgentAction || null;
 
     if (state.captureExpired) { captureContext = ""; closeSave(); }
-    if (state.quickExpired) { quickContext = ""; closeQuickStore(); }
 
     updateBridgeStatusUI("status.connected", "on", "online");
 
     if (state.locked) {
       closeSave();
-      closeQuickStore();
-      OpenKeyletVaultUI.close();
-      $("#generator-output").value = "";
-      updateStrengthMeter();
-    } else if (hasOpenSheet() || OpenKeyletVaultUI.isEditing()) {
+    } else if (hasOpenSheet()) {
       syncChromeVisibility();
       return;
     }
-
-    OpenKeyletVaultUI.apply(state.vault, state.personal, pageAvailableState);
 
     if (refreshError || currentOrigin !== state.origin) showError("");
     if (state.captureExpired) showError(t("capture.expired"));
@@ -366,30 +359,25 @@ async function refresh() {
     const entriesChanged = currentOrigin !== state.origin || JSON.stringify(entries) !== JSON.stringify(state.entries);
     const personalChanged = JSON.stringify(personalEntries) !== JSON.stringify(state.personal);
     currentOrigin = state.origin;
-    entries = state.entries;
+    entries = state.entries || [];
     personalEntries = state.personal || [];
 
-    // Website bar
     $("#website").textContent = currentOrigin;
     $("#website-bar").hidden = !pageAvailableState;
     $("#website-icon").classList.toggle("secure", currentOrigin.startsWith("https://"));
 
-    // Site actions visibility
     $("#entries").hidden = !pageAvailableState;
     $("#read-form").hidden = !pageAvailableState;
-    $("#scan-page-qr").hidden = !pageAvailableState;
     $("#site-actions").hidden = !pageAvailableState;
-    $("#save-generated-password").hidden = !pageAvailableState || !$("#generator-output").value;
 
-    // Header lock button
     $("#lock").hidden = !state.pinConfigured || vaultLocked;
 
-    // Capture notice
     pendingCapture = state.capture;
     $("#capture-source").textContent = pendingCapture ? t("capture.source", { origin: pendingCapture.origin }) : "";
     $("#capture-review").disabled = vaultLocked;
 
     syncChromeVisibility();
+    renderAgentChannel();
 
     if (entriesChanged) renderSiteEntries();
     if (entriesChanged || personalChanged) renderSiteAutofill();
@@ -398,17 +386,12 @@ async function refresh() {
       openedCapture = pendingCapture.id;
       reviewCapture();
     }
-    if (quickContext && !vaultLocked && openedQuick !== quickContext) {
-      openedQuick = quickContext;
-      openQuickFromCapture();
-    }
   } catch (e) {
     bridgeConnected = false;
     vaultLocked = true;
     pageAvailableState = false;
+    lastAgentAction = null;
     closeSave();
-    closeQuickStore();
-    OpenKeyletVaultUI.close();
     updateBridgeStatusUI("status.unavailable", "error", "error");
     currentOrigin = "";
     entries = [];
@@ -418,8 +401,6 @@ async function refresh() {
     $("#site-autofill-list").replaceChildren();
     $("#site-autofill").hidden = true;
     $("#lock").hidden = true;
-    $("#generator-output").value = "";
-    updateStrengthMeter();
     syncChromeVisibility();
     showError(localizeMessage(e), "error");
     refreshError = true;
@@ -429,8 +410,6 @@ async function refresh() {
 }
 
 // Header & Navigation controls
-$("#theme-toggle").addEventListener("click", () => OpenKeyletUI.toggleTheme());
-
 $("#status-pill").addEventListener("click", () => {
   if (hasOpenSheet()) return;
   if (!bridgeConnected || vaultLocked) {
@@ -456,13 +435,6 @@ for (const btn of document.querySelectorAll("#main-nav .nav-item")) {
   btn.addEventListener("click", () => setActiveTab(btn.dataset.tab));
 }
 
-$("#hint-open-vault").addEventListener("click", () => setActiveTab("vault"));
-$("#hint-smart-save").addEventListener("click", () => void openQuickStore("", currentOrigin));
-
-for (const btn of document.querySelectorAll("[data-lang-option]")) {
-  btn.addEventListener("click", () => OpenKeyletUI.setLanguage(btn.dataset.langOption));
-}
-
 $("#reload-extension")?.addEventListener("click", () => {
   chrome.runtime.sendMessage({ type: "reload-extension" }).catch(() => chrome.runtime.reload());
 });
@@ -482,10 +454,6 @@ $("#unlock-form").addEventListener("submit", async e => {
 
 $("#lock").addEventListener("click", async () => {
   closeSave();
-  closeQuickStore();
-  OpenKeyletVaultUI.close();
-  $("#generator-output").value = "";
-  updateStrengthMeter();
   try {
     await call("lock");
     await refresh();
@@ -623,6 +591,18 @@ $("#toggle-saved-password").addEventListener("click", () => {
   $("#toggle-saved-password").textContent = t(visible ? "save.hide" : "save.show");
 });
 
+$("#use-generated-password").addEventListener("click", async () => {
+  try {
+    const pw = await call("generate", { options: { length: 24, uppercase: true, lowercase: true, digits: true, symbols: true } });
+    $("#password").value = pw;
+    $("#password").type = "text";
+    $("#toggle-saved-password").textContent = t("save.hide");
+    showError("");
+  } catch (e) {
+    showError(e);
+  }
+});
+
 $("#capture-close").addEventListener("click", () => window.close());
 
 $("#save-form").addEventListener("submit", async e => {
@@ -681,252 +661,6 @@ $("#pair-form").addEventListener("submit", async e => {
   setTimeout(() => void refresh(), 500);
 });
 
-// Password Generator
-async function generatePassword() {
-  const len = Math.max(8, Math.min(128, Number($("#generator-length").value) || 24));
-  const options = { length: len };
-  for (const key of ["uppercase", "lowercase", "digits", "symbols"]) {
-    options[key] = $(`#gen-${key}`).checked;
-  }
-  return call("generate", { options });
-}
-
-async function triggerGeneratePassword() {
-  try {
-    const pw = await generatePassword();
-    $("#generator-output").value = pw;
-    $("#save-generated-password").hidden = !pageAvailableState || !pw;
-    updateStrengthMeter();
-    showError("");
-  } catch (e) {
-    showError(e);
-  }
-}
-
-$("#generate-password").onclick = () => void triggerGeneratePassword();
-
-$("#generator-range").addEventListener("input", () => {
-  $("#generator-length").value = $("#generator-range").value;
-  clearTimeout(genDebounceTimer);
-  genDebounceTimer = setTimeout(() => void triggerGeneratePassword(), 80);
-});
-$("#generator-length").addEventListener("input", () => {
-  const val = Number($("#generator-length").value);
-  if (Number.isFinite(val)) $("#generator-range").value = String(Math.max(8, Math.min(64, val)));
-});
-for (const key of ["uppercase", "lowercase", "digits", "symbols"]) {
-  $(`#gen-${key}`).addEventListener("change", () => {
-    const anyChecked = ["uppercase", "lowercase", "digits", "symbols"].some(k => $(`#gen-${k}`).checked);
-    if (!anyChecked) $(`#gen-${key}`).checked = true;
-    void triggerGeneratePassword();
-  });
-}
-
-$("#copy-generated-password").onclick = async () => {
-  try {
-    const pw = $("#generator-output").value;
-    if (pw) {
-      await navigator.clipboard.writeText(pw);
-      $("#save-generated-password").hidden = !pageAvailableState;
-      showError(t("vault.copied"), "success");
-    }
-  } catch (e) {
-    showError(e);
-  }
-};
-
-$("#save-generated-password").onclick = () => {
-  const pw = $("#generator-output").value;
-  if (!pw || !currentOrigin) return;
-  closeQuickStore();
-  savingCapture = null;
-  saveEntries = entries;
-  detectedForms = [];
-  readSource = { generatedDirect: true };
-  $("#detected-form").hidden = $("#detected-form-label").hidden = true;
-  presentLogin({ username: "", password: pw, warnings: [] }, currentOrigin);
-  $("#username").focus();
-};
-
-$("#use-generated-password").onclick = async () => {
-  try {
-    $("#password").value = await generatePassword();
-  } catch (e) {
-    showError(e);
-  }
-};
-
-// Smart Save & 2FA QR
-function closeQuickStore() {
-  clearTimeout(quickParseTimer);
-  quickParsed = null;
-  quickOrigin = "";
-  $("#quick-store-form").reset();
-  $("#quick-store-form").hidden = true;
-  $("#quick-store-detected").hidden = true;
-  $("#quick-totp-attach-box").hidden = true;
-  $("#quick-store-source").textContent = "";
-  syncChromeVisibility();
-}
-
-function applyQuickParsed(parsed, origin) {
-  quickParsed = parsed;
-  quickOrigin = origin || currentOrigin || "";
-  if (!parsed) {
-    $("#quick-store-detected").hidden = true;
-    $("#quick-totp-attach-box").hidden = true;
-    return;
-  }
-  $("#quick-store-badge").textContent = OpenKeyletUI.lang === "zh"
-    ? (parsed.labelZh || parsed.label || "SECRET")
-    : (parsed.label || parsed.labelZh || "SECRET");
-  $("#quick-store-summary").textContent = parsed.summary || "";
-  $("#quick-store-detected").hidden = false;
-  $("#quick-store-name").value = parsed.input?.name || "";
-
-  const attachBox = $("#quick-totp-attach-box");
-  if (parsed.totpUri && entries.length && quickOrigin) {
-    $("#quick-totp-target").replaceChildren(
-      ...entries.map(item => new Option(`${item.name}${item.username ? ` · ${item.username}` : ""}`, item.id)),
-    );
-    attachBox.hidden = false;
-  } else {
-    attachBox.hidden = true;
-  }
-}
-
-async function parseQuickStoreText(rawText, origin) {
-  const text = String(rawText || "").trim();
-  if (!text) { applyQuickParsed(null, origin); return; }
-  try {
-    const parsed = await call("quick-parse", { text, origin: origin || currentOrigin || "" });
-    applyQuickParsed(parsed, origin || currentOrigin || "");
-    showError("");
-  } catch (e) {
-    applyQuickParsed(null, origin);
-    showError(e);
-  }
-}
-
-async function openQuickStore(prefillText = "", origin = currentOrigin) {
-  closeSave();
-  OpenKeyletVaultUI.close();
-  quickOrigin = origin || currentOrigin || "";
-  $("#quick-store-source").textContent = quickOrigin || "";
-  $("#quick-store-text").value = prefillText;
-  $("#quick-store-name").value = "";
-  $("#quick-store-detected").hidden = true;
-  $("#quick-totp-attach-box").hidden = true;
-  $("#quick-store-form").hidden = false;
-  syncChromeVisibility();
-  if (prefillText) {
-    await parseQuickStoreText(prefillText, quickOrigin);
-  } else {
-    $("#quick-store-text").focus();
-  }
-}
-
-async function openQuickFromCapture() {
-  if (!quickContext) return;
-  reading = true;
-  try {
-    const draft = await call("quick-capture-read");
-    await openQuickStore(draft.text, draft.origin);
-  } catch (e) {
-    quickContext = "";
-    showError(e);
-  } finally {
-    reading = false;
-  }
-}
-
-$("#quick-store-open").onclick = () => void openQuickStore("", currentOrigin);
-$("#scan-page-qr").onclick = async () => {
-  if (reading || saving) return;
-  reading = true;
-  try {
-    const res = await call("scan-page-qr");
-    await openQuickStore(res.text, res.origin);
-    applyQuickParsed(res.parsed, res.origin);
-    showError(t("quick.qrDetected"), "success");
-  } catch (e) {
-    showError(e);
-  } finally {
-    reading = false;
-  }
-};
-
-$("#quick-store-text").addEventListener("input", () => {
-  clearTimeout(quickParseTimer);
-  const value = $("#quick-store-text").value;
-  quickParseTimer = setTimeout(() => void parseQuickStoreText(value, quickOrigin), 220);
-});
-
-async function cancelQuickStoreFlow() {
-  const wasQuickWindow = Boolean(quickContext);
-  if (quickContext) await call("quick-capture-dismiss").catch(() => {});
-  quickContext = "";
-  closeQuickStore();
-  if (wasQuickWindow) window.close();
-  else refresh();
-}
-$("#quick-store-cancel").onclick = cancelQuickStoreFlow;
-$("#quick-back").onclick = cancelQuickStoreFlow;
-
-$("#quick-totp-attach").onclick = async () => {
-  if (saving || !quickParsed?.totpUri) return;
-  const targetId = $("#quick-totp-target").value;
-  const target = entries.find(e => e.id === targetId);
-  if (!target) return;
-  saving = true;
-  try {
-    await call("attach-totp", {
-      origin: quickOrigin || currentOrigin,
-      id: target.id,
-      expectedUpdatedAt: target.updatedAt,
-      name: target.name,
-      username: target.username || "",
-      totp: quickParsed.totpUri,
-    });
-    const wasQuickWindow = Boolean(quickContext);
-    quickContext = "";
-    closeQuickStore();
-    showError(t("quick.attached", { name: target.name }), "success");
-    if (wasQuickWindow) setTimeout(() => window.close(), 700);
-  } catch (e) {
-    showError(e);
-  } finally {
-    saving = false;
-    refresh();
-  }
-};
-
-$("#quick-store-form").addEventListener("submit", async e => {
-  e.preventDefault();
-  if (saving) return;
-  saving = true;
-  try {
-    const raw = $("#quick-store-text").value.trim();
-    if (!raw) throw new Error(t("quick.emptyErr"));
-    if (!quickParsed) await parseQuickStoreText(raw, quickOrigin);
-    if (!quickParsed?.input) throw new Error(t("quick.parseErr"));
-    const input = structuredClone(quickParsed.input);
-    const customName = $("#quick-store-name").value.trim();
-    if (customName) input.name = customName;
-    await call("quick-save", { input });
-    const wasQuickWindow = Boolean(quickContext);
-    quickContext = "";
-    closeQuickStore();
-    showError(t("save.saved"), "success");
-    if (wasQuickWindow) setTimeout(() => window.close(), 700);
-  } catch (err) {
-    showError(err);
-  } finally {
-    saving = false;
-    refresh();
-  }
-});
-
 // React to language/theme updates
 OpenKeyletUI.onChange(() => {
   updateBridgeStatusUI(
@@ -936,9 +670,9 @@ OpenKeyletUI.onChange(() => {
   );
   const extVersion = chrome.runtime.getManifest?.().version || "";
   if (extVersion) $("#ext-version-label").textContent = `OpenKeylet v${extVersion} · ${t("settings.footerVault")}`;
+  renderAgentChannel();
   renderSiteEntries();
   renderSiteAutofill();
-  updateStrengthMeter();
   if (pendingCapture) $("#capture-source").textContent = t("capture.source", { origin: pendingCapture.origin });
 });
 

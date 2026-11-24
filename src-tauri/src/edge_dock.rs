@@ -83,19 +83,36 @@ impl Default for EdgeDockController {
 impl EdgeDockController {
     pub fn new() -> Self {
         Self {
-            enabled: AtomicBool::new(true),
+            enabled: AtomicBool::new(Self::platform_supported()),
             animating: AtomicBool::new(false),
             inner: Mutex::new(EdgeDockInner::default()),
         }
     }
 
+    pub fn platform_supported() -> bool {
+        !is_wayland_session()
+    }
+
+    pub fn is_supported(&self) -> bool {
+        Self::platform_supported()
+    }
+
     pub fn is_enabled(&self) -> bool {
-        self.enabled.load(Ordering::Acquire)
+        Self::platform_supported() && self.enabled.load(Ordering::Acquire)
+    }
+
+    pub fn is_collapsed(&self) -> bool {
+        self.inner
+            .lock()
+            .ok()
+            .and_then(|guard| guard.docked.as_ref().map(|docked| docked.collapsed))
+            .unwrap_or(false)
     }
 
     pub fn set_enabled(&self, window: &WebviewWindow, enabled: bool) {
-        self.enabled.store(enabled, Ordering::Release);
-        if !enabled {
+        let effective = Self::platform_supported() && enabled;
+        self.enabled.store(effective, Ordering::Release);
+        if !effective {
             self.undock(window, true);
         }
     }
@@ -299,11 +316,7 @@ impl EdgeDockController {
                     }
                 };
                 if should_collapse {
-                    let peek_px = (PEEK_VISIBLE_LOGICAL * scale).round() as i32;
-                    let collapsed_pos =
-                        collapsed_position(docked.edge, pos, size, docked.work_area, peek_px);
-                    self.animate_to(window, pos, collapsed_pos);
-                    emit_state(window, Some(docked.edge), true);
+                    self.collapse_to_edge(window, &docked, pos, size, scale);
                 }
             }
         } else if !docked.collapsed {
@@ -326,13 +339,33 @@ impl EdgeDockController {
                 }
             };
             if should_collapse {
-                let peek_px = (PEEK_VISIBLE_LOGICAL * scale).round() as i32;
-                let collapsed_pos =
-                    collapsed_position(docked.edge, pos, size, docked.work_area, peek_px);
-                self.animate_to(window, pos, collapsed_pos);
-                emit_state(window, Some(docked.edge), true);
+                self.collapse_to_edge(window, &docked, pos, size, scale);
             }
         }
+    }
+
+    fn collapse_to_edge(
+        &self,
+        window: &WebviewWindow,
+        docked: &DockedSession,
+        pos: PhysicalPosition<i32>,
+        size: PhysicalSize<u32>,
+        scale: f64,
+    ) {
+        let peek_px = (PEEK_VISIBLE_LOGICAL * scale).round() as i32;
+        let collapsed_pos = collapsed_position(docked.edge, pos, size, docked.work_area, peek_px);
+        self.animate_to(window, pos, collapsed_pos);
+        // Verify the OS/window manager actually moved the window off-screen.
+        // On compositors that clamp windows inside the work area (e.g. Wayland,
+        // macOS menu bar, or strict tiling WMs), abort collapse instead of leaving
+        // the full-window peek overlay covering the live UI.
+        if let Ok(actual) = window.outer_position()
+            && !position_reached_collapse_target(docked.edge, actual, collapsed_pos, scale)
+        {
+            self.undock(window, false);
+            return;
+        }
+        emit_state(window, Some(docked.edge), true);
     }
 
     fn evaluate_snap(&self, window: &WebviewWindow) {
@@ -357,15 +390,7 @@ impl EdgeDockController {
         let undock_px = (UNDOCK_THRESHOLD_LOGICAL * scale).round() as i32;
 
         let win_rect = Rect::from_pos_size(pos, size);
-        let near_edge = if win_rect.left <= work_rect.left + snap_px {
-            Some(DockEdge::Left)
-        } else if win_rect.right >= work_rect.right - snap_px {
-            Some(DockEdge::Right)
-        } else if win_rect.top <= work_rect.top + snap_px {
-            Some(DockEdge::Top)
-        } else {
-            None
-        };
+        let near_edge = detect_snap_edge(win_rect, work_rect, snap_px, !cfg!(target_os = "macos"));
 
         let existing_edge = self
             .inner
@@ -470,6 +495,49 @@ fn emit_state(window: &WebviewWindow, edge: Option<DockEdge>, collapsed: bool) {
     let _ = window.emit("edge-dock-state", EdgeDockPayload { edge, collapsed });
 }
 
+fn detect_snap_edge(
+    win_rect: Rect,
+    work_rect: Rect,
+    snap_px: i32,
+    allow_top_edge: bool,
+) -> Option<DockEdge> {
+    if win_rect.left <= work_rect.left + snap_px {
+        Some(DockEdge::Left)
+    } else if win_rect.right >= work_rect.right - snap_px {
+        Some(DockEdge::Right)
+    } else if allow_top_edge && win_rect.top <= work_rect.top + snap_px {
+        Some(DockEdge::Top)
+    } else {
+        None
+    }
+}
+
+fn position_reached_collapse_target(
+    edge: DockEdge,
+    actual: PhysicalPosition<i32>,
+    target: PhysicalPosition<i32>,
+    scale: f64,
+) -> bool {
+    let tolerance = (24.0 * scale.max(1.0)).round() as i32;
+    match edge {
+        DockEdge::Left | DockEdge::Right => (actual.x - target.x).abs() <= tolerance,
+        DockEdge::Top => (actual.y - target.y).abs() <= tolerance,
+    }
+}
+
+fn is_wayland_session() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        std::env::var_os("WAYLAND_DISPLAY").is_some()
+            || std::env::var("XDG_SESSION_TYPE")
+                .is_ok_and(|value| value.eq_ignore_ascii_case("wayland"))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
+}
+
 #[cfg(windows)]
 fn cursor_position() -> Option<(i32, i32)> {
     use windows::Win32::Foundation::POINT;
@@ -494,4 +562,64 @@ fn is_primary_mouse_down() -> bool {
 #[cfg(not(windows))]
 fn is_primary_mouse_down() -> bool {
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detect_snap_edge_excludes_top_when_disallowed_for_macos_menu_bar() {
+        let work = Rect {
+            left: 0,
+            top: 38,
+            right: 1440,
+            bottom: 900,
+        };
+        let near_top = Rect {
+            left: 400,
+            top: 40,
+            right: 860,
+            bottom: 730,
+        };
+        assert_eq!(detect_snap_edge(near_top, work, 16, true), Some(DockEdge::Top));
+        assert_eq!(detect_snap_edge(near_top, work, 16, false), None);
+
+        let near_right = Rect {
+            left: 980,
+            top: 100,
+            right: 1440,
+            bottom: 790,
+        };
+        assert_eq!(
+            detect_snap_edge(near_right, work, 16, false),
+            Some(DockEdge::Right)
+        );
+    }
+
+    #[test]
+    fn collapse_target_verification_detects_os_clamping() {
+        let target_left = PhysicalPosition::new(-450, 100);
+        assert!(position_reached_collapse_target(
+            DockEdge::Left,
+            PhysicalPosition::new(-448, 100),
+            target_left,
+            1.0
+        ));
+        // Compositor clamped the window back to x=0 instead of sliding off-screen
+        assert!(!position_reached_collapse_target(
+            DockEdge::Left,
+            PhysicalPosition::new(0, 100),
+            target_left,
+            1.0
+        ));
+
+        let target_top = PhysicalPosition::new(400, -640);
+        assert!(!position_reached_collapse_target(
+            DockEdge::Top,
+            PhysicalPosition::new(400, 38),
+            target_top,
+            2.0
+        ));
+    }
 }

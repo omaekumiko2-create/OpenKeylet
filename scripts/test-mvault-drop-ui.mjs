@@ -216,6 +216,8 @@ try {
   });
   await page.locator("#global-mvault-drop-overlay").waitFor({ state: "visible" });
   assert.equal(await page.locator("#global-mvault-drop-file").textContent(), "openkeylet-backup.mvault");
+  const dropOverlayTop = await page.evaluate(() => Math.round(document.querySelector("#global-mvault-drop-overlay").getBoundingClientRect().top));
+  assert.equal(dropOverlayTop, 0, "Global drop blur overlay covers full window including header");
 
   // 2. Native drop of protected .mvault hides overlay and automatically opens modal on password step
   await page.evaluate(() => {
@@ -310,16 +312,22 @@ try {
   assert.equal(await page.locator("#mvault-select-confirm").isDisabled(), false);
 
   // 9. Locking vault immediately closes modal and clears staged state
-  await page.click("#owner-lock-button");
+  await page.keyboard.press("Control+Shift+L");
   await page.locator("#owner-lock-layer").waitFor({ state: "visible" });
   await page.locator("#mvault-import-modal").waitFor({ state: "hidden" });
 
-  // Dropping while locked shows toast and keeps modal closed
+  // Dropping while locked shows toast without left crescent border and keeps modal closed
   await page.evaluate(() => {
     window.fixture.emit("mvault-file-dropped", { fileName: "openkeylet-backup.mvault", locked: true });
   });
   await page.locator("#mvault-import-modal").waitFor({ state: "hidden" });
   assert.match(await page.locator("#toast-region").innerText(), /解锁/);
+  const toastBorders = await page.evaluate(() => {
+    const t = document.querySelector("#toast-region .toast");
+    const s = getComputedStyle(t);
+    return { left: s.borderLeftWidth, right: s.borderRightWidth, top: s.borderTopWidth, bottom: s.borderBottomWidth };
+  });
+  assert.deepEqual(toastBorders, { left: "1px", right: "1px", top: "1px", bottom: "1px" }, "Toast uses uniform 1px border without left crescent accent");
 
   assert.deepEqual(errors, [], `Unexpected page errors: ${errors.join("; ")}`);
   console.log("Selective .mvault drag-and-drop import UI E2E tests passed (native + HTML5 drop, password retry, checklist, select-all, filter, partial commit, dark/light, lock wipe).");

@@ -587,6 +587,15 @@ impl Vault {
                 }
                 next.owner_auto_lock_minutes = minutes;
             }
+            if let Some(auto_check_enabled) = patch.auto_check_enabled {
+                next.auto_check_enabled = auto_check_enabled;
+            }
+            if let Some(minutes) = patch.auto_check_interval_minutes {
+                if !matches!(minutes, 15 | 30 | 60 | 180 | 360 | 720 | 1440) {
+                    bail!("Auto-check interval must be 15, 30, 60, 180, 360, 720, or 1440 minutes");
+                }
+                next.auto_check_interval_minutes = minutes;
+            }
             if let Some(update_auto_check) = patch.update_auto_check {
                 next.update_auto_check = update_auto_check;
             }
@@ -959,6 +968,261 @@ impl Vault {
         })
     }
 
+    pub fn add_agent_note(
+        &self,
+        id: Uuid,
+        text: &str,
+        author: &str,
+        enforce_agent_guards: bool,
+    ) -> Result<PublicConnection> {
+        let clean_note = crate::policy::sanitize_agent_note_text(text)?;
+        let clean_author = crate::policy::sanitize_agent_note_author(author);
+        self.update_document_with_result(|document| {
+            let index = document
+                .connections
+                .iter()
+                .position(|item| item.id == id)
+                .context("Connection not found")?;
+            if enforce_agent_guards && !document.connections[index].enabled {
+                bail!("This project is disabled");
+            }
+            let mut secrets: SecretBundle = self.with_key(|key| {
+                key.decrypt(&document.connections[index].encrypted_secrets)
+            })?;
+            if enforce_agent_guards && secrets.agent_notes_locked {
+                bail!(
+                    "Agent notes for '{}' are locked by the owner and cannot be modified by agents",
+                    document.connections[index].name
+                );
+            }
+            if enforce_agent_guards {
+                let decrypted_all: Vec<SecretBundle> = self.with_key(|key| {
+                    document
+                        .connections
+                        .iter()
+                        .map(|conn| key.decrypt::<SecretBundle>(&conn.encrypted_secrets))
+                        .collect()
+                })?;
+                let pairs: Vec<(&StoredConnection, &SecretBundle)> = document
+                    .connections
+                    .iter()
+                    .zip(decrypted_all.iter())
+                    .collect();
+                crate::policy::validate_agent_note_no_secrets(
+                    &clean_note,
+                    pairs[index],
+                    &pairs,
+                )?;
+            }
+
+            let now = Utc::now().to_rfc3339();
+            if let Some(dup_pos) = secrets
+                .agent_notes
+                .iter()
+                .position(|entry| entry.text.eq_ignore_ascii_case(&clean_note))
+            {
+                if enforce_agent_guards && secrets.agent_notes[dup_pos].author == "OWNER" {
+                    return Ok(document.connections[index].public(Some(&secrets)));
+                }
+                let mut existing = secrets.agent_notes.remove(dup_pos);
+                existing.text = clean_note;
+                existing.author = clean_author;
+                existing.updated_at = now.clone();
+                secrets.agent_notes.insert(0, existing);
+            } else {
+                if enforce_agent_guards
+                    && secrets.agent_notes.len() >= crate::model::MAX_AGENT_NOTES
+                    && !secrets
+                        .agent_notes
+                        .iter()
+                        .any(|entry| entry.author != "OWNER")
+                {
+                    bail!(
+                        "Agent note slots for '{}' are filled with owner notes",
+                        document.connections[index].name
+                    );
+                }
+                secrets.agent_notes.insert(
+                    0,
+                    crate::model::AgentNoteEntry {
+                        id: Uuid::new_v4().to_string(),
+                        text: clean_note,
+                        author: clean_author,
+                        updated_at: now.clone(),
+                    },
+                );
+                while secrets.agent_notes.len() > crate::model::MAX_AGENT_NOTES {
+                    if enforce_agent_guards {
+                        if let Some(evict_pos) = secrets
+                            .agent_notes
+                            .iter()
+                            .rposition(|entry| entry.author != "OWNER")
+                        {
+                            secrets.agent_notes.remove(evict_pos);
+                            continue;
+                        }
+                    }
+                    secrets.agent_notes.pop();
+                }
+            }
+
+            let stored = &mut document.connections[index];
+            stored.encrypted_secrets = self.with_key(|key| key.encrypt(&secrets))?;
+            stored.updated_at = now;
+            Ok(stored.public(Some(&secrets)))
+        })
+    }
+
+    pub fn update_agent_note(
+        &self,
+        id: Uuid,
+        note_id: &str,
+        text: &str,
+        author: Option<&str>,
+        enforce_agent_guards: bool,
+    ) -> Result<PublicConnection> {
+        let note_id = note_id.trim();
+        if note_id.is_empty() {
+            bail!("Note ID cannot be empty");
+        }
+        let clean_note = crate::policy::sanitize_agent_note_text(text)?;
+        let clean_author = author.map(crate::policy::sanitize_agent_note_author);
+        self.update_document_with_result(|document| {
+            let index = document
+                .connections
+                .iter()
+                .position(|item| item.id == id)
+                .context("Connection not found")?;
+            if enforce_agent_guards && !document.connections[index].enabled {
+                bail!("This project is disabled");
+            }
+            let mut secrets: SecretBundle = self.with_key(|key| {
+                key.decrypt(&document.connections[index].encrypted_secrets)
+            })?;
+            if enforce_agent_guards && secrets.agent_notes_locked {
+                bail!(
+                    "Agent notes for '{}' are locked by the owner and cannot be modified by agents",
+                    document.connections[index].name
+                );
+            }
+            let note_pos = secrets
+                .agent_notes
+                .iter()
+                .position(|entry| entry.id == note_id)
+                .context("Agent note not found")?;
+            if enforce_agent_guards && secrets.agent_notes[note_pos].author == "OWNER" {
+                bail!("Agents cannot edit an owner-authored note");
+            }
+            if enforce_agent_guards {
+                let decrypted_all: Vec<SecretBundle> = self.with_key(|key| {
+                    document
+                        .connections
+                        .iter()
+                        .map(|conn| key.decrypt::<SecretBundle>(&conn.encrypted_secrets))
+                        .collect()
+                })?;
+                let pairs: Vec<(&StoredConnection, &SecretBundle)> = document
+                    .connections
+                    .iter()
+                    .zip(decrypted_all.iter())
+                    .collect();
+                crate::policy::validate_agent_note_no_secrets(
+                    &clean_note,
+                    pairs[index],
+                    &pairs,
+                )?;
+            }
+
+            let now = Utc::now().to_rfc3339();
+            secrets.agent_notes[note_pos].text = clean_note;
+            if let Some(next_author) = clean_author {
+                secrets.agent_notes[note_pos].author = next_author;
+            }
+            secrets.agent_notes[note_pos].updated_at = now.clone();
+            let stored = &mut document.connections[index];
+            stored.encrypted_secrets = self.with_key(|key| key.encrypt(&secrets))?;
+            stored.updated_at = now;
+            Ok(stored.public(Some(&secrets)))
+        })
+    }
+
+    pub fn remove_agent_note(
+        &self,
+        id: Uuid,
+        note_id: &str,
+        enforce_agent_guards: bool,
+    ) -> Result<PublicConnection> {
+        let note_id = note_id.trim();
+        if note_id.is_empty() {
+            bail!("Note ID cannot be empty");
+        }
+        self.update_document_with_result(|document| {
+            let index = document
+                .connections
+                .iter()
+                .position(|item| item.id == id)
+                .context("Connection not found")?;
+            if enforce_agent_guards && !document.connections[index].enabled {
+                bail!("This project is disabled");
+            }
+            let mut secrets: SecretBundle = self.with_key(|key| {
+                key.decrypt(&document.connections[index].encrypted_secrets)
+            })?;
+            if enforce_agent_guards && secrets.agent_notes_locked {
+                bail!(
+                    "Agent notes for '{}' are locked by the owner and cannot be modified by agents",
+                    document.connections[index].name
+                );
+            }
+            let note_pos = secrets
+                .agent_notes
+                .iter()
+                .position(|entry| entry.id == note_id)
+                .context("Agent note not found")?;
+            if enforce_agent_guards && secrets.agent_notes[note_pos].author == "OWNER" {
+                bail!("Agents cannot remove an owner-authored note");
+            }
+            secrets.agent_notes.remove(note_pos);
+            let now = Utc::now().to_rfc3339();
+            let stored = &mut document.connections[index];
+            stored.encrypted_secrets = self.with_key(|key| key.encrypt(&secrets))?;
+            stored.updated_at = now;
+            Ok(stored.public(Some(&secrets)))
+        })
+    }
+
+    pub fn clear_agent_notes(&self, id: Uuid) -> Result<PublicConnection> {
+        self.update_document_with_result(|document| {
+            let stored = document
+                .connections
+                .iter_mut()
+                .find(|item| item.id == id)
+                .context("Connection not found")?;
+            let mut secrets: SecretBundle =
+                self.with_key(|key| key.decrypt(&stored.encrypted_secrets))?;
+            secrets.agent_notes.clear();
+            stored.encrypted_secrets = self.with_key(|key| key.encrypt(&secrets))?;
+            stored.updated_at = Utc::now().to_rfc3339();
+            Ok(stored.public(Some(&secrets)))
+        })
+    }
+
+    pub fn set_agent_notes_locked(&self, id: Uuid, locked: bool) -> Result<PublicConnection> {
+        self.update_document_with_result(|document| {
+            let stored = document
+                .connections
+                .iter_mut()
+                .find(|item| item.id == id)
+                .context("Connection not found")?;
+            let mut secrets: SecretBundle =
+                self.with_key(|key| key.decrypt(&stored.encrypted_secrets))?;
+            secrets.agent_notes_locked = locked;
+            stored.encrypted_secrets = self.with_key(|key| key.encrypt(&secrets))?;
+            stored.updated_at = Utc::now().to_rfc3339();
+            Ok(stored.public(Some(&secrets)))
+        })
+    }
+
     pub fn set_connection_enabled(&self, id: Uuid, enabled: bool) -> Result<()> {
         self.update_document(|document| {
             let connection = document
@@ -999,6 +1263,34 @@ impl Vault {
             document.activities.truncate(MAX_ACTIVITIES);
             Ok(())
         })
+    }
+
+    pub fn delete_activity(&self, id: Uuid) -> Result<bool> {
+        let mut removed = false;
+        self.update_document(|document| {
+            let before = document.activities.len();
+            document.activities.retain(|entry| entry.id != id);
+            removed = document.activities.len() != before;
+            Ok(())
+        })?;
+        Ok(removed)
+    }
+
+    pub fn delete_activities(&self, ids: &[Uuid]) -> Result<usize> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let targets: std::collections::HashSet<Uuid> = ids.iter().copied().collect();
+        let mut removed = 0;
+        self.update_document(|document| {
+            let before = document.activities.len();
+            document
+                .activities
+                .retain(|entry| !targets.contains(&entry.id));
+            removed = before.saturating_sub(document.activities.len());
+            Ok(())
+        })?;
+        Ok(removed)
     }
 
     pub fn clear_activities(&self) -> Result<()> {
@@ -1986,6 +2278,8 @@ fn same_portable_content(
     }
     if left_secrets.passkeys != right_secrets.passkeys
         || left_secrets.password_history != right_secrets.password_history
+        || left_secrets.agent_notes != right_secrets.agent_notes
+        || left_secrets.agent_notes_locked != right_secrets.agent_notes_locked
     {
         return false;
     }
@@ -3158,5 +3452,108 @@ mod tests {
                 .unwrap();
             assert_eq!(settings.language, expected);
         }
+    }
+
+    #[test]
+    fn deletes_single_batch_and_all_activities() {
+        let dir = tempdir().unwrap();
+        let vault = Vault::open(dir.path().join("vault")).unwrap();
+        for idx in 1..=4 {
+            vault
+                .add_activity(NewActivity {
+                    status: if idx % 2 == 0 { "error" } else { "success" }.to_owned(),
+                    source: "MCP".to_owned(),
+                    connection_name: format!("Item {idx}"),
+                    action: format!("action-{idx}"),
+                    duration_ms: idx * 10,
+                    error: if idx % 2 == 0 {
+                        format!("boom-{idx}")
+                    } else {
+                        String::new()
+                    },
+                })
+                .unwrap();
+        }
+        let initial = vault.activities().unwrap();
+        assert_eq!(initial.len(), 4);
+
+        // Single delete removes only the targeted entry and is idempotent.
+        let target_id = initial[1].id;
+        assert!(vault.delete_activity(target_id).unwrap());
+        assert!(!vault.delete_activity(target_id).unwrap());
+        let after_single = vault.activities().unwrap();
+        assert_eq!(after_single.len(), 3);
+        assert!(after_single.iter().all(|a| a.id != target_id));
+
+        // Batch delete removes only matching entries.
+        let batch_ids = vec![after_single[0].id, after_single[2].id, Uuid::new_v4()];
+        assert_eq!(vault.delete_activities(&batch_ids).unwrap(), 2);
+        let after_batch = vault.activities().unwrap();
+        assert_eq!(after_batch.len(), 1);
+        assert_eq!(after_batch[0].id, after_single[1].id);
+
+        // Clear removes everything remaining.
+        vault.clear_activities().unwrap();
+        assert!(vault.activities().unwrap().is_empty());
+    }
+
+    #[test]
+    fn agent_notes_survive_editor_save_backup_and_cloud_sync_merge() {
+        let dir = tempdir().unwrap();
+        let src = Vault::open(dir.path().join("src")).unwrap();
+        let saved = src
+            .save_connection(api_input(None, "Sync API", "sync-secret-8899"))
+            .unwrap();
+        let with_note = src
+            .add_agent_note(saved.id, "Production billing endpoint", "CLAUDE CODE", true)
+            .unwrap();
+        let locked = src.set_agent_notes_locked(saved.id, true).unwrap();
+        assert_eq!(locked.agent_notes.len(), 1);
+        assert!(locked.agent_notes_locked);
+
+        // Saving regular item fields must preserve existing agent_notes and lock state.
+        let mut edited = api_input(Some(saved.id), "Sync API", "sync-secret-8899");
+        edited.description = "Updated description".into();
+        let after_save = src
+            .save_connection_checked(edited, Some(&locked.updated_at))
+            .unwrap();
+        assert_eq!(after_save.agent_notes.len(), 1);
+        assert_eq!(after_save.agent_notes[0].text, "Production billing endpoint");
+        assert!(after_save.agent_notes_locked);
+
+        // Export & sync-merge into a fresh target vault preserves notes + lock flag.
+        let (exported, trash) = src.export_backup_entries().unwrap();
+        let tombstones = src.export_tombstones().unwrap();
+        let dst = Vault::open(dir.path().join("dst")).unwrap();
+        let merged = dst.sync_merge_entries(exported, trash, tombstones).unwrap();
+        assert_eq!(merged.added, 1);
+        let dst_item = dst.get_connection(saved.id).unwrap();
+        assert_eq!(dst_item.secrets.agent_notes.len(), 1);
+        assert_eq!(
+            dst_item.secrets.agent_notes[0].text,
+            "Production billing endpoint"
+        );
+        assert!(dst_item.secrets.agent_notes_locked);
+
+        // Later note update on src is detected by sync_merge_entries and synced to dst.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let _ = src.set_agent_notes_locked(saved.id, false).unwrap();
+        let _ = src
+            .add_agent_note(saved.id, "Supports idempotency keys", "CODEX", true)
+            .unwrap();
+        let (exported2, trash2) = src.export_backup_entries().unwrap();
+        let tombstones2 = src.export_tombstones().unwrap();
+        let merged2 = dst
+            .sync_merge_entries(exported2, trash2, tombstones2)
+            .unwrap();
+        assert_eq!(merged2.updated, 1);
+        let dst_item2 = dst.get_connection(saved.id).unwrap();
+        assert_eq!(dst_item2.secrets.agent_notes.len(), 2);
+        assert_eq!(
+            dst_item2.secrets.agent_notes[0].text,
+            "Supports idempotency keys"
+        );
+        assert!(!dst_item2.secrets.agent_notes_locked);
+        assert_eq!(with_note.agent_notes[0].author, "CLAUDE CODE");
     }
 }

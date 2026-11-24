@@ -76,7 +76,7 @@
           <div class="update-banner-actions">
             <button class="button primary" id="update-banner-primary" type="button">UPDATE</button>
             <button class="button quiet" id="update-banner-notes" type="button">NOTES</button>
-            <button class="update-banner-dismiss" id="update-banner-dismiss" type="button" aria-label="Dismiss">×</button>
+            <button class="update-banner-dismiss" id="update-banner-dismiss" type="button" aria-label="Dismiss"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8m0-8-8 8"/></svg></button>
           </div>
           <div class="update-progress-track hidden" id="update-banner-progress"><div class="update-progress-fill" id="update-banner-progress-fill"></div></div>
         </div>
@@ -85,6 +85,11 @@
           <header class="page-header connections-header">
             <div class="filter-strip item-type-switch" id="item-type-switch" role="group" aria-label="Item type filter"></div>
             <div class="creation-control" data-mode="add">
+              <button class="check-all-button" id="check-all-button" type="button" aria-label="Check all testable items" title="Check all testable items">
+                <svg class="check-all-icon" viewBox="0 0 18 18" aria-hidden="true"><circle cx="9" cy="9" r="6.5"/><path d="m6.4 9.2 1.8 1.8 3.6-3.8"/></svg>
+                <span class="check-spinner check-all-spinner" aria-hidden="true"></span>
+                <span id="check-all-label">CHECK</span>
+              </button>
               <button class="view-mode-toggle" id="vault-view-toggle" type="button" data-view="list" aria-label="Switch to grid view" title="Switch to grid view">
                 <svg class="view-icon-grid" viewBox="0 0 18 18" aria-hidden="true"><rect x="2" y="2" width="5.5" height="5.5" rx="1.2"/><rect x="10.5" y="2" width="5.5" height="5.5" rx="1.2"/><rect x="2" y="10.5" width="5.5" height="5.5" rx="1.2"/><rect x="10.5" y="10.5" width="5.5" height="5.5" rx="1.2"/></svg>
                 <svg class="view-icon-list" viewBox="0 0 18 18" aria-hidden="true"><path d="M2.5 4.5h13M2.5 9h13M2.5 13.5h13"/></svg>
@@ -97,15 +102,15 @@
 
         <section class="page" id="page-import">
           <header class="import-header">
-            <div class="import-privacy-pill" id="import-privacy-pill"><span class="import-privacy-dot" aria-hidden="true"></span><span id="import-privacy-text">Offline rule extractor · Zero network</span></div>
             <div class="import-header-actions">
-              <div class="draft-pill hidden" id="draft-pill">
-                <button class="draft-resume-button" id="drafts-button" type="button" disabled>Draft</button>
-                <button class="draft-delete-button hidden" id="delete-draft-button" type="button" aria-label="Delete draft" title="Delete draft">×</button>
-              </div>
               <button class="import-mini-btn primary" id="add-connection-button" type="button">＋ Add</button>
               <button class="import-mini-btn" id="import-paste-btn" type="button"><svg viewBox="0 0 18 18" aria-hidden="true"><path d="M6.5 3.5h5v2h-5z"/><path d="M6.5 4.5H4.5a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-9a1 1 0 0 0-1-1h-2"/></svg><span id="import-paste-btn-label">Paste</span></button>
               <button class="import-mini-btn" id="import-file-btn" type="button"><svg viewBox="0 0 18 18" aria-hidden="true"><path d="M4 3.5h6l4 4v7H4z"/><path d="M10 3.5v4h4"/></svg><span id="import-file-btn-label">Files</span></button>
+              <button class="import-mini-btn scan" id="import-chip-scan" type="button"><svg viewBox="0 0 18 18" aria-hidden="true"><circle cx="8" cy="8" r="4.5"/><path d="m11.5 11.5 3.5 3.5"/></svg><span id="import-scan-btn-label">Scan PC</span></button>
+              <div class="draft-pill hidden" id="draft-pill">
+                <button class="draft-resume-button" id="drafts-button" type="button" disabled>Draft</button>
+                <button class="draft-delete-button hidden" id="delete-draft-button" type="button" aria-label="Delete draft" title="Delete draft"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8m0-8-8 8"/></svg></button>
+              </div>
               <button class="import-mini-btn quiet hidden" id="import-clear-btn" type="button">Clear</button>
             </div>
           </header>
@@ -113,6 +118,10 @@
             <div class="import-scroll-area" id="import-scroll-area">
               <div class="import-done-banner hidden" id="import-done-banner" role="status" aria-live="polite"></div>
               <div class="import-dropzone" id="import-dropzone">
+                <div class="import-dropzone-head">
+                  <div class="import-privacy-pill" id="import-privacy-pill"><span class="import-privacy-dot" aria-hidden="true"></span><span id="import-privacy-text">Offline rule extractor · Zero network</span></div>
+                  <span class="import-drop-badge" id="import-drop-badge">Drop any file / .mvault</span>
+                </div>
                 <div class="import-compact-bar">
                   <span class="import-format-badge" id="import-format-badge">smart</span>
                   <button type="button" class="import-mini-btn quiet" id="import-toggle-input-btn">Edit source</button>
@@ -120,15 +129,10 @@
                 <div class="import-textarea-wrap">
                   <textarea class="import-textarea" id="import-raw-input" spellcheck="false" autocomplete="off" aria-label="Paste text, configs, or drop files to extract"></textarea>
                 </div>
-                <div class="import-drop-hints">
-                  <button type="button" class="import-chip primary" id="import-chip-manual" data-action="add">＋ Manual item</button>
-                  <button type="button" class="import-chip" id="import-chip-paste">Paste clipboard / 2FA QR</button>
-                  <button type="button" class="import-chip" id="import-chip-files">Choose files</button>
-                  <button type="button" class="import-chip" id="import-chip-scan">Scan local SSH / AWS</button>
-                  <button type="button" class="import-chip" id="import-chip-mvault">Restore .mvault</button>
-                </div>
               </div>
+              <div class="import-scan-banner" id="import-scan-banner" role="region" aria-label="Local credential scan"></div>
               <div class="import-supported-strip" id="import-supported-strip"></div>
+              <div class="import-mvault-banner hidden" id="import-mvault-banner"></div>
               <div class="import-warning-strip hidden" id="import-warning-strip" role="status"></div>
               <div class="import-results-wrap hidden" id="import-results-wrap">
                 <div class="import-staging-toolbar" id="import-staging-toolbar"></div>
@@ -185,9 +189,11 @@
             <section class="content-panel settings-card" data-module="APP / 03">
               <div class="settings-heading"><div><h2>Window and preferences</h2><p>Control sounds, close behavior and local PIN lock.</p></div></div>
               <div class="desktop-options">
-                <div class="desktop-option" id="sound-option"><span><strong>Interface sounds</strong><small>Subtle click feedback for toggles and buttons</small></span><button class="title-switch" id="sound-toggle" type="button" role="switch" aria-checked="false" aria-label="Interface sounds" title="Turn interface sounds on"><span class="title-switch-option" data-state="false" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 9H7L12 5V19L7 15H3Z"/><path d="m15 9 6 6m0-6-6 6"/></svg></span><span class="title-switch-option" data-state="true" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 9H7L12 5V19L7 15H3Z"/><path d="M15 9Q18 12 15 15M18 6Q24 12 18 18"/></svg></span></button></div>
+                <div class="desktop-option" id="sound-option"><span><strong>Interface sounds</strong><small>Subtle click feedback for toggles and buttons</small></span><button class="title-switch" id="sound-toggle" type="button" role="switch" aria-checked="true" aria-label="Interface sounds" title="Turn interface sounds off"><span class="title-switch-option" data-state="false" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 9H7L12 5V19L7 15H3Z"/><path d="m15 9 6 6m0-6-6 6"/></svg></span><span class="title-switch-option" data-state="true" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 9H7L12 5V19L7 15H3Z"/><path d="M15 9Q18 12 15 15M18 6Q24 12 18 18"/></svg></span></button></div>
                 <label class="desktop-option" for="close-behavior"><span><strong>Close button</strong><small>Minimize to keep the tray menu available</small></span><select class="input" id="close-behavior"><option value="tray">Minimize to tray</option><option value="exit">Quit OpenKeylet</option></select></label>
                 <div class="desktop-option" id="edge-dock-option"><span><strong>Edge-dock drawer</strong><small>Snap to the left, right, or top screen edge to auto-hide; hover the edge to slide back out.</small></span><label class="switch"><input type="checkbox" id="edge-dock-enabled" checked /><span></span></label></div>
+                <div class="desktop-option" id="auto-check-option"><span><strong>Scheduled health check</strong><small>Automatically check all enabled testable items (API / SSH) and show an amber lamp on failures</small></span><label class="switch"><input type="checkbox" id="auto-check-enabled" checked /><span></span></label></div>
+                <label class="desktop-option" id="auto-check-interval-option" for="auto-check-interval-minutes"><span><strong>Check interval</strong><small>How often OpenKeylet automatically checks testable connections in the background</small></span><select class="input" id="auto-check-interval-minutes"><option value="15">15 minutes</option><option value="30">30 minutes</option><option value="60" selected>1 hour</option><option value="180">3 hours</option><option value="360">6 hours</option><option value="720">12 hours</option><option value="1440">24 hours</option></select></label>
                 <div class="desktop-option pin-option"><span><strong>PIN lock</strong><small>Locks desktop viewing and management against others on this device; turning off removes the PIN</small></span><label class="switch"><input type="checkbox" id="pin-enabled" /><span></span></label></div>
                 <label class="desktop-option hidden" id="owner-auto-lock-option" for="owner-auto-lock-minutes"><span><strong>Auto-lock</strong><small>Lock the desktop window after idle time (background MCP remains ready)</small></span><select class="input" id="owner-auto-lock-minutes"><option value="0">Never</option><option value="5">5 minutes</option><option value="15">15 minutes</option><option value="30">30 minutes</option><option value="60">60 minutes</option></select></label>
               </div>
@@ -302,7 +308,7 @@
 
     <div class="modal-backdrop hidden" id="connection-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
       <div class="modal-card">
-        <div class="modal-header"><div class="modal-title-mark"><i aria-hidden="true"></i><h2 id="modal-title">Add project</h2><span aria-hidden="true"></span><small>LOCAL VAULT ITEM</small></div><div class="command-well editor-close-well"><button class="icon-button" type="button" data-close-modal aria-label="Close editor"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8m0-8-8 8"/></svg></button></div></div>
+        <div class="modal-header" data-tauri-drag-region="deep"><div class="modal-title-mark"><i aria-hidden="true"></i><h2 id="modal-title">Add project</h2><span aria-hidden="true"></span><small>LOCAL VAULT ITEM</small></div><div class="command-well editor-close-well" data-tauri-drag-region="false"><button class="icon-button" type="button" data-close-modal data-tauri-drag-region="false" aria-label="Close editor"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8m0-8-8 8"/></svg></button></div></div>
         <form id="connection-form">
           <input type="hidden" id="connection-id" />
           <div class="form-scroll">
@@ -343,6 +349,29 @@
               <div class="module-list" id="module-list"></div>
               <div id="passkey-list" class="passkey-list"></div>
               <details class="login-websites"><summary>WEBSITE MATCHING</summary><p>Configure websites and matching rules.</p><div id="login-uri-list"></div><button class="small-button" id="login-uri-add" type="button">+ ADD WEBSITE</button></details>
+              <details class="agent-notes-section hidden" id="agent-notes-section">
+                <summary>
+                  <span class="agent-notes-summary-title" id="agent-notes-summary-title">AGENT NOTES</span>
+                  <span class="agent-notes-summary-meta">
+                    <span class="agent-notes-count" id="agent-notes-count">0/5</span>
+                    <span class="agent-notes-lock-badge hidden" id="agent-notes-lock-badge">LOCKED</span>
+                  </span>
+                </summary>
+                <div class="agent-notes-body">
+                  <div class="agent-notes-toolbar">
+                    <div class="agent-notes-lock-control">
+                      <label class="switch"><input type="checkbox" id="agent-notes-locked" role="switch" aria-labelledby="agent-notes-lock-label" /><span aria-hidden="true"></span></label>
+                      <label class="agent-notes-lock-copy" for="agent-notes-locked" id="agent-notes-lock-label">Lock notes (block agent edits)</label>
+                    </div>
+                    <button type="button" class="small-button danger-soft agent-notes-clear hidden" id="agent-notes-clear">CLEAR</button>
+                  </div>
+                  <div class="agent-notes-list" id="agent-notes-list"></div>
+                  <div class="agent-note-composer">
+                    <input class="input" id="agent-note-input" type="text" maxlength="200" autocomplete="off" spellcheck="false" placeholder="Add a short note (e.g. prod GPU server, /srv/web)…" aria-label="Add agent note" />
+                    <button type="button" class="button secondary" id="agent-note-add">ADD</button>
+                  </div>
+                </div>
+              </details>
               <div class="module-reorder-status" id="module-reorder-status" role="status" aria-live="polite"></div>
             </section>
           </div>
@@ -353,7 +382,7 @@
 
     <div class="modal-backdrop hidden" id="github-modal" role="dialog" aria-modal="true" aria-labelledby="github-modal-title">
       <div class="modal-card github-modal-card">
-        <div class="modal-header"><h2 id="github-modal-title">Connect GitHub</h2><button class="icon-button" type="button" id="github-modal-close" aria-label="Close">×</button></div>
+        <div class="modal-header" data-tauri-drag-region="deep"><div class="modal-title-mark"><i aria-hidden="true"></i><h2 id="github-modal-title">Connect GitHub</h2></div><button class="icon-button" type="button" id="github-modal-close" data-tauri-drag-region="false" aria-label="Close"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8m0-8-8 8"/></svg></button></div>
         <form id="github-form" class="github-form" autocomplete="off">
           <div class="github-form-scroll">
             <h3 class="github-step" id="github-step-auth">1 · Repository account</h3>
@@ -398,29 +427,31 @@
     </div>
 
     <div class="modal-backdrop hidden" id="confirmation-modal" role="alertdialog" aria-modal="true" aria-labelledby="confirmation-title" aria-describedby="confirmation-message">
-      <div class="confirm-card">
+      <div class="confirm-card" data-tauri-drag-region="deep">
         <div class="confirm-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M3 5.5h14M7.5 5.5V3.25h5v2.25M5.25 5.5l.75 11h8l.75-11M8.25 8.5v5M11.75 8.5v5" /></svg></div>
         <small id="confirmation-tag">CONFIRM DELETION</small>
         <h2 id="confirmation-title">Delete item?</h2>
         <p id="confirmation-message">This action cannot be undone.</p>
-        <div class="button-row confirm-actions"><button class="button quiet" id="confirmation-cancel" type="button">CANCEL</button><button class="button danger" id="confirmation-accept" type="button">DELETE</button></div>
+        <div class="button-row confirm-actions" data-tauri-drag-region="false"><button class="button quiet" id="confirmation-cancel" type="button">CANCEL</button><button class="button danger" id="confirmation-accept" type="button">DELETE</button></div>
       </div>
     </div>
 
     <div class="modal-backdrop hidden" id="generator-modal" role="dialog" aria-modal="true" aria-labelledby="generator-title">
       <div class="modal-card generator-card">
-        <div class="modal-header"><h2 id="generator-title">密码生成器 / Password generator</h2><button class="icon-button" id="generator-close" type="button" aria-label="Close">×</button></div>
+        <div class="modal-header" data-tauri-drag-region="deep"><div class="modal-title-mark"><i aria-hidden="true"></i><h2 id="generator-title">密码生成器 / Password generator</h2></div><button class="icon-button" id="generator-close" type="button" data-tauri-drag-region="false" aria-label="Close"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8m0-8-8 8"/></svg></button></div>
         <div class="generator-body">
-          <label class="field"><span>长度 / Length · 8–128</span><input class="input" id="generator-length" type="number" min="8" max="128" value="24"></label>
-          <div class="generator-options"><label><input id="generator-uppercase" type="checkbox" checked>A–Z</label><label><input id="generator-lowercase" type="checkbox" checked>a–z</label><label><input id="generator-digits" type="checkbox" checked>0–9</label><label><input id="generator-symbols" type="checkbox" checked>!@#</label></div>
-          <textarea class="input textarea" id="generator-result" rows="3" readonly aria-label="Generated password" autocomplete="off"></textarea>
-          <div class="button-row"><button class="button" id="generator-regenerate" type="button">重新生成 / Generate</button><button class="button" id="generator-copy" type="button">复制 / Copy</button><button class="button primary" id="generator-use" type="button">使用 / Use</button></div>
+          <div class="generator-controls-row">
+            <label class="field generator-length-field"><span>长度 / Length · 8–128</span><input class="input" id="generator-length" type="number" min="8" max="128" value="24"></label>
+            <div class="generator-options"><label><input id="generator-uppercase" type="checkbox" checked>A–Z</label><label><input id="generator-lowercase" type="checkbox" checked>a–z</label><label><input id="generator-digits" type="checkbox" checked>0–9</label><label><input id="generator-symbols" type="checkbox" checked>!@#</label></div>
+          </div>
+          <textarea class="input textarea" id="generator-result" rows="2" readonly aria-label="Generated password" autocomplete="off"></textarea>
+          <div class="button-row generator-actions"><button class="button quiet" id="generator-regenerate" type="button">重新生成 / Generate</button><button class="button secondary" id="generator-copy" type="button">复制 / Copy</button><button class="button primary" id="generator-use" type="button">使用 / Use</button></div>
         </div>
       </div>
     </div>
     <div class="modal-backdrop hidden" id="backup-password-modal" role="dialog" aria-modal="true" aria-labelledby="backup-password-title">
       <div class="modal-card generator-card">
-        <div class="modal-header"><h2 id="backup-password-title"></h2><button type="button" class="icon-button" id="backup-password-close" aria-label="Close">×</button></div>
+        <div class="modal-header" data-tauri-drag-region="deep"><div class="modal-title-mark"><i aria-hidden="true"></i><h2 id="backup-password-title"></h2></div><button type="button" class="icon-button" id="backup-password-close" data-tauri-drag-region="false" aria-label="Close"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8m0-8-8 8"/></svg></button></div>
         <form class="generator-body" id="backup-password-form" autocomplete="off">
           <p id="backup-password-help"></p>
           <label class="field"><span>备份密码 / Backup password</span><input class="input" type="password" id="backup-password" maxlength="4096" autocomplete="new-password"></label>
@@ -431,7 +462,7 @@
     </div>
     <div class="modal-backdrop hidden" id="migration-modal" role="dialog" aria-modal="true" aria-labelledby="migration-title">
       <div class="modal-card generator-card">
-        <div class="modal-header"><h2 id="migration-title">迁入密码库 / Import vault</h2><button class="icon-button" id="migration-close" type="button" aria-label="Close">×</button></div>
+        <div class="modal-header" data-tauri-drag-region="deep"><div class="modal-title-mark"><i aria-hidden="true"></i><h2 id="migration-title">迁入密码库 / Import vault</h2></div><button class="icon-button" id="migration-close" type="button" data-tauri-drag-region="false" aria-label="Close"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8m0-8-8 8"/></svg></button></div>
         <div class="generator-body migration-body">
           <label class="field"><span>来源 / Source</span><select class="input" id="migration-format"><option value="bitwarden">Bitwarden · JSON</option><option value="chrome">Chrome / Edge · CSV</option><option value="ssh_config">SSH Config · ~/.ssh/config</option><option value="env">Environment · .env</option><option value="mvault">OpenKeylet · .mvault (v3–v8)</option></select></label>
           <p id="migration-help"></p>
@@ -447,7 +478,7 @@
     </div>
     <div class="modal-backdrop hidden" id="vault-management-modal" role="dialog" aria-modal="true" aria-labelledby="vault-management-title">
       <div class="modal-card generator-card">
-        <div class="modal-header"><h2 id="vault-management-title"></h2><button class="icon-button" id="vault-management-close" type="button" aria-label="Close">×</button></div>
+        <div class="modal-header" data-tauri-drag-region="deep"><div class="modal-title-mark"><i aria-hidden="true"></i><h2 id="vault-management-title"></h2></div><button class="icon-button" id="vault-management-close" type="button" data-tauri-drag-region="false" aria-label="Close"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8m0-8-8 8"/></svg></button></div>
         <div class="generator-body vault-management-body">
           <p id="vault-management-help"></p><div id="vault-management-list"></div>
           <button class="button danger-soft hidden" id="history-clear" type="button">清除历史 / Clear history</button>
@@ -456,7 +487,7 @@
     </div>
     <div class="modal-backdrop hidden" id="update-modal" role="dialog" aria-modal="true" aria-labelledby="update-modal-title">
       <div class="modal-card update-modal-card">
-        <div class="modal-header"><h2 id="update-modal-title">Update Available</h2><button class="icon-button" id="update-modal-close" type="button" aria-label="Close">×</button></div>
+        <div class="modal-header" data-tauri-drag-region="deep"><div class="modal-title-mark"><i aria-hidden="true"></i><h2 id="update-modal-title">Update Available</h2></div><button class="icon-button" id="update-modal-close" type="button" data-tauri-drag-region="false" aria-label="Close"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8m0-8-8 8"/></svg></button></div>
         <div class="update-modal-body">
           <div class="update-version-row">
             <span class="update-version-pill" id="update-modal-version"></span>
@@ -495,15 +526,15 @@
 
     <div class="modal-backdrop hidden" id="mvault-import-modal" role="dialog" aria-modal="true" aria-labelledby="mvault-modal-title">
       <div class="modal-card mvault-modal-card">
-        <div class="modal-header mvault-modal-header">
+        <div class="modal-header mvault-modal-header" data-tauri-drag-region="deep">
           <div class="mvault-header-copy">
-            <h2 id="mvault-modal-title">Import .mvault backup</h2>
+            <div class="modal-title-mark"><i aria-hidden="true"></i><h2 id="mvault-modal-title">Import .mvault backup</h2></div>
             <div class="mvault-file-meta">
               <span class="mvault-file-pill" id="mvault-file-name">openkeylet-backup.mvault</span>
               <span class="mvault-format-pill hidden" id="mvault-format-pill"></span>
             </div>
           </div>
-          <button class="icon-button" type="button" id="mvault-modal-close" aria-label="Close">×</button>
+          <button class="icon-button" type="button" id="mvault-modal-close" data-tauri-drag-region="false" aria-label="Close"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8m0-8-8 8"/></svg></button>
         </div>
 
         <form class="mvault-unlock-panel hidden" id="mvault-unlock-panel" autocomplete="off">

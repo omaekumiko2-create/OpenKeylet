@@ -24,6 +24,7 @@ use std::{
     io::{Cursor, Read},
     path::{Path, PathBuf},
     sync::OnceLock,
+    time::Instant,
 };
 use url::Url;
 use uuid::Uuid;
@@ -110,6 +111,46 @@ pub struct DroppedImagePayload {
     pub file_name: String,
     pub mime_type: String,
     pub data_base64: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveredMvault {
+    pub index: usize,
+    pub file_name: String,
+    pub display_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalScanCategoryStat {
+    pub id: String,
+    pub label: String,
+    pub label_zh: String,
+    pub probed_locations: usize,
+    pub inspected_files: usize,
+    pub matched_files: usize,
+    pub extracted_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalScanReport {
+    pub mode: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_label: Option<String>,
+    pub total_inspected_files: usize,
+    pub total_matched_files: usize,
+    pub duration_ms: u64,
+    pub categories: Vec<LocalScanCategoryStat>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LocalScanOutcome {
+    pub batch: SmartExtractBatchResult,
+    pub discovered_mvaults: Vec<DiscoveredMvault>,
+    pub mvault_paths: Vec<PathBuf>,
+    pub report: LocalScanReport,
 }
 
 #[derive(Debug, Clone)]
@@ -205,26 +246,561 @@ pub fn merge_batch_results(
     }
 }
 
-pub fn scan_local_dev_configs(existing: &[DecryptedConnection]) -> Result<SmartExtractBatchResult> {
-    let mut parts = Vec::new();
-    let mut warnings = Vec::new();
+const LOCAL_SCAN_MAX_DEPTH: usize = 3;
+const LOCAL_SCAN_MAX_VISITED_PER_ROOT: usize = 2500;
+const LOCAL_SCAN_MAX_MATCHED_FILES: usize = 120;
+const LOCAL_SCAN_MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
 
-    if let Some(ssh_path) = smart_ingest::default_ssh_config_path()
-        && ssh_path.is_file()
+const WORKSPACE_SCAN_MAX_DEPTH: usize = 5;
+const WORKSPACE_SCAN_MAX_VISITED: usize = 20_000;
+const WORKSPACE_SCAN_MAX_MATCHED: usize = 250;
+
+fn should_skip_local_scan_dir(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    should_skip_walk_dir(&lower)
+        || matches!(
+            lower.as_str(),
+            "myenv"
+                | "appdata"
+                | "library"
+                | "caches"
+                | "cache"
+                | "venv"
+                | "vendor"
+                | "packages"
+                | "program files"
+                | "windows"
+                | "wechat files"
+                | "tencent files"
+                | "adobe"
+                | "steam"
+                | "games"
+                | "videos"
+                | "music"
+                | "pictures"
+                | "photos"
+                | ".cargo"
+                | ".rustup"
+                | ".npm"
+                | ".cache"
+        )
+}
+
+fn should_skip_workspace_scan_dir(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    should_skip_walk_dir(&lower)
+        || matches!(
+            lower.as_str(),
+            "myenv"
+                | "appdata"
+                | "library"
+                | "caches"
+                | "cache"
+                | "venv"
+                | "vendor"
+                | ".cargo"
+                | ".rustup"
+                | ".npm"
+                | ".cache"
+                | "out"
+                | ".next"
+                | ".nuxt"
+                | ".svelte-kit"
+                | ".turbo"
+                | ".parcel-cache"
+                | "coverage"
+                | ".pytest_cache"
+                | ".mypy_cache"
+                | "pods"
+                | ".gradle"
+                | "bin"
+                | "obj"
+                | "test-results"
+                | "playwright-report"
+        )
+}
+
+fn is_env_template_filename(lower: &str) -> bool {
+    [
+        ".example",
+        ".sample",
+        ".template",
+        ".dist",
+        ".schema",
+        ".defaults",
+    ]
+    .iter()
+    .any(|suffix| lower.ends_with(suffix))
+}
+
+fn is_non_secret_ssh_artifact(lower: &str) -> bool {
+    lower.ends_with(".pub")
+        || lower.ends_with(".bak")
+        || lower.ends_with(".old")
+        || lower.starts_with("known_hosts")
+        || lower.starts_with("authorized_keys")
+}
+
+fn is_suspected_credential_filename(file_name: &str) -> bool {
+    let lower = file_name.to_ascii_lowercase();
+    if is_non_secret_ssh_artifact(&lower) || is_env_template_filename(&lower) {
+        return false;
+    }
+    if lower == ".env"
+        || lower.starts_with(".env.")
+        || matches!(
+            lower.as_str(),
+            ".netrc"
+                | "_netrc"
+                | ".npmrc"
+                | ".pypirc"
+                | ".pgpass"
+                | "pgpass.conf"
+                | ".git-credentials"
+                | "kubeconfig"
+                | "rclone.conf"
+                | "id_rsa"
+                | "id_ed25519"
+                | "id_ecdsa"
+                | "id_dsa"
+        )
     {
-        match std::fs::read(&ssh_path) {
+        return true;
+    }
+    if lower.contains("v2ray")
+        || lower.contains("clash")
+        || lower.contains("sing-box")
+        || lower.contains("geosite")
+        || lower.contains("package-lock")
+        || lower.contains("pnpm-lock")
+        || lower == "yarn.lock"
+        || lower == "cargo.lock"
+        || lower == "composer.lock"
+        || lower.contains("tsconfig")
+    {
+        return false;
+    }
+    let ext = Path::new(&lower)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default();
+    if matches!(ext, "pem" | "key" | "ppk") {
+        return true;
+    }
+    if !matches!(
+        ext,
+        "txt"
+            | "md"
+            | "csv"
+            | "tsv"
+            | "json"
+            | "jsonc"
+            | "yml"
+            | "yaml"
+            | "toml"
+            | "ini"
+            | "conf"
+            | "cfg"
+            | "properties"
+            | "xml"
+            | "xlsx"
+            | "docx"
+            | "sh"
+            | "ps1"
+            | "env"
+    ) {
+        return false;
+    }
+    const KEYWORDS: &[&str] = &[
+        "password",
+        "passwd",
+        "pwd",
+        "secret",
+        "secretkey",
+        "secret_key",
+        "token",
+        "apikey",
+        "api_key",
+        "api-key",
+        "accesskey",
+        "access_key",
+        "access-key",
+        "rootkey",
+        "credential",
+        "creds",
+        "account",
+        "login",
+        "vault",
+        "bitwarden",
+        "1password",
+        "keepass",
+        "lastpass",
+        "nordpass",
+        "dashlane",
+        "enpass",
+        "chrome",
+        "edge",
+        "server",
+        "ssh",
+        "vps",
+        "database",
+        "db_",
+        "db-",
+        "kubeconfig",
+        "rclone",
+        ".env",
+        "密码",
+        "账号",
+        "账户",
+        "凭据",
+        "密钥",
+        "秘钥",
+        "服务器",
+        "主机",
+        "数据库",
+        "交接",
+        "登录",
+        "口令",
+    ];
+    KEYWORDS.iter().any(|kw| lower.contains(kw))
+}
+
+fn classify_workspace_credential_file(file_name: &str, in_test_dir: bool) -> Option<&'static str> {
+    let lower = file_name.to_ascii_lowercase();
+    if is_non_secret_ssh_artifact(&lower) || is_env_template_filename(&lower) {
+        return None;
+    }
+    if lower == ".env" || lower.starts_with(".env.") || lower.ends_with(".env") {
+        return Some("env_files");
+    }
+    if matches!(
+        lower.as_str(),
+        "id_rsa" | "id_ed25519" | "id_ecdsa" | "id_dsa"
+    ) {
+        return Some("ssh_keys");
+    }
+    let ext = Path::new(&lower)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default();
+    if matches!(ext, "pem" | "key" | "ppk") {
+        return if in_test_dir { None } else { Some("ssh_keys") };
+    }
+    if in_test_dir {
+        return None;
+    }
+    if matches!(
+        lower.as_str(),
+        "package.json"
+            | "cargo.toml"
+            | "pyproject.toml"
+            | "composer.json"
+            | "manifest.json"
+            | "settings.json"
+    ) {
+        return None;
+    }
+    if matches!(
+        lower.as_str(),
+        ".mcp.json"
+            | "mcp.json"
+            | "mcp_config.json"
+            | "claude_desktop_config.json"
+            | ".npmrc"
+            | ".pypirc"
+            | ".netrc"
+            | "_netrc"
+            | ".pgpass"
+            | "pgpass.conf"
+            | ".git-credentials"
+            | "kubeconfig"
+            | "rclone.conf"
+            | "credentials.json"
+            | "service-account.json"
+            | "docker-compose.yml"
+            | "docker-compose.yaml"
+    ) || (lower.starts_with("docker-compose.") && (lower.ends_with(".yml") || lower.ends_with(".yaml")))
+        || ext == "tfvars"
+        || is_suspected_credential_filename(file_name)
+    {
+        return Some("project_configs");
+    }
+    None
+}
+
+fn try_extract_git_credentials(text: &str, filename: Option<&str>) -> Option<SmartExtractBatchResult> {
+    let lower = filename.unwrap_or_default().to_ascii_lowercase();
+    if !lower.ends_with("git-credentials") {
+        return None;
+    }
+    let mut candidates = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let Ok(url) = Url::parse(trimmed) else {
+            continue;
+        };
+        let Some(pass) = url.password() else {
+            continue;
+        };
+        if pass.is_empty() {
+            continue;
+        }
+        let host = url.host_str().unwrap_or("git");
+        let user = url.username();
+        let clean_url = format!("{}://{host}", url.scheme());
+        candidates.push(build_login_candidate(
+            &format!("Git · {host}"),
+            Some(clean_url),
+            (!user.is_empty()).then(|| user.to_owned()),
+            Some(pass.to_owned()),
+            None,
+            filename.unwrap_or("~/.git-credentials"),
+            "high",
+        ));
+    }
+    if candidates.is_empty() {
+        return None;
+    }
+    Some(SmartExtractBatchResult {
+        detected_format: "git_credentials".to_owned(),
+        detected_format_zh: "Git 凭据 (.git-credentials)".to_owned(),
+        candidates,
+        ignored: Vec::new(),
+        warnings: Vec::new(),
+        sealed_env_template: None,
+    })
+}
+
+fn extract_suspected_file_strict(
+    path: &Path,
+    display_label: &str,
+    existing: &[DecryptedConnection],
+) -> Option<SmartExtractBatchResult> {
+    let meta = std::fs::metadata(path).ok()?;
+    if !meta.is_file() || meta.len() == 0 || meta.len() > LOCAL_SCAN_MAX_FILE_BYTES {
+        return None;
+    }
+    let bytes = std::fs::read(path).ok()?;
+    let lower = display_label.to_ascii_lowercase();
+    let text = if lower.ends_with(".docx") {
+        extract_docx_text(&bytes).ok()?
+    } else if lower.ends_with(".xlsx") {
+        extract_xlsx_text(&bytes).ok()?
+    } else {
+        std::str::from_utf8(&bytes).ok()?.to_owned()
+    };
+    let trimmed = text.trim_start_matches('\u{feff}').trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Some(mut git_res) = try_extract_git_credentials(trimmed, Some(display_label)) {
+        for cand in &mut git_res.candidates {
+            cand.source_snippet = truncate_chars(display_label, 80);
+        }
+        reconcile_with_vault(&mut git_res.candidates, existing);
+        return Some(git_res);
+    }
+    let mut res = extract_batch(trimmed, Some(display_label), existing).ok()?;
+    // Keep only real extracted credentials during automated local search (no noisy low-confidence noise).
+    res.candidates.retain(|c| c.confidence != "low");
+    if res.candidates.is_empty() {
+        return None;
+    }
+    for cand in &mut res.candidates {
+        cand.source_snippet = truncate_chars(display_label, 80);
+        if cand.input.description.trim().is_empty() {
+            cand.input.description = format!("Found in {display_label}");
+        }
+    }
+    Some(res)
+}
+
+fn collect_suspected_files_in_dir(
+    root: &Path,
+    root_label: &str,
+    dir: &Path,
+    depth: usize,
+    visited: &mut usize,
+    files_inspected: &mut usize,
+    matched: &mut Vec<(PathBuf, String)>,
+    mvault_found: &mut Vec<(PathBuf, String)>,
+) {
+    if depth > LOCAL_SCAN_MAX_DEPTH
+        || *visited >= LOCAL_SCAN_MAX_VISITED_PER_ROOT
+        || matched.len() >= LOCAL_SCAN_MAX_MATCHED_FILES
+    {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+    paths.sort();
+    for path in paths {
+        if *visited >= LOCAL_SCAN_MAX_VISITED_PER_ROOT
+            || matched.len() >= LOCAL_SCAN_MAX_MATCHED_FILES
+        {
+            break;
+        }
+        *visited += 1;
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
+        if path.is_dir() {
+            if !should_skip_local_scan_dir(name) && depth < LOCAL_SCAN_MAX_DEPTH {
+                collect_suspected_files_in_dir(
+                    root,
+                    root_label,
+                    &path,
+                    depth + 1,
+                    visited,
+                    files_inspected,
+                    matched,
+                    mvault_found,
+                );
+            }
+            continue;
+        }
+        if !path.is_file() {
+            continue;
+        }
+        *files_inspected += 1;
+        let rel = path
+            .strip_prefix(root)
+            .ok()
+            .map(|r| r.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_else(|| name.to_owned());
+        let label = format!("{root_label}/{rel}");
+        if name.to_ascii_lowercase().ends_with(".mvault") {
+            if mvault_found.len() < 12 {
+                mvault_found.push((path, label));
+            }
+            continue;
+        }
+        if is_suspected_credential_filename(name) {
+            matched.push((path, label));
+        }
+    }
+}
+
+fn short_source_context(source_snippet: &str) -> Option<String> {
+    let normalized = source_snippet.replace('\\', "/");
+    let parts: Vec<&str> = normalized
+        .split('/')
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && *s != "~" && *s != ".")
+        .collect();
+    if parts.is_empty() {
+        return None;
+    }
+    if parts.len() >= 2 {
+        let parent = parts[parts.len() - 2];
+        if !matches!(
+            parent.to_ascii_lowercase().as_str(),
+            "desktop" | "documents" | "downloads" | ".config" | "appdata" | "roaming" | "local" | "user"
+        ) {
+            return Some(parent.trim_start_matches('.').to_owned());
+        }
+    }
+    parts.last().map(|s| (*s).to_owned())
+}
+
+fn disambiguate_multi_source_names(candidates: &mut [ExtractedCandidate]) {
+    let mut name_counts: BTreeMap<String, usize> = BTreeMap::new();
+    for cand in candidates.iter() {
+        *name_counts
+            .entry(cand.input.name.to_ascii_lowercase())
+            .or_insert(0) += 1;
+    }
+    for cand in candidates.iter_mut() {
+        let key = cand.input.name.to_ascii_lowercase();
+        if name_counts.get(&key).copied().unwrap_or(0) > 1
+            && let Some(ctx) = short_source_context(&cand.source_snippet)
+            && !ctx.is_empty()
+            && !cand.input.name.to_ascii_lowercase().contains(&ctx.to_ascii_lowercase())
+        {
+            cand.input.name = sanitize_name(&format!("{} ({ctx})", cand.input.name), 80);
+        }
+    }
+}
+
+fn scan_ssh_home_dir(
+    ssh_dir: &Path,
+    seen_paths: &mut HashSet<PathBuf>,
+    parts: &mut Vec<SmartExtractBatchResult>,
+    warnings: &mut Vec<String>,
+    existing: &[DecryptedConnection],
+) -> LocalScanCategoryStat {
+    let mut probed_locations = 2usize; // ~/.ssh/config + ~/.ssh/* keys
+    let mut inspected_files = 0usize;
+    let mut matched_files = 0usize;
+    let mut extracted_count = 0usize;
+    let mut bound_pems: HashSet<String> = HashSet::new();
+
+    if !ssh_dir.is_dir() {
+        return LocalScanCategoryStat {
+            id: "ssh_keys".to_owned(),
+            label: "SSH & Keys".to_owned(),
+            label_zh: "SSH 与私钥".to_owned(),
+            probed_locations,
+            inspected_files,
+            matched_files,
+            extracted_count,
+        };
+    }
+
+    let mut config_files: Vec<(String, PathBuf)> = Vec::new();
+    let main_cfg = ssh_dir.join("config");
+    if main_cfg.is_file() {
+        config_files.push(("~/.ssh/config".to_owned(), main_cfg));
+    }
+    let cfg_d = ssh_dir.join("config.d");
+    if cfg_d.is_dir()
+        && let Ok(entries) = std::fs::read_dir(&cfg_d)
+    {
+        probed_locations += 1;
+        let mut sub: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+        sub.sort();
+        for p in sub {
+            if p.is_file() {
+                let fname = p
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("config");
+                if !is_non_secret_ssh_artifact(&fname.to_ascii_lowercase()) {
+                    config_files.push((format!("~/.ssh/config.d/{fname}"), p));
+                }
+            }
+        }
+    }
+
+    for (label, cfg_path) in config_files {
+        if !seen_paths.insert(cfg_path.clone()) {
+            continue;
+        }
+        inspected_files += 1;
+        match std::fs::read(&cfg_path) {
             Ok(bytes) => {
                 if let Ok((entries, _)) =
-                    smart_ingest::parse_ssh_config_bytes(&bytes, ssh_path.parent())
+                    smart_ingest::parse_ssh_config_bytes(&bytes, cfg_path.parent())
                     && !entries.is_empty()
                 {
-                    let candidates = entries
-                        .into_iter()
-                        .map(|(p, s)| candidate_from_portable(p, s, "ssh", "SSH", "SSH", "~/.ssh/config"))
-                        .collect();
+                    let mut candidates = Vec::new();
+                    for (p, s) in entries {
+                        if let Some(pk) = s.get("privateKey") {
+                            bound_pems.insert(pk.trim().to_owned());
+                        }
+                        candidates.push(candidate_from_portable(p, s, "ssh", "SSH", "SSH", &label));
+                    }
+                    matched_files += 1;
+                    extracted_count += candidates.len();
                     parts.push(SmartExtractBatchResult {
                         detected_format: "ssh_config".to_owned(),
-                        detected_format_zh: "SSH 配置 (~/.ssh/config)".to_owned(),
+                        detected_format_zh: format!("SSH 配置 ({label})"),
                         candidates,
                         ignored: Vec::new(),
                         warnings: Vec::new(),
@@ -232,32 +808,591 @@ pub fn scan_local_dev_configs(existing: &[DecryptedConnection]) -> Result<SmartE
                     });
                 }
             }
-            Err(error) => warnings.push(format!("Could not read ~/.ssh/config: {error}")),
+            Err(error) => warnings.push(format!("Could not read {label}: {error}")),
         }
     }
 
-    if let Some(home) = dirs::home_dir() {
-        let aws_path = home.join(".aws").join("credentials");
-        if aws_path.is_file() {
-            match std::fs::read_to_string(&aws_path) {
-                Ok(text) => {
-                    if let Some(res) = try_extract_aws_credentials(&text, Some("~/.aws/credentials")) {
-                        parts.push(res);
-                    }
+    // Scan standalone private keys inside ~/.ssh/ (e.g. id_ed25519, id_rsa, *.pem, *.ppk)
+    if let Ok(entries) = std::fs::read_dir(ssh_dir) {
+        let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+        paths.sort();
+        for path in paths.into_iter().take(64) {
+            if !path.is_file() || !seen_paths.insert(path.clone()) {
+                continue;
+            }
+            let fname = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default();
+            let lower = fname.to_ascii_lowercase();
+            if lower == "config"
+                || lower == ".ds_store"
+                || lower.starts_with("agent")
+                || is_non_secret_ssh_artifact(&lower)
+            {
+                continue;
+            }
+            inspected_files += 1;
+            let Ok(meta) = std::fs::metadata(&path) else {
+                continue;
+            };
+            if meta.len() == 0 || meta.len() > 256 * 1024 {
+                continue;
+            }
+            let Ok(content) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            if !content.contains("PRIVATE KEY-----") && !content.starts_with("PuTTY-User-Key-File-") {
+                continue;
+            }
+            let label = format!("~/.ssh/{fname}");
+            if let Some(mut res) = extract_suspected_file_strict(&path, &label, existing) {
+                res.candidates.retain(|c| {
+                    c.input
+                        .secrets
+                        .get("privateKey")
+                        .is_none_or(|pk| !bound_pems.contains(pk.trim()))
+                });
+                if !res.candidates.is_empty() {
+                    matched_files += 1;
+                    extracted_count += res.candidates.len();
+                    parts.push(res);
                 }
-                Err(error) => warnings.push(format!("Could not read ~/.aws/credentials: {error}")),
             }
         }
     }
 
-    let mut merged = merge_batch_results(parts, existing);
-    merged.warnings.extend(warnings);
-    if merged.candidates.is_empty() && merged.warnings.is_empty() {
-        merged.warnings.push(
-            "No local ~/.ssh/config hosts or ~/.aws/credentials profiles found".to_owned(),
+    LocalScanCategoryStat {
+        id: "ssh_keys".to_owned(),
+        label: "SSH & Keys".to_owned(),
+        label_zh: "SSH 与私钥".to_owned(),
+        probed_locations,
+        inspected_files,
+        matched_files,
+        extracted_count,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn scan_fixed_config_group(
+    id: &str,
+    label: &str,
+    label_zh: &str,
+    targets: &[(String, PathBuf)],
+    seen_paths: &mut HashSet<PathBuf>,
+    parts: &mut Vec<SmartExtractBatchResult>,
+    existing: &[DecryptedConnection],
+) -> LocalScanCategoryStat {
+    let mut probed_locations = 0usize;
+    let mut inspected_files = 0usize;
+    let mut matched_files = 0usize;
+    let mut extracted_count = 0usize;
+    let mut unique_group_paths = HashSet::new();
+
+    for (display_label, path) in targets {
+        if !unique_group_paths.insert(path.clone()) {
+            continue;
+        }
+        probed_locations += 1;
+        if !path.is_file() || !seen_paths.insert(path.clone()) {
+            continue;
+        }
+        inspected_files += 1;
+        if let Some(res) = extract_suspected_file_strict(path, display_label, existing) {
+            matched_files += 1;
+            extracted_count += res.candidates.len();
+            parts.push(res);
+        }
+    }
+
+    LocalScanCategoryStat {
+        id: id.to_owned(),
+        label: label.to_owned(),
+        label_zh: label_zh.to_owned(),
+        probed_locations,
+        inspected_files,
+        matched_files,
+        extracted_count,
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn scan_local_credential_roots(
+    home: Option<&Path>,
+    user_dirs: &[(&str, PathBuf)],
+    existing: &[DecryptedConnection],
+) -> Result<LocalScanOutcome> {
+    let default_cfg = home.map(|h| h.join("AppData").join("Roaming"));
+    scan_local_credential_roots_with_config(home, default_cfg.as_deref(), user_dirs, existing)
+}
+
+pub(crate) fn scan_local_credential_roots_with_config(
+    home: Option<&Path>,
+    os_config_dir: Option<&Path>,
+    user_dirs: &[(&str, PathBuf)],
+    existing: &[DecryptedConnection],
+) -> Result<LocalScanOutcome> {
+    let started = Instant::now();
+    let mut parts = Vec::new();
+    let mut warnings = Vec::new();
+    let mut seen_paths: HashSet<PathBuf> = HashSet::new();
+    let mut categories: Vec<LocalScanCategoryStat> = Vec::new();
+
+    if let Some(home_dir) = home {
+        // 1. SSH config & standalone private keys
+        let ssh_stat = scan_ssh_home_dir(
+            &home_dir.join(".ssh"),
+            &mut seen_paths,
+            &mut parts,
+            &mut warnings,
+            existing,
+        );
+        categories.push(ssh_stat);
+
+        // 2. Developer, Git, Registry & Cloud CLI credentials
+        let mut dev_targets: Vec<(String, PathBuf)> = vec![
+            ("~/.git-credentials".to_owned(), home_dir.join(".git-credentials")),
+            (
+                "~/.config/gh/hosts.yml".to_owned(),
+                home_dir.join(".config").join("gh").join("hosts.yml"),
+            ),
+            (
+                "~/.config/glab-cli/config.yml".to_owned(),
+                home_dir.join(".config").join("glab-cli").join("config.yml"),
+            ),
+            ("~/.aws/credentials".to_owned(), home_dir.join(".aws").join("credentials")),
+            ("~/.aliyun/config.json".to_owned(), home_dir.join(".aliyun").join("config.json")),
+            (
+                "~/.tccli/default.credential".to_owned(),
+                home_dir.join(".tccli").join("default.credential"),
+            ),
+            ("~/.azure/credentials".to_owned(), home_dir.join(".azure").join("credentials")),
+            ("~/.docker/config.json".to_owned(), home_dir.join(".docker").join("config.json")),
+            ("~/.kube/config".to_owned(), home_dir.join(".kube").join("config")),
+            ("~/.netrc".to_owned(), home_dir.join(".netrc")),
+            ("~/_netrc".to_owned(), home_dir.join("_netrc")),
+            ("~/.npmrc".to_owned(), home_dir.join(".npmrc")),
+            ("~/.yarnrc.yml".to_owned(), home_dir.join(".yarnrc.yml")),
+            ("~/.pypirc".to_owned(), home_dir.join(".pypirc")),
+            ("~/.pgpass".to_owned(), home_dir.join(".pgpass")),
+            ("~/.composer/auth.json".to_owned(), home_dir.join(".composer").join("auth.json")),
+            (
+                "~/.config/rclone/rclone.conf".to_owned(),
+                home_dir.join(".config").join("rclone").join("rclone.conf"),
+            ),
+            ("~/.env".to_owned(), home_dir.join(".env")),
+            ("~/.env.local".to_owned(), home_dir.join(".env.local")),
+        ];
+        if let Some(cfg) = os_config_dir {
+            dev_targets.push((
+                "AppData/postgresql/pgpass.conf".to_owned(),
+                cfg.join("postgresql").join("pgpass.conf"),
+            ));
+            dev_targets.push((
+                "AppData/rclone/rclone.conf".to_owned(),
+                cfg.join("rclone").join("rclone.conf"),
+            ));
+            dev_targets.push((
+                "AppData/gh/hosts.yml".to_owned(),
+                cfg.join("GitHub CLI").join("hosts.yml"),
+            ));
+        }
+        categories.push(scan_fixed_config_group(
+            "dev_cloud",
+            "Git · Cloud · CLI",
+            "Git 与云凭据",
+            &dev_targets,
+            &mut seen_paths,
+            &mut parts,
+            existing,
+        ));
+
+        // 3. AI Coding Agents & MCP Client plaintext env configs
+        let mut ai_targets: Vec<(String, PathBuf)> = vec![
+            ("~/.claude.json".to_owned(), home_dir.join(".claude.json")),
+            ("~/.claude/settings.json".to_owned(), home_dir.join(".claude").join("settings.json")),
+            ("~/.cursor/mcp.json".to_owned(), home_dir.join(".cursor").join("mcp.json")),
+            (
+                "~/.codeium/windsurf/mcp_config.json".to_owned(),
+                home_dir.join(".codeium").join("windsurf").join("mcp_config.json"),
+            ),
+            (
+                "~/.gemini/antigravity/mcp_config.json".to_owned(),
+                home_dir.join(".gemini").join("antigravity").join("mcp_config.json"),
+            ),
+            ("~/.gemini/settings.json".to_owned(), home_dir.join(".gemini").join("settings.json")),
+            ("~/.codex/config.toml".to_owned(), home_dir.join(".codex").join("config.toml")),
+            ("~/.codex/auth.json".to_owned(), home_dir.join(".codex").join("auth.json")),
+            (
+                "~/.config/opencode/opencode.jsonc".to_owned(),
+                home_dir.join(".config").join("opencode").join("opencode.jsonc"),
+            ),
+            (
+                "~/.config/opencode/opencode.json".to_owned(),
+                home_dir.join(".config").join("opencode").join("opencode.json"),
+            ),
+            (
+                "~/.local/share/opencode/auth.json".to_owned(),
+                home_dir.join(".local").join("share").join("opencode").join("auth.json"),
+            ),
+            ("~/.continue/config.json".to_owned(), home_dir.join(".continue").join("config.json")),
+            ("~/.continue/config.yaml".to_owned(), home_dir.join(".continue").join("config.yaml")),
+            (
+                "~/Library/Application Support/Claude/claude_desktop_config.json".to_owned(),
+                home_dir
+                    .join("Library")
+                    .join("Application Support")
+                    .join("Claude")
+                    .join("claude_desktop_config.json"),
+            ),
+            (
+                "~/.config/Claude/claude_desktop_config.json".to_owned(),
+                home_dir.join(".config").join("Claude").join("claude_desktop_config.json"),
+            ),
+        ];
+        if let Some(cfg) = os_config_dir {
+            ai_targets.push((
+                "Claude/claude_desktop_config.json".to_owned(),
+                cfg.join("Claude").join("claude_desktop_config.json"),
+            ));
+            ai_targets.push((
+                "VSCode/User/mcp.json".to_owned(),
+                cfg.join("Code").join("User").join("mcp.json"),
+            ));
+        }
+        categories.push(scan_fixed_config_group(
+            "ai_mcp",
+            "AI & MCP Configs",
+            "AI 与 MCP 配置",
+            &ai_targets,
+            &mut seen_paths,
+            &mut parts,
+            existing,
+        ));
+    }
+
+    // 4. User Desktop / Documents / Downloads (up to depth 3)
+    let mut matched_files: Vec<(PathBuf, String)> = Vec::new();
+    let mut mvault_found: Vec<(PathBuf, String)> = Vec::new();
+    let mut seen_roots: HashSet<PathBuf> = HashSet::new();
+    let mut user_probed_roots = 0usize;
+    let mut user_files_inspected = 0usize;
+
+    for (root_label, dir) in user_dirs {
+        if !dir.is_dir() || !seen_roots.insert(dir.clone()) {
+            continue;
+        }
+        user_probed_roots += 1;
+        let mut visited = 0usize;
+        collect_suspected_files_in_dir(
+            dir,
+            root_label,
+            dir,
+            0,
+            &mut visited,
+            &mut user_files_inspected,
+            &mut matched_files,
+            &mut mvault_found,
         );
     }
-    Ok(merged)
+
+    let mut user_matched_count = mvault_found.len();
+    let mut user_extracted_count = mvault_found.len();
+    for (path, label) in matched_files {
+        if !seen_paths.insert(path.clone()) {
+            continue;
+        }
+        if let Some(res) = extract_suspected_file_strict(&path, &label, existing) {
+            user_matched_count += 1;
+            user_extracted_count += res.candidates.len();
+            parts.push(res);
+        }
+    }
+
+    if user_probed_roots > 0 || !user_dirs.is_empty() {
+        categories.push(LocalScanCategoryStat {
+            id: "user_files".to_owned(),
+            label: "Desktop · Docs · Downloads".to_owned(),
+            label_zh: "桌面 · 文档 · 下载".to_owned(),
+            probed_locations: user_probed_roots.max(user_dirs.len()),
+            inspected_files: user_files_inspected,
+            matched_files: user_matched_count,
+            extracted_count: user_extracted_count,
+        });
+    }
+
+    let mut merged = merge_batch_results(parts, existing);
+    disambiguate_multi_source_names(&mut merged.candidates);
+
+    let mut discovered_mvaults = Vec::new();
+    let mut mvault_paths = Vec::new();
+    for (idx, (path, display_path)) in mvault_found.into_iter().enumerate() {
+        let file_name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("openkeylet-backup.mvault")
+            .to_owned();
+        discovered_mvaults.push(DiscoveredMvault {
+            index: idx,
+            file_name,
+            display_path,
+        });
+        mvault_paths.push(path);
+    }
+
+    merged.detected_format = "local_search".to_owned();
+    merged.detected_format_zh = "本机一键搜索".to_owned();
+    merged.warnings.extend(warnings);
+
+    let total_inspected_files = categories.iter().map(|c| c.inspected_files).sum();
+    let total_matched_files = categories.iter().map(|c| c.matched_files).sum();
+    let report = LocalScanReport {
+        mode: "quick_pc".to_owned(),
+        target_label: None,
+        total_inspected_files,
+        total_matched_files,
+        duration_ms: started.elapsed().as_millis() as u64,
+        categories,
+    };
+
+    Ok(LocalScanOutcome {
+        batch: merged,
+        discovered_mvaults,
+        mvault_paths,
+        report,
+    })
+}
+
+pub fn scan_local_dev_configs_with_mvaults(
+    existing: &[DecryptedConnection],
+) -> Result<LocalScanOutcome> {
+    let home = dirs::home_dir();
+    let cfg = dirs::config_dir();
+    let mut user_dirs: Vec<(&str, PathBuf)> = Vec::new();
+    if let Some(d) = dirs::desktop_dir() {
+        user_dirs.push(("Desktop", d));
+    }
+    if let Some(d) = dirs::document_dir() {
+        user_dirs.push(("Documents", d));
+    }
+    if let Some(d) = dirs::download_dir() {
+        user_dirs.push(("Downloads", d));
+    }
+    scan_local_credential_roots_with_config(
+        home.as_deref(),
+        cfg.as_deref(),
+        &user_dirs,
+        existing,
+    )
+}
+
+pub fn scan_local_dev_configs(existing: &[DecryptedConnection]) -> Result<SmartExtractBatchResult> {
+    Ok(scan_local_dev_configs_with_mvaults(existing)?.batch)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect_workspace_files_in_dir(
+    root: &Path,
+    root_label: &str,
+    dir: &Path,
+    depth: usize,
+    in_test_dir: bool,
+    visited: &mut usize,
+    files_inspected: &mut usize,
+    matched: &mut Vec<(PathBuf, String, &'static str)>,
+    mvault_found: &mut Vec<(PathBuf, String)>,
+) {
+    if depth > WORKSPACE_SCAN_MAX_DEPTH
+        || *visited >= WORKSPACE_SCAN_MAX_VISITED
+        || matched.len() >= WORKSPACE_SCAN_MAX_MATCHED
+    {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+    paths.sort();
+    for path in paths {
+        if *visited >= WORKSPACE_SCAN_MAX_VISITED
+            || matched.len() >= WORKSPACE_SCAN_MAX_MATCHED
+        {
+            break;
+        }
+        *visited += 1;
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
+        if path.is_dir() {
+            if !should_skip_workspace_scan_dir(name) && depth < WORKSPACE_SCAN_MAX_DEPTH {
+                let lower_dir = name.to_ascii_lowercase();
+                let child_in_test = in_test_dir
+                    || matches!(
+                        lower_dir.as_str(),
+                        "test" | "tests" | "__tests__" | "fixtures" | "testdata" | "examples" | "mocks"
+                    );
+                collect_workspace_files_in_dir(
+                    root,
+                    root_label,
+                    &path,
+                    depth + 1,
+                    child_in_test,
+                    visited,
+                    files_inspected,
+                    matched,
+                    mvault_found,
+                );
+            }
+            continue;
+        }
+        if !path.is_file() {
+            continue;
+        }
+        *files_inspected += 1;
+        let rel = path
+            .strip_prefix(root)
+            .ok()
+            .map(|r| r.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_else(|| name.to_owned());
+        let label = format!("{root_label}/{rel}");
+        if name.to_ascii_lowercase().ends_with(".mvault") {
+            if mvault_found.len() < 16 {
+                mvault_found.push((path, label));
+            }
+            continue;
+        }
+        if let Some(cat_id) = classify_workspace_credential_file(name, in_test_dir) {
+            matched.push((path, label, cat_id));
+        }
+    }
+}
+
+pub fn scan_workspace_directory(
+    root: &Path,
+    existing: &[DecryptedConnection],
+) -> Result<LocalScanOutcome> {
+    ensure!(root.is_dir(), "Selected path is not a directory");
+    let started = Instant::now();
+    let root_label = root
+        .file_name()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.trim().is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| root.to_string_lossy().replace('\\', "/"));
+
+    let mut visited = 0usize;
+    let mut files_inspected = 0usize;
+    let mut matched: Vec<(PathBuf, String, &'static str)> = Vec::new();
+    let mut mvault_found: Vec<(PathBuf, String)> = Vec::new();
+    collect_workspace_files_in_dir(
+        root,
+        &root_label,
+        root,
+        0,
+        false,
+        &mut visited,
+        &mut files_inspected,
+        &mut matched,
+        &mut mvault_found,
+    );
+
+    let mut parts = Vec::new();
+    let mut seen_paths = HashSet::new();
+    let mut env_stat = (0usize, 0usize, 0usize); // (probed_candidates, matched_with_secrets, extracted_count)
+    let mut key_stat = (0usize, 0usize, 0usize);
+    let mut cfg_stat = (mvault_found.len(), mvault_found.len(), mvault_found.len());
+
+    for (path, label, cat_id) in matched {
+        if !seen_paths.insert(path.clone()) {
+            continue;
+        }
+        let stat_ref = match cat_id {
+            "env_files" => &mut env_stat,
+            "ssh_keys" => &mut key_stat,
+            _ => &mut cfg_stat,
+        };
+        stat_ref.0 += 1;
+        if let Some(res) = extract_suspected_file_strict(&path, &label, existing) {
+            stat_ref.1 += 1;
+            stat_ref.2 += res.candidates.len();
+            parts.push(res);
+        }
+    }
+
+    let mut merged = merge_batch_results(parts, existing);
+    disambiguate_multi_source_names(&mut merged.candidates);
+
+    if visited >= WORKSPACE_SCAN_MAX_VISITED {
+        merged.warnings.push(format!(
+            "Inspected first {WORKSPACE_SCAN_MAX_VISITED} entries in {root_label}; pick a narrower subfolder if needed"
+        ));
+    }
+
+    let mut discovered_mvaults = Vec::new();
+    let mut mvault_paths = Vec::new();
+    for (idx, (path, display_path)) in mvault_found.into_iter().enumerate() {
+        let file_name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("openkeylet-backup.mvault")
+            .to_owned();
+        discovered_mvaults.push(DiscoveredMvault {
+            index: idx,
+            file_name,
+            display_path,
+        });
+        mvault_paths.push(path);
+    }
+
+    merged.detected_format = "workspace_scan".to_owned();
+    merged.detected_format_zh = format!("目录深扫 · {root_label}");
+
+    let categories = vec![
+        LocalScanCategoryStat {
+            id: "env_files".to_owned(),
+            label: "Env Files (.env*)".to_owned(),
+            label_zh: ".env 环境文件".to_owned(),
+            probed_locations: 1,
+            inspected_files: env_stat.0,
+            matched_files: env_stat.1,
+            extracted_count: env_stat.2,
+        },
+        LocalScanCategoryStat {
+            id: "ssh_keys".to_owned(),
+            label: "SSH & Keys".to_owned(),
+            label_zh: "私钥与证书".to_owned(),
+            probed_locations: 1,
+            inspected_files: key_stat.0,
+            matched_files: key_stat.1,
+            extracted_count: key_stat.2,
+        },
+        LocalScanCategoryStat {
+            id: "project_configs".to_owned(),
+            label: "Configs & Backups".to_owned(),
+            label_zh: "配置与备份".to_owned(),
+            probed_locations: 1,
+            inspected_files: cfg_stat.0,
+            matched_files: cfg_stat.1,
+            extracted_count: cfg_stat.2,
+        },
+    ];
+    let total_matched_files = env_stat.1 + key_stat.1 + cfg_stat.1;
+    let report = LocalScanReport {
+        mode: "workspace_folder".to_owned(),
+        target_label: Some(root.to_string_lossy().replace('\\', "/")),
+        total_inspected_files: files_inspected,
+        total_matched_files,
+        duration_ms: started.elapsed().as_millis() as u64,
+        categories,
+    };
+
+    Ok(LocalScanOutcome {
+        batch: merged,
+        discovered_mvaults,
+        mvault_paths,
+        report,
+    })
 }
 
 fn extract_without_dedup(
@@ -297,7 +1432,21 @@ fn extract_without_dedup(
         return Ok(kp_res);
     }
 
-    // 3. Chrome / Edge / Firefox / 1Password / Generic Password CSV
+    // 2b. PuTTY private key (.ppk)
+    if (lower_file.ends_with(".ppk") || trimmed.starts_with("PuTTY-User-Key-File-"))
+        && let Some(ppk_res) = try_extract_putty_ppk(trimmed, filename)
+    {
+        return Ok(ppk_res);
+    }
+
+    // 3a. AWS / Alibaba Cloud / Tencent Cloud IAM AccessKey CSV exports
+    if (lower_file.ends_with(".csv") || trimmed.lines().next().is_some_and(|l| l.contains(',')))
+        && let Some(cloud_csv) = try_extract_cloud_key_csv(trimmed, filename)
+    {
+        return Ok(cloud_csv);
+    }
+
+    // 3b. Chrome / Edge / Firefox / 1Password / Generic Password CSV
     if (lower_file.ends_with(".csv") || looks_like_password_csv(trimmed))
         && let Some(csv_res) = try_extract_password_csv(trimmed, filename)
     {
@@ -351,9 +1500,8 @@ fn extract_without_dedup(
         });
     }
 
-    // 8. Structured JSON config (mcp.json, settings.json, package configs, etc.)
-    if (trimmed.starts_with('{') || trimmed.starts_with('['))
-        && let Ok(json_val) = serde_json::from_str::<Value>(trimmed)
+    // 8. Structured JSON / JSONC config (mcp.json, opencode.jsonc, docker config.json, etc.)
+    if let Some(json_val) = parse_json_or_jsonc(trimmed, &lower_file)
         && let Some(json_res) = try_extract_json_config(&json_val, filename)
     {
         return Ok(json_res);
@@ -383,6 +1531,139 @@ fn extract_without_dedup(
 
 fn looks_like_bitwarden_json(text: &str) -> bool {
     text.starts_with('{') && text.contains("\"items\"") && text.contains("\"type\"")
+}
+
+fn try_extract_putty_ppk(text: &str, filename: Option<&str>) -> Option<SmartExtractBatchResult> {
+    if !text.starts_with("PuTTY-User-Key-File-") {
+        return None;
+    }
+    let key_file = filename
+        .and_then(|f| Path::new(f).file_name().and_then(|s| s.to_str()))
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or("id_key.ppk");
+    let stem = Path::new(key_file)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or("PuTTY Key");
+    let mut input = blank_input("ssh", &format!("SSH · {stem}"));
+    input.modules.push(public_mod("host", "host", ""));
+    input.modules.push(public_mod("port", "port", "22"));
+    input.modules.push(secret_mod("username", "username"));
+    input.modules.push(secret_mod("privateKey", "privateKey"));
+    input.secrets.private_key = Some(text.to_owned());
+    input.secrets.private_key_name = Some(key_file.to_owned());
+
+    let cand = make_candidate(
+        "privateKey",
+        "KEY",
+        "私钥",
+        "high",
+        format!("PuTTY Private Key · {key_file}"),
+        filename.unwrap_or(key_file).to_owned(),
+        input,
+        None,
+    );
+    Some(SmartExtractBatchResult {
+        detected_format: "putty_ppk".to_owned(),
+        detected_format_zh: "PuTTY 私钥 (.ppk)".to_owned(),
+        candidates: vec![cand],
+        ignored: Vec::new(),
+        warnings: Vec::new(),
+        sealed_env_template: None,
+    })
+}
+
+fn try_extract_cloud_key_csv(text: &str, filename: Option<&str>) -> Option<SmartExtractBatchResult> {
+    let mut reader = csv::ReaderBuilder::new()
+        .flexible(true)
+        .from_reader(text.as_bytes());
+    let headers: Vec<String> = reader
+        .headers()
+        .ok()?
+        .iter()
+        .map(|h| h.trim().trim_start_matches('\u{feff}').to_ascii_lowercase())
+        .collect();
+    let idx_id = headers.iter().position(|h| {
+        matches!(
+            h.as_str(),
+            "access key id" | "accesskey id" | "accesskeyid" | "access_key_id" | "secretid" | "secret id"
+        )
+    })?;
+    let idx_secret = headers.iter().position(|h| {
+        matches!(
+            h.as_str(),
+            "secret access key"
+                | "accesskey secret"
+                | "accesskeysecret"
+                | "secret_access_key"
+                | "secretkey"
+                | "secret key"
+        )
+    })?;
+    let idx_user = headers.iter().position(|h| {
+        matches!(
+            h.as_str(),
+            "user name" | "username" | "user" | "account" | "description" | "备注" | "用户名"
+        )
+    });
+
+    let mut candidates = Vec::new();
+    for record in reader.records().flatten() {
+        let ak = record.get(idx_id).map(str::trim).unwrap_or_default();
+        let sk = record.get(idx_secret).map(str::trim).unwrap_or_default();
+        if ak.is_empty() || sk.is_empty() || is_placeholder_value(ak) || is_placeholder_value(sk) {
+            continue;
+        }
+        let user_hint = idx_user
+            .and_then(|i| record.get(i))
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let (provider, id_key, sec_key) = if ak.starts_with("LTAI") {
+            ("Alibaba Cloud", "ALIBABA_CLOUD_ACCESS_KEY_ID", "ALIBABA_CLOUD_ACCESS_KEY_SECRET")
+        } else if ak.starts_with("AKID") {
+            ("Tencent Cloud", "TENCENTCLOUD_SECRET_ID", "TENCENTCLOUD_SECRET_KEY")
+        } else if ak.starts_with("AKIA") || ak.starts_with("ASIA") {
+            ("AWS", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY")
+        } else {
+            ("Cloud", "ACCESS_KEY_ID", "SECRET_ACCESS_KEY")
+        };
+        let title = match user_hint {
+            Some(u) => format!("{provider} ({u})"),
+            None => format!("{provider} AccessKey"),
+        };
+        let mut input = blank_input("custom", &title);
+        input.folder = "Cloud".to_owned();
+        if let Some(u) = user_hint {
+            input.modules.push(public_mod("customField", "Account", u));
+        }
+        input.modules.push(secret_mod("customSecret", id_key));
+        input.secrets.named_secrets.insert(id_key.to_owned(), ak.to_owned());
+        input.modules.push(secret_mod("customSecret", sec_key));
+        input.secrets.named_secrets.insert(sec_key.to_owned(), sk.to_owned());
+        candidates.push(make_candidate(
+            "aws",
+            "AWS",
+            "云密钥",
+            "high",
+            format!("{provider} · {}", mask_preview(ak)),
+            filename.unwrap_or("accessKeys.csv").to_owned(),
+            input,
+            None,
+        ));
+    }
+
+    if candidates.is_empty() {
+        return None;
+    }
+    Some(SmartExtractBatchResult {
+        detected_format: "cloud_key_csv".to_owned(),
+        detected_format_zh: "云厂商 AccessKey 表格".to_owned(),
+        candidates,
+        ignored: Vec::new(),
+        warnings: Vec::new(),
+        sealed_env_template: None,
+    })
 }
 
 fn looks_like_password_csv(text: &str) -> bool {
@@ -686,19 +1967,181 @@ fn extract_env_document(text: &str, filename: Option<&str>) -> SmartExtractBatch
     }
 }
 
+fn parse_json_or_jsonc(trimmed: &str, lower_file: &str) -> Option<Value> {
+    if trimmed.starts_with('{') || trimmed.starts_with('[') {
+        if let Ok(val) = serde_json::from_str::<Value>(trimmed) {
+            return Some(val);
+        }
+        let cleaned = strip_jsonc(trimmed);
+        return serde_json::from_str::<Value>(&cleaned).ok();
+    }
+    if (lower_file.ends_with(".json") || lower_file.ends_with(".jsonc"))
+        && (trimmed.starts_with("//") || trimmed.starts_with("/*"))
+    {
+        let cleaned = strip_jsonc(trimmed);
+        let c = cleaned.trim();
+        if c.starts_with('{') || c.starts_with('[') {
+            return serde_json::from_str::<Value>(c).ok();
+        }
+    }
+    None
+}
+
+fn strip_jsonc(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut no_comments = String::with_capacity(input.len());
+    let mut i = 0;
+    let mut in_str = false;
+    while i < bytes.len() {
+        if in_str {
+            if bytes[i] == b'\\' && i + 1 < bytes.len() {
+                no_comments.push(bytes[i] as char);
+                no_comments.push(bytes[i + 1] as char);
+                i += 2;
+                continue;
+            }
+            if bytes[i] == b'"' {
+                in_str = false;
+            }
+            let ch = input[i..].chars().next().unwrap();
+            no_comments.push(ch);
+            i += ch.len_utf8();
+        } else if bytes[i] == b'"' {
+            in_str = true;
+            no_comments.push('"');
+            i += 1;
+        } else if bytes[i] == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+            i += 2;
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+        } else if bytes[i] == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
+            i += 2;
+            while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                i += 1;
+            }
+            if i + 1 < bytes.len() {
+                i += 2;
+            } else {
+                break;
+            }
+        } else {
+            let ch = input[i..].chars().next().unwrap();
+            no_comments.push(ch);
+            i += ch.len_utf8();
+        }
+    }
+
+    // Strip trailing commas before `}` or `]` outside strings
+    let cb = no_comments.as_bytes();
+    let mut out = String::with_capacity(no_comments.len());
+    let mut j = 0;
+    let mut in_s = false;
+    while j < cb.len() {
+        if in_s {
+            if cb[j] == b'\\' && j + 1 < cb.len() {
+                out.push(cb[j] as char);
+                out.push(cb[j + 1] as char);
+                j += 2;
+                continue;
+            }
+            if cb[j] == b'"' {
+                in_s = false;
+            }
+            let ch = no_comments[j..].chars().next().unwrap();
+            out.push(ch);
+            j += ch.len_utf8();
+        } else if cb[j] == b'"' {
+            in_s = true;
+            out.push('"');
+            j += 1;
+        } else if cb[j] == b',' {
+            let mut k = j + 1;
+            while k < cb.len() && cb[k].is_ascii_whitespace() {
+                k += 1;
+            }
+            if k < cb.len() && (cb[k] == b'}' || cb[k] == b']') {
+                j += 1;
+                continue;
+            }
+            out.push(',');
+            j += 1;
+        } else {
+            let ch = no_comments[j..].chars().next().unwrap();
+            out.push(ch);
+            j += ch.len_utf8();
+        }
+    }
+    out
+}
+
+fn try_extract_docker_auths(
+    value: &Value,
+    filename: Option<&str>,
+    candidates: &mut Vec<ExtractedCandidate>,
+    decoded_paths: &mut HashSet<String>,
+) {
+    let Some(auths) = value.get("auths").and_then(Value::as_object) else {
+        return;
+    };
+    for (registry, entry) in auths {
+        let Some(auth_b64) = entry.get("auth").and_then(Value::as_str) else {
+            continue;
+        };
+        let trimmed = auth_b64.trim();
+        if trimmed.is_empty() || is_placeholder_value(trimmed) {
+            continue;
+        }
+        let Ok(decoded_bytes) = BASE64_STANDARD.decode(trimmed) else {
+            continue;
+        };
+        let Ok(decoded_str) = String::from_utf8(decoded_bytes) else {
+            continue;
+        };
+        let Some((user, pass)) = decoded_str.split_once(':') else {
+            continue;
+        };
+        if pass.is_empty() || is_placeholder_value(pass) {
+            continue;
+        }
+        decoded_paths.insert(format!("auths.{registry}.auth"));
+        let clean_url = if registry.starts_with("http://") || registry.starts_with("https://") {
+            registry.clone()
+        } else {
+            format!("https://{registry}")
+        };
+        let host = host_from_url(&clean_url).unwrap_or_else(|| registry.clone());
+        candidates.push(build_login_candidate(
+            &format!("Docker · {host}"),
+            Some(clean_url),
+            (!user.is_empty()).then(|| user.to_owned()),
+            Some(pass.to_owned()),
+            None,
+            filename.unwrap_or("~/.docker/config.json"),
+            "high",
+        ));
+    }
+}
+
 fn try_extract_json_config(
     value: &Value,
     filename: Option<&str>,
 ) -> Option<SmartExtractBatchResult> {
+    let mut candidates = Vec::new();
+    let mut decoded_paths = HashSet::new();
+    try_extract_docker_auths(value, filename, &mut candidates, &mut decoded_paths);
+
     let mut pairs = Vec::new();
     flatten_json_strings(value, "", &mut pairs);
-    if pairs.is_empty() {
+    if pairs.is_empty() && candidates.is_empty() {
         return None;
     }
-    let mut candidates = Vec::new();
     let mut ignored = Vec::new();
     let mut remaining_secrets = Vec::new();
     for (path, val) in pairs {
+        if decoded_paths.contains(&path) {
+            continue;
+        }
         let trimmed = val.trim();
         if trimmed.is_empty() {
             continue;
@@ -946,7 +2389,7 @@ fn extract_mixed_free_text(text: &str, filename: Option<&str>) -> SmartExtractBa
     let mut seen_fp = HashSet::new();
 
     // Pass 1: PEM Private Keys
-    let mut working = extract_pem_blocks(text, &mut candidates, &mut seen_fp);
+    let mut working = extract_pem_blocks(text, filename, &mut candidates, &mut seen_fp);
 
     // Pass 2: Multi-line cURL commands
     working = extract_curl_blocks(&working, &mut candidates, &mut seen_fp);
@@ -1067,6 +2510,7 @@ fn extract_mixed_free_text(text: &str, filename: Option<&str>) -> SmartExtractBa
 
 fn extract_pem_blocks(
     text: &str,
+    filename: Option<&str>,
     candidates: &mut Vec<ExtractedCandidate>,
     seen_fp: &mut HashSet<String>,
 ) -> String {
@@ -1080,8 +2524,14 @@ fn extract_pem_blocks(
     for m in re.find_iter(text) {
         let prefix = &text[last..m.start()];
         let heading = extract_trailing_heading(prefix);
-        if let Ok(parsed) = smart_ingest::smart_parse(m.as_str(), heading.as_deref(), None) {
-            let cand = candidate_from_smart_parse(parsed, heading.as_deref(), "-----BEGIN PRIVATE KEY-----");
+        if let Ok(parsed) =
+            smart_ingest::smart_parse(m.as_str(), heading.as_deref().or(filename), None)
+        {
+            let cand = candidate_from_smart_parse(
+                parsed,
+                heading.as_deref(),
+                filename.unwrap_or("-----BEGIN PRIVATE KEY-----"),
+            );
             push_unique(candidates, seen_fp, cand);
         }
         out.push_str(prefix);
@@ -1888,7 +3338,8 @@ fn is_placeholder_value(val: &str) -> bool {
 }
 
 fn is_explicit_non_secret_key(key: &str) -> bool {
-    let upper = key.to_ascii_uppercase();
+    let base = key.split('[').next().unwrap_or(key).trim();
+    let upper = base.to_ascii_uppercase();
     if upper.starts_with("NEXT_PUBLIC_")
         || upper.starts_with("VITE_")
         || upper.starts_with("PUBLIC_")
@@ -1908,8 +3359,34 @@ fn is_explicit_non_secret_key(key: &str) -> bool {
             | "VERBOSE"
             | "PORT"
             | "HOST"
+            | "HOSTS"
             | "HOSTNAME"
             | "BIND"
+            | "DOMAIN"
+            | "DOMAINS"
+            | "RULE"
+            | "RULES"
+            | "GEOSITE"
+            | "GEOIP"
+            | "OUTBOUND"
+            | "OUTBOUNDTAG"
+            | "INBOUND"
+            | "INBOUNDTAG"
+            | "PROXY"
+            | "PROXIES"
+            | "ROUTE"
+            | "ROUTES"
+            | "PATTERN"
+            | "PATTERNS"
+            | "TAG"
+            | "TAGS"
+            | "TYPE"
+            | "PROTOCOL"
+            | "NETWORK"
+            | "REMARKS"
+            | "DESCRIPTION"
+            | "TITLE"
+            | "NAME"
             | "TZ"
             | "TIMEZONE"
             | "LANG"
@@ -1937,6 +3414,15 @@ fn is_obvious_non_secret_value(value: &str) -> bool {
     ) {
         return true;
     }
+    if lower.starts_with("domain:")
+        || lower.starts_with("full:")
+        || lower.starts_with("geosite:")
+        || lower.starts_with("geoip:")
+        || lower.starts_with("keyword:")
+        || lower.starts_with("regexp:")
+    {
+        return true;
+    }
     // Pure short integer (e.g. ports, timeouts)
     if value.len() <= 6 && value.chars().all(|c| c.is_ascii_digit()) {
         return true;
@@ -1955,6 +3441,8 @@ fn key_secret_score(key: &str) -> u8 {
         "API_KEY",
         "APIKEY",
         "ACCESS_KEY",
+        "ACCESSKEY",
+        "SECRETKEY",
         "PRIVATE_KEY",
         "PRIVKEY",
         "CREDENTIAL",
@@ -2133,9 +3621,6 @@ fn candidate_dedup_key(cand: &ExtractedCandidate) -> String {
     if let Some(totp) = cand.input.secrets.get("totp") {
         return format!("totp:{totp}");
     }
-    if let Some(pk) = cand.input.secrets.get("privateKey") {
-        return format!("pk:{}", pk.trim());
-    }
     if let Some(host) = module_val(&cand.input.modules, "host") {
         return format!(
             "host:{}:{}:{}:{}",
@@ -2145,6 +3630,9 @@ fn candidate_dedup_key(cand: &ExtractedCandidate) -> String {
             cand.input.secrets.get("password").unwrap_or("")
         );
     }
+    if let Some(pk) = cand.input.secrets.get("privateKey") {
+        return format!("pk:{}", pk.trim());
+    }
     if let Some(url) = module_val(&cand.input.modules, "url") {
         return format!(
             "login:{}:{}:{}",
@@ -2152,6 +3640,18 @@ fn candidate_dedup_key(cand: &ExtractedCandidate) -> String {
             cand.input.secrets.get("username").unwrap_or(""),
             cand.input.secrets.get("password").unwrap_or("")
         );
+    }
+    if !cand.input.secrets.named_secrets.0.is_empty() {
+        let mut pairs: Vec<String> = cand
+            .input
+            .secrets
+            .named_secrets
+            .0
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect();
+        pairs.sort();
+        return format!("kv:{}:{}", cand.kind, pairs.join("&"));
     }
     format!("name:{}:{}", cand.kind, cand.input.name.to_ascii_lowercase())
 }
@@ -2411,9 +3911,18 @@ fn build_env_group_candidate(
     fallback_source: &str,
 ) -> ExtractedCandidate {
     let base_name = filename
-        .and_then(|f| Path::new(f).file_name().and_then(|s| s.to_str()))
-        .filter(|s| !s.trim().is_empty())
-        .map(|s| format!("Env · {s}"))
+        .and_then(|f| {
+            let leaf = Path::new(f).file_name().and_then(|s| s.to_str())?.trim();
+            if leaf.is_empty() {
+                return None;
+            }
+            if let Some(ctx) = short_source_context(f)
+                && !ctx.eq_ignore_ascii_case(leaf)
+            {
+                return Some(format!("Env · {ctx} ({leaf})"));
+            }
+            Some(format!("Env · {leaf}"))
+        })
         .unwrap_or_else(|| {
             if pairs.len() == 1 {
                 pairs[0].0.clone()
@@ -3961,5 +5470,195 @@ WEBHOOK_SIGNING_SECRET=whsec_9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d
         assert_eq!(outcome.images[0].mime_type, "image/png");
         assert_eq!(outcome.batch.candidates.len(), 1);
         assert_eq!(outcome.batch.candidates[0].kind, "apiKey");
+    }
+
+    #[test]
+    fn one_click_local_search_finds_home_dotfiles_and_suspected_user_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let desktop = dir.path().join("Desktop");
+        std::fs::create_dir_all(home.join(".ssh")).unwrap();
+        std::fs::create_dir_all(&desktop).unwrap();
+
+        std::fs::write(
+            home.join(".ssh").join("config"),
+            "Host prod-box\n  HostName 10.0.0.12\n  User ubuntu\n  Port 2222\n",
+        )
+        .unwrap();
+        std::fs::write(
+            home.join(".git-credentials"),
+            "https://alice:ghp_gitCredSecretToken1234567890@github.com\n",
+        )
+        .unwrap();
+        std::fs::write(
+            desktop.join("公司密码本.txt"),
+            "测试后台 https://portal.example.com 账号：admin 密码：DeskPass!99\n",
+        )
+        .unwrap();
+        // Unrelated file without credential keywords should NOT be scanned or added as note
+        std::fs::write(desktop.join("shopping-list.txt"), "milk, bread, apples\n").unwrap();
+        std::fs::write(
+            desktop.join("v2rayN-custom-non-cn-proxy-vpn.json"),
+            r#"{"routing":{"rules":[{"domain":["domain:example.com","full:api.service.example.com"]}]}}"#,
+        )
+        .unwrap();
+        std::fs::write(desktop.join("openkeylet-backup.mvault"), "{}").unwrap();
+
+        let outcome = scan_local_credential_roots(
+            Some(&home),
+            &[("Desktop", desktop)],
+            &[],
+        )
+        .unwrap();
+        let res = outcome.batch;
+        assert_eq!(res.detected_format, "local_search");
+        assert!(res.candidates.iter().any(|c| c.kind == "ssh"));
+        assert!(res.candidates.iter().any(|c| c.input.name.contains("github.com")));
+        assert!(res.candidates.iter().any(|c| c.input.secrets.get("password") == Some("DeskPass!99")));
+        assert!(!res.candidates.iter().any(|c| c.input.name.contains("shopping")));
+        assert!(!res.candidates.iter().any(|c| c.input.name.contains("v2rayN")));
+        assert_eq!(outcome.discovered_mvaults.len(), 1);
+        assert_eq!(outcome.discovered_mvaults[0].file_name, "openkeylet-backup.mvault");
+        assert_eq!(outcome.discovered_mvaults[0].display_path, "Desktop/openkeylet-backup.mvault");
+        assert_eq!(outcome.report.mode, "quick_pc");
+        assert_eq!(outcome.report.categories.len(), 4);
+    }
+
+    #[test]
+    fn local_scan_finds_standalone_ssh_keys_ai_mcp_jsonc_docker_and_cloud_csv() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let downloads = dir.path().join("Downloads");
+        std::fs::create_dir_all(home.join(".ssh")).unwrap();
+        std::fs::create_dir_all(home.join(".cursor")).unwrap();
+        std::fs::create_dir_all(home.join(".config").join("opencode")).unwrap();
+        std::fs::create_dir_all(home.join(".docker")).unwrap();
+        std::fs::create_dir_all(&downloads).unwrap();
+
+        let bound_pem = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmU=\n-----END OPENSSH PRIVATE KEY-----\n";
+        let standalone_pem = "-----BEGIN OPENSSH PRIVATE KEY-----\nc3RhbmRhbG9uZS1zc2gta2V5LXYx\n-----END OPENSSH PRIVATE KEY-----\n";
+        std::fs::write(home.join(".ssh").join("id_bound"), bound_pem).unwrap();
+        std::fs::write(home.join(".ssh").join("id_deploy"), standalone_pem).unwrap();
+        std::fs::write(home.join(".ssh").join("id_deploy.pub"), "ssh-ed25519 AAAA...").unwrap();
+        std::fs::write(
+            home.join(".ssh").join("config"),
+            format!(
+                "Host bound-host\n  HostName 10.0.1.9\n  User deploy\n  IdentityFile {}\n",
+                home.join(".ssh").join("id_bound").display()
+            ),
+        )
+        .unwrap();
+
+        // AI MCP config with plaintext token + OpenKeylet placeholder (placeholder must be ignored)
+        std::fs::write(
+            home.join(".cursor").join("mcp.json"),
+            r#"{
+                "mcpServers": {
+                    "github": {
+                        "command": "npx",
+                        "env": {
+                            "GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_cursorMcpExtractedToken1234567890",
+                            "SEALED_KEY": "{{openkeylet:SEALED}}"
+                        }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        // JSONC config with // comments and trailing commas
+        std::fs::write(
+            home.join(".config").join("opencode").join("opencode.jsonc"),
+            "// OpenCode user config\n{\n  \"provider\": {\n    \"anthropic\": {\n      \"apiKey\": \"sk-ant-api03-jsoncCommentExtractedKey9876543210\",\n    },\n  },\n}\n",
+        )
+        .unwrap();
+
+        // Docker config.json base64 auth
+        let docker_b64 = BASE64_STANDARD.encode("ops_user:dckr_pat_DockerSecret987654");
+        std::fs::write(
+            home.join(".docker").join("config.json"),
+            format!(r#"{{"auths":{{"https://index.docker.io/v1/":{{"auth":"{docker_b64}"}}}}}}"#),
+        )
+        .unwrap();
+
+        // AWS IAM accessKeys.csv in Downloads subfolder (depth 2)
+        let sub_dl = downloads.join("aws-iam");
+        std::fs::create_dir_all(&sub_dl).unwrap();
+        std::fs::write(
+            sub_dl.join("deploy_accessKeys.csv"),
+            "Access key ID,Secret access key\nAKIAIOSFODNN7REALKEY,wJalrXUtnFEMI/K7MDENG/bPxRfiCYREALKEY99\n",
+        )
+        .unwrap();
+
+        let outcome = scan_local_credential_roots(
+            Some(&home),
+            &[("Downloads", downloads)],
+            &[],
+        )
+        .unwrap();
+        let cands = &outcome.batch.candidates;
+
+        // bound-host is extracted once as SSH; standalone id_deploy is extracted as KEY; id_bound is NOT duplicated
+        assert!(cands.iter().any(|c| c.kind == "ssh" && c.input.name == "bound-host"));
+        assert!(cands.iter().any(|c| c.kind == "privateKey" && c.input.name.contains("id_deploy")));
+        assert!(!cands.iter().any(|c| c.kind == "privateKey" && c.input.name.contains("id_bound")));
+
+        // Cursor MCP & OpenCode JSONC tokens extracted
+        assert!(cands.iter().any(|c| c.input.secrets.get("apiCredential") == Some("ghp_cursorMcpExtractedToken1234567890")));
+        assert!(cands.iter().any(|c| c.input.secrets.get("apiCredential") == Some("sk-ant-api03-jsoncCommentExtractedKey9876543210")));
+
+        // Docker Hub login decoded
+        assert!(cands.iter().any(|c| c.input.name.contains("Docker") && c.input.secrets.get("password") == Some("dckr_pat_DockerSecret987654")));
+
+        // AWS CSV extracted
+        assert!(cands.iter().any(|c| c.kind == "aws" && c.input.secrets.get("AWS_ACCESS_KEY_ID") == Some("AKIAIOSFODNN7REALKEY")));
+
+        // Verify category telemetry
+        let ai_stat = outcome.report.categories.iter().find(|c| c.id == "ai_mcp").unwrap();
+        assert_eq!(ai_stat.matched_files, 2);
+        assert_eq!(ai_stat.extracted_count, 2);
+    }
+
+    #[test]
+    fn workspace_directory_deep_scan_extracts_multi_repo_envs_and_skips_templates() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path().join("Github");
+        std::fs::create_dir_all(ws.join("app-alpha")).unwrap();
+        std::fs::create_dir_all(ws.join("app-beta").join("packages").join("web")).unwrap();
+        std::fs::create_dir_all(ws.join("app-alpha").join("node_modules").join("pkg")).unwrap();
+
+        std::fs::write(
+            ws.join("app-alpha").join(".env"),
+            "OPENAI_API_KEY=sk-proj-alphaWorkspaceKey1234567890abcd\nCUSTOM_SIGNING_SECRET=alpha_super_secret_signing_998877\n",
+        )
+        .unwrap();
+        std::fs::write(
+            ws.join("app-alpha").join(".env.example"),
+            "OPENAI_API_KEY=sk-proj-shouldSkipTemplateKey1234567890\n",
+        )
+        .unwrap();
+        std::fs::write(
+            ws.join("app-alpha").join("node_modules").join("pkg").join(".env"),
+            "OPENAI_API_KEY=sk-proj-shouldSkipNodeModules1234567890\n",
+        )
+        .unwrap();
+        std::fs::write(
+            ws.join("app-beta").join("packages").join("web").join(".env.local"),
+            "OPENAI_API_KEY=sk-proj-betaWorkspaceKey9876543210zyxw\nCUSTOM_SIGNING_SECRET=beta_different_secret_signing_112233\n",
+        )
+        .unwrap();
+        // Plain README should NEVER become a secure note in workspace scan
+        std::fs::write(ws.join("app-alpha").join("README.md"), "# App Alpha\nHello world\n").unwrap();
+
+        let outcome = scan_workspace_directory(&ws, &[]).unwrap();
+        assert_eq!(outcome.report.mode, "workspace_folder");
+        let cands = &outcome.batch.candidates;
+
+        // Both OpenAI keys and both distinct .env groups kept & disambiguated; .env.example & node_modules & README skipped
+        assert_eq!(cands.len(), 4, "got candidates: {:?}", cands.iter().map(|c| &c.input.name).collect::<Vec<_>>());
+        assert!(cands.iter().any(|c| c.input.name.contains("app-alpha")));
+        assert!(cands.iter().any(|c| c.input.name.contains("web")));
+        assert!(!cands.iter().any(|c| c.input.secrets.get("apiCredential") == Some("sk-proj-shouldSkipTemplateKey1234567890")));
+        assert!(!cands.iter().any(|c| c.input.item_type == "secureNote"));
     }
 }

@@ -19,6 +19,9 @@
   let candidates = [];
   let ignored = [];
   let warnings = [];
+  let discoveredMvaults = [];
+  let scanReport = null;
+  let activeScanMode = null;
   let sealedEnvTemplate = null;
   let revealedIds = new Set();
   let expandedIds = new Set();
@@ -91,6 +94,9 @@
     candidates = [];
     ignored = [];
     warnings = [];
+    discoveredMvaults = [];
+    scanReport = null;
+    activeScanMode = null;
     sealedEnvTemplate = null;
     revealedIds.clear();
     expandedIds.clear();
@@ -122,12 +128,14 @@
       candidates = Array.isArray(result.candidates) ? result.candidates : [];
       ignored = Array.isArray(result.ignored) ? result.ignored : [];
       warnings = Array.isArray(result.warnings) ? result.warnings : [];
+      discoveredMvaults = Array.isArray(result.discoveredMvaults) ? result.discoveredMvaults : [];
+      scanReport = result.scanReport || null;
       sealedEnvTemplate = result.sealedEnvTemplate || null;
       revealedIds.clear();
       expandedIds.clear();
       activeKindFilter = 'all';
     }
-    if (candidates.length > 0 || ignored.length > 0) {
+    if (candidates.length > 0 || ignored.length > 0 || discoveredMvaults.length > 0) {
       inputExpanded = false;
     }
     render();
@@ -143,6 +151,7 @@
         warnings = [];
         detectedFormat = '';
         detectedFormatZh = '';
+        scanReport = null;
         sealedEnvTemplate = null;
         inputExpanded = true;
         render();
@@ -334,24 +343,31 @@
   async function handleScanLocal() {
     if (!await host.ensureUnlocked()) return;
     isExtracting = true;
+    activeScanMode = 'quick_pc';
     render();
     try {
       const result = await host.invoke('smart_scan_local_dev_configs');
       sourceFilename = null;
       clipboardSource = '';
       applyBatchResult(result, { append: false });
-      if (result?.candidates?.length) {
+      const foundCount = (result?.candidates?.length || 0);
+      const mvaultCount = (result?.discoveredMvaults?.length || 0);
+      const inspectedCount = (result?.scanReport?.totalInspectedFiles || 0);
+      if (foundCount > 0 || mvaultCount > 0) {
+        const parts = [];
+        if (foundCount > 0) parts.push(t(`${foundCount} 项疑似凭据`, `${foundCount} credential(s)`));
+        if (mvaultCount > 0) parts.push(t(`${mvaultCount} 个 .mvault 备份`, `${mvaultCount} .mvault backup(s)`));
         host.toast(
           t(
-            `本地只读扫描发现 ${result.candidates.length} 项开发凭据`,
-            `Found ${result.candidates.length} local developer credential(s) (read-only preview)`
+            `本机一键搜索发现 ${parts.join('、')}`,
+            `Local scan found ${parts.join(' & ')}`
           )
         );
       } else {
         host.toast(
           t(
-            '未发现本机 ~/.ssh/config 或 ~/.aws/credentials 配置',
-            'No local ~/.ssh/config or ~/.aws/credentials entries found'
+            `已巡检 ${inspectedCount} 个本地文件，未发现未入库明文凭据`,
+            `Inspected ${inspectedCount} local file(s) — no plaintext credentials found`
           )
         );
       }
@@ -359,6 +375,49 @@
       host.toast(host.cleanError(error), 'error');
     } finally {
       isExtracting = false;
+      activeScanMode = null;
+      render();
+      notifyMetrics();
+    }
+  }
+
+  async function handleScanWorkspaceFolder() {
+    if (!await host.ensureUnlocked()) return;
+    isExtracting = true;
+    activeScanMode = 'workspace_folder';
+    render();
+    try {
+      const result = await host.invoke('smart_scan_workspace_folder');
+      if (!result) return;
+      sourceFilename = null;
+      clipboardSource = '';
+      applyBatchResult(result, { append: false });
+      const foundCount = (result?.candidates?.length || 0);
+      const mvaultCount = (result?.discoveredMvaults?.length || 0);
+      const inspectedCount = (result?.scanReport?.totalInspectedFiles || 0);
+      if (foundCount > 0 || mvaultCount > 0) {
+        const parts = [];
+        if (foundCount > 0) parts.push(t(`${foundCount} 项凭据`, `${foundCount} credential(s)`));
+        if (mvaultCount > 0) parts.push(t(`${mvaultCount} 个备份`, `${mvaultCount} backup(s)`));
+        host.toast(
+          t(
+            `目录深扫完成：发现 ${parts.join('、')}`,
+            `Workspace scan found ${parts.join(' & ')}`
+          )
+        );
+      } else {
+        host.toast(
+          t(
+            `已深扫目录内 ${inspectedCount} 个文件，未发现明文凭据`,
+            `Scanned ${inspectedCount} file(s) in folder — no plaintext secrets found`
+          )
+        );
+      }
+    } catch (error) {
+      host.toast(host.cleanError(error), 'error');
+    } finally {
+      isExtracting = false;
+      activeScanMode = null;
       render();
       notifyMetrics();
     }
@@ -579,6 +638,7 @@
           </button>
         </div>
         <div class="import-card-fields">
+          ${c.sourceSnippet && (c.sourceSnippet.includes('/') || c.sourceSnippet.startsWith('~')) ? `<span class="import-field-chip"><b>${esc(t('来源', 'File'))}</b><code>${esc(c.sourceSnippet)}</code></span>` : ''}
           ${visibleFields.map((f) => `<span class="import-field-chip"><b>${esc(f.label)}</b><code>${esc(isRevealed ? f.value : f.masked)}</code></span>`).join('')}
           ${hiddenCount > 0 ? `<span class="import-field-chip"><b>+${hiddenCount}</b></span>` : ''}
         </div>
@@ -612,22 +672,23 @@
 
     const dropzone = $('#import-dropzone');
     const hasResults = candidates.length > 0 || ignored.length > 0;
+    const hasAnyContent = hasResults || discoveredMvaults.length > 0;
     if (dropzone) {
-      dropzone.classList.toggle('is-compact', hasResults && !inputExpanded);
+      dropzone.classList.toggle('is-compact', hasAnyContent && !inputExpanded);
     }
 
     const formatBadge = $('#import-format-badge');
     if (formatBadge) {
       const baseFmt = lang().startsWith('zh') ? (detectedFormatZh || '智能提取') : (detectedFormat || 'smart');
-      formatBadge.textContent = sourceFilename ? `${baseFmt} · ${sourceFilename}` : baseFmt;
+      formatBadge.textContent = sourceFilename && sourceFilename !== baseFmt ? `${baseFmt} · ${sourceFilename}` : baseFmt;
     }
     const toggleBtn = $('#import-toggle-input-btn');
     if (toggleBtn) {
-      toggleBtn.textContent = inputExpanded ? t('收起原文', 'Collapse') : t('展开原文', 'Edit source');
+      toggleBtn.textContent = inputExpanded ? t('收起输入', 'Collapse') : t('展开输入', 'Edit input');
     }
     const clearBtn = $('#import-clear-btn');
     if (clearBtn) {
-      clearBtn.classList.toggle('hidden', !rawText && !hasResults && !lastCommit);
+      clearBtn.classList.toggle('hidden', !rawText && !hasAnyContent && !lastCommit && !scanReport);
       clearBtn.textContent = t('清空', 'Clear');
     }
 
@@ -638,20 +699,142 @@
     };
     setBtnLabel('#import-paste-btn-label', '粘贴', 'Paste');
     setBtnLabel('#import-file-btn-label', '文件', 'Files');
-    setBtnLabel('#import-chip-paste', '粘贴剪贴板 / 2FA 截图', 'Paste clipboard / 2FA QR');
-    setBtnLabel('#import-chip-files', '选择多个文件', 'Choose files');
-    setBtnLabel('#import-chip-scan', '扫描本机 SSH / AWS', 'Scan local SSH / AWS');
-    setBtnLabel('#import-chip-mvault', '恢复 .mvault 备份', 'Restore .mvault');
+    setBtnLabel('#import-scan-btn-label', '一键搜索', 'Scan PC');
+    setBtnLabel('#import-drop-badge', '拖入任意文件 / .mvault', 'Drop any file / .mvault');
+    const scanBtn = $('#import-chip-scan');
+    if (scanBtn) {
+      scanBtn.title = t(
+        '只读巡检本机 SSH 与私钥、Git/云凭据、AI/MCP 配置及桌面、文档、下载目录',
+        'Read-only scan of SSH & keys, Git/cloud CLI, AI/MCP configs, and Desktop / Documents / Downloads'
+      );
+    }
+
+    const scanBanner = $('#import-scan-banner');
+    if (scanBanner) {
+      const folderSvg = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h2.6l1.4 1.5h5A1.5 1.5 0 0 1 14 6v6a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 12Z"/></svg>';
+      const checkSvg = '<svg viewBox="0 0 14 14" aria-hidden="true"><path d="m2.5 7.2 2.8 2.8 6.2-6.4"/></svg>';
+      if (activeScanMode) {
+        scanBanner.classList.remove('hidden', 'is-idle');
+        const scanningTitle = activeScanMode === 'workspace_folder'
+          ? t('正在深度扫描项目目录…', 'Deep-scanning workspace folder…')
+          : t('正在巡检本机凭据位置…', 'Scanning local credential locations…');
+        scanBanner.innerHTML = `
+          <div class="import-scan-head">
+            <div class="import-scan-title-group">
+              <span class="import-scan-dot is-hit" aria-hidden="true"></span>
+              <span class="import-scan-title">${esc(scanningTitle)}</span>
+            </div>
+          </div>
+        `;
+      } else if (scanReport) {
+        scanBanner.classList.remove('hidden', 'is-idle');
+        const totalHits = candidates.length + discoveredMvaults.length;
+        const isWorkspace = scanReport.mode === 'workspace_folder';
+        const title = isWorkspace
+          ? t('项目目录深扫完成', 'Workspace scan complete')
+          : t('本机深度巡检完成', 'Local scan complete');
+        const filesCount = Number(scanReport.totalInspectedFiles || 0);
+        const ms = Math.max(1, Number(scanReport.durationMs || 1));
+        const metaText = `${filesCount} ${t('文件', 'files')} · ${ms}ms`;
+        const cats = Array.isArray(scanReport.categories) ? scanReport.categories : [];
+        const catHtml = cats
+          .map((cat) => {
+            const hit = Number(cat.extractedCount || 0);
+            const inspected = Number(cat.inspectedFiles || 0);
+            const probed = Number(cat.probedLocations || 0);
+            const stat = hit > 0 ? `+${hit}` : (inspected > 0 ? `${inspected}` : `0/${probed}`);
+            const catLabel = t(cat.labelZh || cat.label, cat.label || cat.labelZh);
+            return `
+              <div class="import-scan-cat ${hit > 0 ? 'has-hit' : ''}">
+                <span class="import-scan-cat-name">${checkSvg}<span>${esc(catLabel)}</span></span>
+                <span class="import-scan-cat-stat">${esc(stat)}</span>
+              </div>
+            `;
+          })
+          .join('');
+        const emptyNote = totalHits === 0
+          ? `<div class="import-scan-empty-note">${esc(
+              isWorkspace
+                ? t(
+                    '该目录下未发现高置信明文凭据（已自动跳过 node_modules 与 .env.example 模板）。',
+                    'No plaintext secrets found in this folder (node_modules & .env.example skipped).'
+                  )
+                : t(
+                    '常用路径未发现未入库明文凭据；若 .env 或密钥在其他代码盘，请点右上角「扫项目目录…」。',
+                    'No plaintext secrets in default paths — click Scan Folder… to inspect code workspaces.'
+                  )
+            )}</div>`
+          : '';
+        scanBanner.innerHTML = `
+          <div class="import-scan-head">
+            <div class="import-scan-title-group">
+              <span class="import-scan-dot ${totalHits > 0 ? 'is-hit' : ''}" aria-hidden="true"></span>
+              <span class="import-scan-title">${esc(title)}</span>
+              <span class="import-scan-meta">${esc(metaText)}</span>
+            </div>
+            <div class="import-scan-actions">
+              <button type="button" class="import-scan-folder-btn" data-scan-workspace-folder="true" title="${esc(t('选择任意代码工作区目录（如 Github / Projects）深度扫描 .env 与密钥', 'Pick a code workspace folder to deep-scan for .env & keys'))}">${folderSvg}<span>${esc(t('扫项目目录…', 'Scan Folder…'))}</span></button>
+            </div>
+          </div>
+          ${isWorkspace && scanReport.targetLabel ? `<div class="import-scan-path" title="${esc(scanReport.targetLabel)}">${esc(scanReport.targetLabel)}</div>` : ''}
+          ${cats.length ? `<div class="import-scan-grid">${catHtml}</div>` : ''}
+          ${emptyNote}
+        `;
+      } else if (!hasAnyContent && !lastCommit) {
+        scanBanner.classList.remove('hidden');
+        scanBanner.classList.add('is-idle');
+        scanBanner.innerHTML = `
+          <div class="import-scan-idle-copy">
+            ${folderSvg}
+            <span>${esc(t('代码盘有 .env / 私钥？支持按项目目录深度巡检', 'Have .env or keys in code folders? Deep-scan a workspace'))}</span>
+          </div>
+          <button type="button" class="import-scan-folder-btn" data-scan-workspace-folder="true">${folderSvg}<span>${esc(t('扫项目目录…', 'Scan Folder…'))}</span></button>
+        `;
+      } else {
+        scanBanner.classList.add('hidden');
+        scanBanner.classList.remove('is-idle');
+        scanBanner.innerHTML = '';
+      }
+    }
 
     const supportedStrip = $('#import-supported-strip');
     if (supportedStrip) {
-      supportedStrip.classList.toggle('hidden', hasResults || Boolean(lastCommit));
-      supportedStrip.innerHTML = `<strong>${esc(t('自动识别：', 'Auto-detects:'))}</strong>${esc(
-        t(
-          '.mvault 备份 · Excel (.xlsx) · Word (.docx) · ZIP · API Key · 数据库 · SSH / 私钥 · 账号密码 · .env（去噪）· cURL · 2FA 二维码 · Bitwarden JSON · KeePass XML · CSV/TSV · .netrc/.npmrc/.pgpass · 任意文本/文件夹',
-          '.mvault · Excel (.xlsx) · Word (.docx) · ZIP · API Keys · DB URIs · SSH / Keys · Logins · .env · cURL · 2FA QR · Bitwarden JSON · KeePass XML · CSV/TSV · .netrc/.npmrc/.pgpass · Any text or folder'
-        )
-      )}`;
+      supportedStrip.classList.toggle('hidden', hasAnyContent || Boolean(lastCommit) || Boolean(scanReport));
+      const caps = [
+        [t('加密备份', 'Encrypted backup'), t('.mvault 拖入勾选或全选', '.mvault selective popup')],
+        [t('表格与文档', 'Office & archives'), t('Excel .xlsx · Word .docx · ZIP', 'Excel .xlsx · Word .docx · ZIP')],
+        [t('密码管理器', 'Password exports'), t('Bitwarden · KeePass · CSV/TSV', 'Bitwarden · KeePass · CSV/TSV')],
+        [t('开发与 AI 配置', 'Dev & AI configs'), t('.env · SSH/私钥 · MCP · 云凭据', '.env · SSH/Keys · MCP · Cloud')],
+        [t('杂乱文本与 2FA', 'Text & 2FA QR'), t('聊天记录 · cURL · 二维码截图', 'Chat logs · cURL · 2FA QR')],
+        [t('文件夹与任意文本', 'Folders & notes'), t('整个文件夹 · 普通文本转笔记', 'Folders · Text to secure note')],
+      ];
+      supportedStrip.innerHTML = caps
+        .map(([title, desc]) => `<div class="import-cap-item"><strong>${esc(title)}</strong><span>${esc(desc)}</span></div>`)
+        .join('');
+    }
+
+    // Discovered local .mvault backups — one-click open selective import modal
+    const mvaultBanner = $('#import-mvault-banner');
+    if (mvaultBanner) {
+      if (discoveredMvaults.length) {
+        mvaultBanner.classList.remove('hidden');
+        mvaultBanner.innerHTML = discoveredMvaults
+          .map(
+            (mv) => `
+              <div class="import-mvault-row">
+                <div class="import-mvault-copy">
+                  <strong>${esc(t('发现本机 .mvault 加密备份', 'Local .mvault backup found'))}</strong>
+                  <code title="${esc(mv.displayPath)}">${esc(mv.displayPath)}</code>
+                </div>
+                <button type="button" class="import-mini-btn primary" data-open-discovered-mvault="${esc(mv.index)}">${esc(t('选择导入', 'Import…'))}</button>
+              </div>
+            `
+          )
+          .join('');
+      } else {
+        mvaultBanner.classList.add('hidden');
+        mvaultBanner.innerHTML = '';
+      }
     }
 
     // Done banner
@@ -849,14 +1032,28 @@
       render();
     });
 
-    $('#import-chip-paste')?.addEventListener('click', () => void handlePasteClipboard());
-    $('#import-chip-files')?.addEventListener('click', () => void handlePickFiles());
     $('#import-chip-scan')?.addEventListener('click', () => void handleScanLocal());
-    $('#import-chip-mvault')?.addEventListener('click', () => host?.openBackupRestore?.());
 
     $('#import-commit-btn')?.addEventListener('click', () => void handleCommit());
 
     page.addEventListener('click', (event) => {
+      if (event.target.closest('[data-scan-workspace-folder]')) {
+        void handleScanWorkspaceFolder();
+        return;
+      }
+      const openMvaultBtn = event.target.closest('[data-open-discovered-mvault]');
+      if (openMvaultBtn) {
+        const index = Number(openMvaultBtn.dataset.openDiscoveredMvault);
+        openMvaultBtn.disabled = true;
+        void host
+          .invoke('open_discovered_mvault', { index })
+          .then((picked) => host.openMvaultPreview?.(picked))
+          .catch((error) => host.toast(host.cleanError(error), 'error'))
+          .finally(() => {
+            openMvaultBtn.disabled = false;
+          });
+        return;
+      }
       const kindBtn = event.target.closest('[data-import-kind]');
       if (kindBtn) {
         activeKindFilter = kindBtn.dataset.importKind;

@@ -62,6 +62,7 @@ try {
       commitCalls: [],
       undoCalls: [],
       scanCalls: 0,
+      workspaceScanCalls: 0,
       copiedValues: [],
       clearedClipboard: [],
     };
@@ -183,11 +184,45 @@ try {
           if (cmd === "smart_scan_local_dev_configs") {
             window.fixture.scanCalls += 1;
             return {
-              detectedFormat: "ssh_config",
-              detectedFormatZh: "SSH 配置 (~/.ssh/config)",
+              detectedFormat: "local_search",
+              detectedFormatZh: "本机一键搜索",
               warnings: [],
               ignored: [],
               candidates: [JSON.parse(JSON.stringify(sampleResult.candidates[2]))],
+              scanReport: {
+                mode: "quick_pc",
+                totalInspectedFiles: 184,
+                totalMatchedFiles: 2,
+                durationMs: 19,
+                categories: [
+                  { id: "ssh_keys", label: "SSH & Keys", labelZh: "SSH 与私钥", probedLocations: 2, inspectedFiles: 3, matchedFiles: 1, extractedCount: 1 },
+                  { id: "dev_cloud", label: "Git · Cloud · CLI", labelZh: "Git 与云凭据", probedLocations: 18, inspectedFiles: 4, matchedFiles: 0, extractedCount: 0 },
+                  { id: "ai_mcp", label: "AI & MCP Configs", labelZh: "AI 与 MCP 配置", probedLocations: 15, inspectedFiles: 3, matchedFiles: 0, extractedCount: 0 },
+                  { id: "user_files", label: "Desktop · Docs · Downloads", labelZh: "桌面 · 文档 · 下载", probedLocations: 3, inspectedFiles: 174, matchedFiles: 1, extractedCount: 0 },
+                ],
+              },
+            };
+          }
+          if (cmd === "smart_scan_workspace_folder") {
+            window.fixture.workspaceScanCalls += 1;
+            return {
+              detectedFormat: "workspace_scan",
+              detectedFormatZh: "目录深扫 · Github",
+              warnings: [],
+              ignored: [],
+              candidates: [JSON.parse(JSON.stringify(sampleResult.candidates[0]))],
+              scanReport: {
+                mode: "workspace_folder",
+                targetLabel: "S:/Github",
+                totalInspectedFiles: 642,
+                totalMatchedFiles: 1,
+                durationMs: 34,
+                categories: [
+                  { id: "env_files", label: "Env Files (.env*)", labelZh: ".env 环境文件", probedLocations: 1, inspectedFiles: 2, matchedFiles: 1, extractedCount: 1 },
+                  { id: "ssh_keys", label: "SSH & Keys", labelZh: "私钥与证书", probedLocations: 1, inspectedFiles: 0, matchedFiles: 0, extractedCount: 0 },
+                  { id: "project_configs", label: "Configs & Backups", labelZh: "配置与备份", probedLocations: 1, inspectedFiles: 1, matchedFiles: 0, extractedCount: 0 },
+                ],
+              },
             };
           }
           if (cmd === "commit_smart_batch") {
@@ -303,10 +338,37 @@ try {
   const undos = await page.evaluate(() => window.fixture.undoCalls);
   assert.deepEqual(undos, [["new-id-1", "new-id-2"]]);
 
-  // 10. Local dev config scan button
+  // 10. Local dev config scan button + visual category telemetry + workspace folder deep scan
   await page.click("#import-chip-scan");
   await page.waitForSelector(".import-card");
   assert.equal(await page.evaluate(() => window.fixture.scanCalls), 1);
+  assert.equal(await page.locator(".import-scan-cat").count(), 4);
+  assert.match(await page.locator("#import-scan-banner").innerText(), /184/);
+  assert.match(await page.locator("#import-scan-banner").innerText(), /AI 与 MCP 配置/);
+
+  await page.click('[data-scan-workspace-folder="true"]');
+  assert.equal(await page.evaluate(() => window.fixture.workspaceScanCalls), 1);
+  assert.equal(await page.locator(".import-scan-cat").count(), 3);
+  assert.match(await page.locator("#import-scan-banner").innerText(), /S:\/Github/);
+
+  // Verify zero horizontal overflow across all 6 languages & both themes with scan report visible
+  for (const langCode of ["en", "zh", "zh-TW", "ja", "ko", "es"]) {
+    await page.click(`.nav-item[data-page="settings"]`);
+    await page.click(`#language-switch button[data-language="${langCode}"]`);
+    await page.click(`.nav-item[data-page="import"]`);
+    for (const theme of ["dark", "light"]) {
+      await page.evaluate((t) => document.documentElement.setAttribute("data-theme", t), theme);
+      const overflow = await page.evaluate(() => ({
+        doc: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        banner: document.querySelector("#import-scan-banner").scrollWidth - document.querySelector("#import-scan-banner").clientWidth,
+      }));
+      assert.ok(overflow.doc <= 1, `doc overflow in ${langCode}/${theme}: ${overflow.doc}`);
+      assert.ok(overflow.banner <= 1, `scan banner overflow in ${langCode}/${theme}: ${overflow.banner}`);
+    }
+  }
+  await page.click(`.nav-item[data-page="settings"]`);
+  await page.click(`#language-switch button[data-language="zh"]`);
+  await page.click(`.nav-item[data-page="import"]`);
 
   // 11. Locking vault immediately wipes staged plaintext from Import Hub
   await page.click("#owner-lock-button");

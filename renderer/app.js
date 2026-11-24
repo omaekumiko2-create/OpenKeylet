@@ -9,16 +9,16 @@ window.addEventListener('blur', () => document.documentElement.classList.add('wi
 window.addEventListener('focus', () => document.documentElement.classList.remove('window-blurred'));
 
 {
-  const titleDragRegion = document.querySelector('.title-drag-region');
-  const isTitleControl = (target) => Boolean(target.closest?.('button, input, select, textarea, a, [role="button"], #title-search'));
-  titleDragRegion.addEventListener('mousedown', (event) => {
-    if (event.button === 0 && !isTitleControl(event.target)) event.preventDefault();
+  const isTitleControl = (target) => Boolean(target.closest?.('button, input, select, textarea, a, label, [role="button"], [data-tauri-drag-region="false"], #title-search'));
+  const inDragRegion = (target) => Boolean(target.closest?.('[data-tauri-drag-region="deep"]'));
+  document.addEventListener('mousedown', (event) => {
+    if (event.button === 0 && inDragRegion(event.target) && !isTitleControl(event.target)) event.preventDefault();
   });
-  titleDragRegion.addEventListener('selectstart', (event) => {
-    if (!isTitleControl(event.target)) event.preventDefault();
+  document.addEventListener('selectstart', (event) => {
+    if (inDragRegion(event.target) && !isTitleControl(event.target)) event.preventDefault();
   });
-  titleDragRegion.addEventListener('dragstart', (event) => {
-    if (!isTitleControl(event.target)) event.preventDefault();
+  document.addEventListener('dragstart', (event) => {
+    if (inDragRegion(event.target) && !isTitleControl(event.target)) event.preventDefault();
   });
   const titleSearch = document.getElementById('title-search');
   titleSearch?.addEventListener('click', (event) => {
@@ -70,6 +70,7 @@ const staticCopy = [
   ['#delete-draft-button', 'aria-label', '删除草稿', 'Delete draft'],
   ['#header-export-backup-button', 'text', '一键打包', 'EXPORT'],
   ['#header-import-backup-button', 'text', '一键导入包', 'IMPORT'],
+  ['#clear-activity-button', 'text', '清空记录', 'CLEAR LOG'],
   ['[data-module="SYSTEM / 01"] .settings-heading h2', 'text', '系统入口', 'SYSTEM ACCESS'],
   ['[data-module="SYSTEM / 01"] .settings-heading p', 'text', '控制 OpenKeylet 的桌面快捷方式与开机启动。', 'Control the OpenKeylet desktop shortcut and launch at login.'],
   ['#desktop-shortcut-option strong', 'text', '创建快捷方式到桌面', 'CREATE DESKTOP SHORTCUT'],
@@ -92,6 +93,18 @@ const staticCopy = [
   ['#edge-dock-option strong', 'text', '贴边自动收起抽屉', 'EDGE-DOCK DRAWER'],
   ['#edge-dock-option small', 'text', '将窗口拖至屏幕左、右或顶部边缘时自动收起，鼠标移至边缘自动拉出', 'Snap to the left, right, or top screen edge to auto-hide; hover the edge to slide back out.'],
   ['#edge-dock-enabled', 'aria-label', '贴边自动收起抽屉', 'Edge-dock drawer'],
+  ['#auto-check-option strong', 'text', '定时自动检测', 'SCHEDULED HEALTH CHECK'],
+  ['#auto-check-option small', 'text', '按设定间隔自动检测全部已启用的可测试项目（API / SSH），异常时亮黄灯提示', 'Automatically check all enabled testable items (API / SSH) and show an amber lamp on failures.'],
+  ['#auto-check-enabled', 'aria-label', '定时自动检测', 'Scheduled health check'],
+  ['#auto-check-interval-option strong', 'text', '检测时间间隔', 'CHECK INTERVAL'],
+  ['#auto-check-interval-option small', 'text', '后台自动全量检测的时间间隔（默认每 1 小时一次）', 'How often OpenKeylet automatically checks testable connections in the background (default 1 hour).'],
+  ['#auto-check-interval-minutes option[value="15"]', 'text', '15 分钟', '15 MINUTES'],
+  ['#auto-check-interval-minutes option[value="30"]', 'text', '30 分钟', '30 MINUTES'],
+  ['#auto-check-interval-minutes option[value="60"]', 'text', '1 小时（默认）', '1 HOUR (DEFAULT)'],
+  ['#auto-check-interval-minutes option[value="180"]', 'text', '3 小时', '3 HOURS'],
+  ['#auto-check-interval-minutes option[value="360"]', 'text', '6 小时', '6 HOURS'],
+  ['#auto-check-interval-minutes option[value="720"]', 'text', '12 小时', '12 HOURS'],
+  ['#auto-check-interval-minutes option[value="1440"]', 'text', '24 小时', '24 HOURS'],
   ['.pin-option strong', 'text', 'PIN 锁', 'PIN LOCK'],
   ['.pin-option small', 'text', '防他人在本机查看明文或管理条目；关闭将移除当前 PIN', 'Locks desktop viewing and management against others on this device. Turning off removes the PIN.'],
   ['#owner-auto-lock-option strong', 'text', '空闲自动锁定', 'AUTO-LOCK'],
@@ -161,7 +174,7 @@ const staticCopy = [
   ['.template-copy strong', 'text', '从一个组合开始', 'START WITH A PRESET'],
   ['.template-copy small', 'text', '模板只添加模块，不会限制之后的修改。', 'Templates only add modules; you can change anything afterward.'],
   ['.module-editor-heading > div > strong', 'text', '项目模块', 'ITEM MODULES'],
-  ['.module-editor-heading > div > small', 'text', '拖动把手排序 · 开关控制 Agent 可见性', 'DRAG HANDLE TO REORDER · SWITCH CONTROLS AGENT VISIBILITY'],
+  ['.module-editor-heading > div > small', 'text', '拖动卡片排序 · 开关控制 Agent 可见性', 'DRAG CARDS TO REORDER · SWITCH CONTROLS AGENT VISIBILITY'],
   ['#add-module-button', 'text', '＋ 添加模块', '+ ADD MODULE'],
   ['#module-menu [data-add-module="username"]', 'text', '账号', 'USERNAME'],
   ['#module-menu [data-add-module="password"]', 'text', '密码', 'PASSWORD'],
@@ -188,12 +201,20 @@ const staticCopy = [
   ['.login-websites summary', 'text', '网站匹配', 'WEBSITE MATCHING'],
   ['.login-websites > p', 'text', '设置多个网站及匹配规则', 'Configure websites and matching rules.'],
   ['#login-uri-add', 'text', '＋ 添加网站', '+ ADD WEBSITE'],
+  ['#agent-notes-summary-title', 'text', 'Agent 笔记', 'AGENT NOTES'],
+  ['#agent-notes-lock-badge', 'text', '已锁定', 'LOCKED'],
+  ['#agent-notes-lock-label', 'text', '锁定笔记（禁止 Agent 修改）', 'Lock notes (block agent edits)'],
+  ['#agent-notes-clear', 'text', '清空', 'CLEAR'],
+  ['#agent-note-input', 'placeholder', '添加简短用途备注（如：生产 GPU 服务器、/srv/web）…', 'Add a short note (e.g. prod GPU server, /srv/web)…'],
+  ['#agent-note-input', 'aria-label', '添加 Agent 笔记', 'Add agent note'],
+  ['#agent-note-add', 'text', '添加', 'ADD'],
 ];
 
 function applyLanguage() {
   language = resolveLanguage(languagePreference);
   document.documentElement.lang = window.OpenKeyletI18n ? window.OpenKeyletI18n.htmlLangFor(language) : (language === 'en' ? 'en' : 'zh-CN');
   window.OpenKeyletAppearance.setLanguage(localized);
+  invoke?.('sync_appearance_theme', { resolvedLanguage: language }).catch?.(() => {});
   const langButtons = $$('.language-switch button');
   let activeIndex = 0;
   langButtons.forEach((button, index) => {
@@ -232,10 +253,14 @@ function applyLanguage() {
   syncActivityFilterControl();
   syncSettingsFilterControl();
   syncTitleSearch();
+  if (state) syncCheckAllButton();
   window.OpenKeyletImportHub?.render?.();
   if (mvaultState && !$('#mvault-import-modal')?.classList.contains('hidden')) {
     if (mvaultState.preview) renderMvaultSelectPanel();
     else if (mvaultState.requiresPassword) renderMvaultUnlockPanel($('#mvault-unlock-error')?.textContent || '');
+  }
+  if (editorExistingItem && !$('#connection-modal')?.classList.contains('hidden')) {
+    renderAgentNotes(editorExistingItem, { autoOpen: false });
   }
 }
 
@@ -275,11 +300,18 @@ const api = {
   purge: (id, deletedAt) => invoke('owner_purge_item', { id, deletedAt }),
   history: (id) => invoke('owner_password_history', { id }),
   clearHistory: (id, expectedUpdatedAt) => invoke('owner_clear_password_history', { id, expectedUpdatedAt }),
+  addAgentNote: (id, text) => invoke('owner_add_agent_note', { id, text }),
+  updateAgentNote: (id, noteId, text) => invoke('owner_update_agent_note', { id, noteId, text }),
+  deleteAgentNote: (id, noteId) => invoke('owner_delete_agent_note', { id, noteId }),
+  clearAgentNotes: (id) => invoke('owner_clear_agent_notes', { id }),
+  setAgentNotesLocked: (id, locked) => invoke('owner_set_agent_notes_locked', { id, locked }),
   test: (id) => invoke('test_connection', { id }),
   settings: updateSettings,
   systemIntegration: () => invoke('system_integration_status'),
   setDesktopShortcut: (enabled) => invoke('set_desktop_shortcut', { enabled }),
   setLaunchAtLogin: (enabled) => invoke('set_launch_at_login', { enabled }),
+  deleteActivity: (id) => invoke('delete_activity', { id }),
+  deleteActivities: (ids) => invoke('delete_activities', { ids }),
   clear: () => invoke('clear_activities'),
   copyConfig: (format) => invoke('copy_mcp_config', { format }),
   agents: () => invoke('agent_mcp_status'),
@@ -433,7 +465,7 @@ function confirmDestructiveAction({ title, message, acceptLabel = localized('删
   $('#confirmation-cancel').textContent = localized('取消', 'CANCEL');
   $('#confirmation-accept').textContent = acceptLabel;
   confirmationPreviousFocus = document.activeElement;
-  confirmationInertElements = [...document.body.children].filter((element) => element !== $('#confirmation-modal') && !element.classList.contains('title-drag-region') && !element.inert && !['SCRIPT', 'STYLE'].includes(element.tagName));
+  confirmationInertElements = [...document.body.children].filter((element) => element !== $('#confirmation-modal') && !element.inert && !['SCRIPT', 'STYLE'].includes(element.tagName));
   confirmationInertElements.forEach((element) => { element.inert = true; });
   $('#confirmation-modal').classList.remove('hidden');
   requestAnimationFrame(() => { if (confirmationResolver) $('#confirmation-cancel').focus(); });
@@ -443,6 +475,12 @@ function confirmDestructiveAction({ title, message, acceptLabel = localized('删
 function clearOwnerPlaintext() {
   void finishSwitchDrag(false);
   finishItemPointerDrag(false);
+  clearAutoCheckTimer();
+  checkAllRunId += 1;
+  checkAllRunning = false;
+  lastCheckAllOutcome = '';
+  itemCheckStates.clear();
+  syncCheckAllButton();
   githubBackup.clearSecrets();
   appUpdater.closeModal();
   finishConfirmation(false, false);
@@ -654,7 +692,6 @@ function renderMetrics() {
       secondary: {
         value: enabled, mode: localized('已启用', 'ENABLED'), unit: total > 0 ? `/ ${total}` : localized('项', 'ITEMS'),
         tone: enabled > 0 ? 'active' : '',
-        ratio: total > 0 ? Math.round((enabled / total) * 100) : 0,
         label: localized('已启用项目数，包含所有类型', 'Enabled items across all item types'),
       },
     },
@@ -664,26 +701,33 @@ function renderMetrics() {
       secondary: {
         value: importStats.selected, mode: localized('待入库', 'SELECTED'), unit: importStats.total > 0 ? `/ ${importStats.total}` : localized('项', 'READY'),
         tone: importStats.selected > 0 ? 'active' : '',
-        ratio: importStats.total > 0 ? Math.round((importStats.selected / importStats.total) * 100) : 0,
         label: localized('已勾选准备批量入库的条目数', 'Selected candidates ready to import'),
       },
     },
     activity: {
       value: activities24h.length, mode: localized('近 24H 调用', 'CALLS · 24H'), unit: localized('次', ''),
-      label: localized('本地日志中最近 24 小时的操作数', 'Operations in the local log from the last 24 hours'),
+      label: localized('本地日志中最近 24 小时的操作数（点击查看全部记录）', 'Operations in the local log from the last 24 hours (click to show all)'),
+      action: 'focus-activity-all',
       secondary: {
         value: errors24h, mode: localized('异常失败', 'ERRORS · 24H'), unit: errors24h > 0 ? localized('项', '') : localized('正常', 'CLEAR'),
         tone: errors24h > 0 ? 'fault' : 'ok',
-        label: localized('本地日志中最近 24 小时的失败数', 'Errors in the local log from the last 24 hours'),
+        label: errors24h > 0
+          ? localized('点击筛选并定位到失败记录', 'Click to filter and focus failed activity items')
+          : localized('本地日志中最近 24 小时的失败数（点击查看错误筛选）', 'Errors in the local log from the last 24 hours (click to view error filter)'),
+        action: 'focus-activity-errors',
       },
     },
     settings: {
       value: registeredAgents, mode: localized('已接入 Agent', 'LINKED'), unit: localized('个', 'AGENTS'),
-      label: localized('已注册 OpenKeylet MCP 的 Agent 客户端数', 'Agent clients registered with OpenKeylet MCP'),
+      label: localized('已注册 OpenKeylet MCP 的 Agent 客户端数（点击查看）', 'Agent clients registered with OpenKeylet MCP (click to focus)'),
+      action: 'focus-linked-agents',
       secondary: {
         value: brokenAgents, mode: localized('待修复配置', 'REPAIR'), unit: brokenAgents > 0 ? localized('个', 'NEED FIX') : localized('健康', 'OK'),
         tone: brokenAgents > 0 ? 'warn' : 'ok',
-        label: localized('需要修复接入配置的 Agent 客户端数', 'Agent clients whose connection configuration needs repair'),
+        label: brokenAgents > 0
+          ? localized('点击定位到待修复的 Agent 配置', 'Click to jump to the Agent configuration needing repair')
+          : localized('需要修复接入配置的 Agent 客户端数（点击查看）', 'Agent clients whose connection configuration needs repair (click to view)'),
+        action: 'focus-repair-agent',
       },
     },
   };
@@ -706,20 +750,24 @@ function renderMetrics() {
       label: ownerLockState.pinConfigured ? localized('已开启本地 PIN 锁定', 'Local PIN protection is enabled') : localized('尚未设置本地 PIN（点击前往设置）', 'Local PIN protection is off (click to configure)'),
     },
   ];
-  const progress = typeof secondary.ratio === 'number'
-    ? `<span class="metric-bar" aria-hidden="true"><i style="width:${secondary.ratio}%"></i></span>`
-    : '';
+  const primaryTag = model.action ? 'button' : 'div';
+  const primaryAttrs = model.action
+    ? `type="button" class="lcd-primary metric-cell metric-actionable" data-metric-action="${escapeHtml(model.action)}"`
+    : `class="lcd-primary metric-cell" role="group"`;
+  const secondaryTag = secondary.action ? 'button' : 'div';
+  const secondaryAttrs = secondary.action
+    ? `type="button" class="lcd-secondary metric-cell metric-actionable ${secondary.tone || ''}" data-metric-action="${escapeHtml(secondary.action)}"`
+    : `class="lcd-secondary metric-cell ${secondary.tone || ''}" role="group"`;
   $('#metrics').innerHTML = `
     <div class="lcd-screen">
-      <div class="lcd-primary metric-cell" role="group" aria-label="${escapeHtml(model.label)}" title="${escapeHtml(`${model.label}: ${model.value}`)}">
+      <${primaryTag} ${primaryAttrs} aria-label="${escapeHtml(model.label)}" title="${escapeHtml(`${model.label}: ${model.value}`)}">
         <span class="metric-label" aria-hidden="true">${model.mode}</span>
         <div class="metric-readout">${sevenSegmentNumber(model.value)}${model.unit ? `<span class="metric-unit" aria-hidden="true">${model.unit}</span>` : ''}</div>
-      </div>
-      <div class="lcd-secondary metric-cell ${secondary.tone || ''}" role="group" aria-label="${escapeHtml(secondary.label)}" title="${escapeHtml(`${secondary.label}: ${secondary.value}`)}">
+      </${primaryTag}>
+      <${secondaryTag} ${secondaryAttrs} aria-label="${escapeHtml(secondary.label)}" title="${escapeHtml(`${secondary.label}: ${secondary.value}`)}">
         <span class="metric-label" aria-hidden="true">${secondary.mode}</span>
         <div class="metric-readout">${sevenSegmentNumber(secondary.value, 3)}${secondary.unit ? `<span class="metric-unit" aria-hidden="true">${secondary.unit}</span>` : ''}</div>
-        ${progress}
-      </div>
+      </${secondaryTag}>
       <div class="lcd-system" role="group" aria-label="${localized('当前服务状态', 'Current service status')}">
         ${services.map((service) => `<button type="button" class="lcd-service ${service.tone}" data-metric-section="${service.target}" aria-label="${escapeHtml(service.label)}" title="${escapeHtml(service.label)}"><i class="lcd-dot ${service.tone}" aria-hidden="true"></i><span class="lcd-service-name" aria-hidden="true">${service.name}</span><strong class="lcd-status ${service.tone}" aria-hidden="true">${service.value}</strong></button>`).join('')}
       </div>
@@ -863,6 +911,10 @@ async function selectPage(page) {
   });
   $$('.page').forEach(item => item.classList.toggle('active', item.id === `page-${page}`));
   renderMetrics();
+  if (page === 'connections') {
+    syncListActionsWidth();
+    syncCheckAllButton();
+  }
   if (page === 'import') {
     window.OpenKeyletImportHub?.render?.();
     window.OpenKeyletImportHub?.focusInput?.();
@@ -911,6 +963,7 @@ function switchControlFor(target) {
         if (input.id === 'desktop-shortcut-enabled') await setSystemIntegration('desktop', input.checked);
         else if (input.id === 'launch-at-login-enabled') await setSystemIntegration('startup', input.checked);
         else if (input.id === 'browser-enabled' || input.id === 'browser-agent-passkey-enabled') await saveBrowserSettings();
+        else if (input.id === 'auto-check-enabled') await saveDesktopSettings();
         else if (input.id === 'pin-enabled') await savePinSettings();
         else input.dispatchEvent(new Event('change', { bubbles: true }));
       } };
@@ -1068,10 +1121,393 @@ function syncActivityFilterControl() {
   syncFilterStrip('#activity-filter-switch', activityFilterOrder, currentActivityFilter, 'data-activity-filter', kind => localized(...labels[kind]), true);
 }
 
+const itemCheckStates = new Map();
+const AUTO_CHECK_INTERVALS = [15, 30, 60, 180, 360, 720, 1440];
+let checkAllRunning = false;
+let checkAllRunId = 0;
+let checkAllProgress = { done: 0, total: 0 };
+let lastCheckAllOutcome = '';
+let autoCheckTimer = null;
+
+function clearAutoCheckTimer() {
+  if (autoCheckTimer !== null) {
+    clearTimeout(autoCheckTimer);
+    autoCheckTimer = null;
+  }
+}
+
+function getAutoCheckConfig() {
+  const enabled = state?.settings?.autoCheckEnabled !== false;
+  const rawMinutes = Number(state?.settings?.autoCheckIntervalMinutes);
+  const minutes = AUTO_CHECK_INTERVALS.includes(rawMinutes) ? rawMinutes : 60;
+  return { enabled, minutes };
+}
+
+function scheduleAutoCheck() {
+  clearAutoCheckTimer();
+  if (!ownerLockState.unlocked || !state?.settings) return;
+  const { enabled, minutes } = getAutoCheckConfig();
+  if (!enabled) return;
+  const delayMs = minutes * 60_000;
+  autoCheckTimer = setTimeout(async () => {
+    autoCheckTimer = null;
+    if (!ownerLockState.unlocked || !state?.settings || state.settings.autoCheckEnabled === false) return;
+    if (!checkAllRunning) {
+      await runCheckAll({ allItems: true, silent: true });
+    }
+    scheduleAutoCheck();
+  }, delayMs);
+}
+
+function getVisibleConnections() {
+  const query = normalizeSearch(pageSearch.connections);
+  return state.connections.filter((item) => {
+    if (item.id === editorItemId) return true;
+    if (currentItemTypeFilter !== 'all' && itemDisplayKind(item) !== currentItemTypeFilter) return false;
+    if (!query) return true;
+    const fields = (item.secret?.fields || []).map((field) => field.name).join(' ');
+    const notes = (item.agentNotes || []).map((note) => `${note.text || ''} ${note.author || ''}`).join(' ');
+    return normalizeSearch([item.name, item.description, item.folder, itemTypeLabel(item.itemType), itemDisplayType(item), itemCapabilities(item).join(' '), itemDetail(item), itemPermission(item), fields, notes].join(' ')).includes(query);
+  });
+}
+
+function getTestableVisibleConnections() {
+  return getVisibleConnections().filter((item) => item.enabled && item.canTest);
+}
+
+function getAllTestableConnections() {
+  return (state?.connections || []).filter((item) => item.enabled && item.canTest);
+}
+
+const CARD_ACTION_ICONS = {
+  checkIdle: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="m8.8 12.2 2.2 2.2 4.4-4.6"/></svg>',
+  checkOk: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5 9.5 17 19 7.5"/></svg>',
+  checkError: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 8v4.5"/><path d="M12 16h.01"/></svg>',
+  use: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.75 4.85L18.6 9.6l-4.85 1.75L12 16.2l-1.75-4.85L5.4 9.6l4.85-1.75Z"/><path d="M19 15.2l.75 2.05L21.8 18l-2.05.75L19 20.8l-.75-2.05L16.2 18l2.05-.75Z"/></svg>',
+  history: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 12a8.5 8.5 0 1 0 2.7-6.2L3.5 8"/><path d="M3.5 3.5V8H8"/><path d="M12 7.5V12l3 1.8"/></svg>',
+  copy: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a1.5 1.5 0 0 1-1.5-1.5v-9A1.5 1.5 0 0 1 4 3h9A1.5 1.5 0 0 1 14.5 4.5v1"/></svg>',
+  copied: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5 9.5 17 19 7.5"/></svg>',
+  del: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16"/><path d="M9.5 7V4.5A1.5 1.5 0 0 1 11 3h2a1.5 1.5 0 0 1 1.5 1.5V7"/><path d="M6.5 7l.8 12.2A1.8 1.8 0 0 0 9.1 21h5.8a1.8 1.8 0 0 0 1.8-1.8L17.5 7"/><path d="M10 11v6M14 11v6"/></svg>',
+};
+
+function itemCheckButtonView(item) {
+  const entry = item.enabled && item.canTest ? itemCheckStates.get(item.id) : null;
+  if (entry?.status === 'testing') {
+    return { state: 'testing', html: '<span class="check-spinner" aria-hidden="true"></span>', title: localized('正在检测连接…', 'Testing connection…'), loading: true };
+  }
+  if (entry?.status === 'ok') {
+    return { state: 'ok', html: CARD_ACTION_ICONS.checkOk, title: entry.message || localized('连接测试通过', 'Connection check passed'), loading: false };
+  }
+  if (entry?.status === 'error') {
+    return { state: 'error', html: CARD_ACTION_ICONS.checkError, title: entry.message || localized('连接测试失败', 'Connection check failed'), loading: false };
+  }
+  return { state: '', html: CARD_ACTION_ICONS.checkIdle, title: localized('检测连接', 'Test connection'), loading: false };
+}
+
+function itemLampView(item) {
+  if (!item.enabled) {
+    return {
+      dotClass: 'status-dot off',
+      label: localized('启用此项目；Agent 将可以使用其中的秘密', 'Enable this item so agents can use its secrets'),
+    };
+  }
+  const entry = item.canTest ? itemCheckStates.get(item.id) : null;
+  if (entry?.status === 'testing') {
+    return {
+      dotClass: 'status-dot testing',
+      label: localized('正在检测连接…', 'Testing connection…'),
+    };
+  }
+  if (entry?.status === 'error') {
+    const detail = entry.message ? `：${entry.message}` : '';
+    return {
+      dotClass: 'status-dot warn',
+      label: localized(`检测未通过${detail}（点击可停用此项目）`, `Check failed${entry.message ? `: ${entry.message}` : ''} (click to disable)`),
+    };
+  }
+  return {
+    dotClass: 'status-dot',
+    label: localized('停用此项目；Agent 将无法使用其中的秘密', 'Disable this item; agents will no longer be able to use its secrets'),
+  };
+}
+
+function syncItemCheckButton(id) {
+  const item = state.connections.find((candidate) => candidate.id === id);
+  const card = $(`.connection-card[data-item-id="${CSS.escape(id)}"]`);
+  if (!card || !item) return;
+  const canTest = Boolean(item.enabled && item.canTest);
+  const button = $('[data-action="test"]', card);
+  if (button) {
+    const view = itemCheckButtonView(item);
+    if (view.state) button.dataset.checkState = view.state;
+    else delete button.dataset.checkState;
+    button.innerHTML = view.html;
+    button.title = view.title;
+    button.setAttribute('aria-label', view.title);
+    button.disabled = !canTest || view.loading;
+    button.setAttribute('aria-busy', view.loading ? 'true' : 'false');
+  }
+  const toggleBtn = $('.item-toggle', card);
+  const dot = $('.item-toggle .status-dot', card);
+  if (toggleBtn && dot) {
+    const lamp = itemLampView(item);
+    dot.className = lamp.dotClass;
+    toggleBtn.title = lamp.label;
+    toggleBtn.setAttribute('aria-label', lamp.label);
+  }
+  syncListActionsWidth();
+}
+
+function recomputeCheckAllOutcome() {
+  if (!lastCheckAllOutcome) return;
+  let hasError = false;
+  let hasOk = false;
+  for (const item of state?.connections || []) {
+    if (!item.enabled || !item.canTest) continue;
+    const entry = itemCheckStates.get(item.id);
+    if (entry?.status === 'error') hasError = true;
+    else if (entry?.status === 'ok') hasOk = true;
+  }
+  lastCheckAllOutcome = hasError ? 'error' : (hasOk ? 'ok' : '');
+}
+
+function clearCheckAllResults() {
+  lastCheckAllOutcome = '';
+  const clearedIds = [];
+  for (const [id, entry] of itemCheckStates.entries()) {
+    if (entry?.status === 'testing') continue;
+    itemCheckStates.delete(id);
+    clearedIds.push(id);
+  }
+  for (const id of clearedIds) {
+    syncItemCheckButton(id);
+  }
+  syncCheckAllButton();
+}
+
+function syncCheckAllButton() {
+  const button = $('#check-all-button');
+  const label = $('#check-all-label');
+  if (!button || !label) return;
+  if (checkAllRunning) {
+    button.disabled = true;
+    button.dataset.state = 'running';
+    button.setAttribute('aria-busy', 'true');
+    const { done, total } = checkAllProgress;
+    label.textContent = `${done}/${total}`;
+    const tip = localized(`正在批量检测（${done}/${total}）…`, `Checking items (${done}/${total})…`);
+    button.title = tip;
+    button.setAttribute('aria-label', tip);
+    return;
+  }
+  const testable = getTestableVisibleConnections();
+  button.disabled = testable.length === 0;
+  button.setAttribute('aria-busy', 'false');
+  const hasOutcome = Boolean(lastCheckAllOutcome && testable.length > 0);
+  if (hasOutcome) button.dataset.state = lastCheckAllOutcome;
+  else delete button.dataset.state;
+  label.textContent = 'CHECK';
+  const tip = hasOutcome
+    ? (lastCheckAllOutcome === 'error'
+      ? localized('检测发现异常：点击恢复正常状态', 'Check found issues: click to reset status')
+      : localized('检测已完成：点击恢复正常状态', 'Checks finished: click to reset status'))
+    : (testable.length > 0
+      ? localized(`一键检测当前列表中的 ${testable.length} 个可测试项目`, `Check all ${testable.length} testable items in view`)
+      : localized('当前列表没有可检测的已启用项目', 'No enabled testable items in current view'));
+  button.title = tip;
+  button.setAttribute('aria-label', tip);
+}
+
+function syncListActionsWidth() {
+  const list = $('#connections-list');
+  if (list) list.style.removeProperty('--list-actions-width');
+}
+
+async function runSingleItemCheck(item, { showToast = true, doRefresh = true } = {}) {
+  if (!item || !item.enabled || !item.canTest) return null;
+  if (itemCheckStates.get(item.id)?.status === 'testing') return null;
+  itemCheckStates.set(item.id, { status: 'testing', message: '' });
+  syncItemCheckButton(item.id);
+  try {
+    const raw = await api.test(item.id);
+    const msg = publicMessage(raw, localized('连接测试完成', 'Connection test complete'));
+    itemCheckStates.set(item.id, { status: 'ok', message: msg });
+    syncItemCheckButton(item.id);
+    recomputeCheckAllOutcome();
+    syncCheckAllButton();
+    if (showToast) toast(msg);
+    if (doRefresh) await refresh(false);
+    return { ok: true, message: msg };
+  } catch (error) {
+    const msg = cleanError(error);
+    itemCheckStates.set(item.id, { status: 'error', message: msg });
+    syncItemCheckButton(item.id);
+    recomputeCheckAllOutcome();
+    syncCheckAllButton();
+    if (showToast) toast(msg, 'error');
+    if (doRefresh) await refresh(false);
+    return { ok: false, message: msg };
+  }
+}
+
+async function runCheckAll({ allItems = false, silent = false } = {}) {
+  if (checkAllRunning || !ownerLockState.unlocked) return;
+  const targets = allItems ? getAllTestableConnections() : getTestableVisibleConnections();
+  if (!targets.length) {
+    if (!silent) toast(localized('当前列表没有可检测的已启用项目', 'No enabled testable items in current view'));
+    return;
+  }
+  const runId = ++checkAllRunId;
+  checkAllRunning = true;
+  lastCheckAllOutcome = '';
+  checkAllProgress = { done: 0, total: targets.length };
+  for (const item of targets) {
+    itemCheckStates.set(item.id, { status: 'testing', message: '' });
+    syncItemCheckButton(item.id);
+  }
+  syncCheckAllButton();
+
+  let cursor = 0;
+  let passed = 0;
+  let failed = 0;
+  const workerCount = Math.min(4, targets.length);
+  const runWorker = async () => {
+    while (cursor < targets.length) {
+      if (runId !== checkAllRunId || !ownerLockState.unlocked) return;
+      const item = targets[cursor++];
+      try {
+        const raw = await api.test(item.id);
+        if (runId !== checkAllRunId || !ownerLockState.unlocked) return;
+        const msg = publicMessage(raw, localized('连接测试完成', 'Connection test complete'));
+        itemCheckStates.set(item.id, { status: 'ok', message: msg });
+        passed += 1;
+      } catch (error) {
+        if (runId !== checkAllRunId || !ownerLockState.unlocked) return;
+        itemCheckStates.set(item.id, { status: 'error', message: cleanError(error) });
+        failed += 1;
+      }
+      syncItemCheckButton(item.id);
+      checkAllProgress = { done: passed + failed, total: targets.length };
+      syncCheckAllButton();
+    }
+  };
+
+  await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
+  if (runId !== checkAllRunId) return;
+  checkAllRunning = false;
+  lastCheckAllOutcome = failed > 0 ? 'error' : 'ok';
+  syncCheckAllButton();
+  await refresh(false);
+  if (silent) {
+    if (failed > 0) {
+      toast(localized(`定时检测发现 ${failed} 项异常，已亮黄灯提示`, `Scheduled check: ${failed} item(s) flagged with an amber lamp`), 'error');
+    }
+    return;
+  }
+  if (failed === 0) {
+    window.OpenKeyletAppearance?.play?.('success');
+    toast(localized(`一键检测完成：全部 ${passed} 项通过`, `All ${passed} checks passed`));
+  } else {
+    toast(localized(`一键检测完成：${passed} 项通过，${failed} 项失败（已亮黄灯）`, `Checks finished: ${passed} passed, ${failed} failed (amber lamp)`), 'error');
+  }
+}
+
+function formatFullItemCopy(item, ownerValues = {}) {
+  const lines = [];
+  const typeLabel = itemDisplayType(item);
+  lines.push(`[${typeLabel}] ${item.name}`);
+  const folder = String(item.folder || '').trim();
+  const description = String(item.description || '').trim();
+  if (folder) lines.push(`${localized('文件夹', 'Folder')}: ${folder}`);
+  if (description) lines.push(`${localized('说明', 'Description')}: ${description}`);
+
+  const fieldEntries = [];
+  const emittedSecretKeys = new Set();
+  for (const module of item.modules || []) {
+    const def = MODULE_DEFS[module.kind] || MODULE_DEFS.customSecret;
+    const secretKey = moduleSecretName(module);
+    const label = module.kind === 'customSecret'
+      ? (String(module.name || '').trim() || localized('自定义字段', 'Custom field'))
+      : localized(def.zh, def.en);
+    let rawVal = '';
+    if (secretKey) {
+      emittedSecretKeys.add(secretKey);
+      rawVal = ownerValues[secretKey] ?? '';
+    } else {
+      rawVal = module.value ?? '';
+    }
+    const val = String(rawVal ?? '');
+    if (!val.trim()) continue;
+    fieldEntries.push([label, val]);
+  }
+  for (const [key, val] of Object.entries(ownerValues)) {
+    if (emittedSecretKeys.has(key)) continue;
+    const text = String(val ?? '');
+    if (!text.trim()) continue;
+    fieldEntries.push([key, text]);
+  }
+
+  for (const [label, val] of fieldEntries) {
+    if (val.includes('\n')) {
+      lines.push(`${label}:`);
+      lines.push(val.trimEnd());
+    } else {
+      lines.push(`${label}: ${val.trim()}`);
+    }
+  }
+
+  const uris = (item.loginUris || []).map((entry) => String(entry?.uri || '').trim()).filter(Boolean);
+  if (uris.length) {
+    lines.push(`${localized('匹配网站', 'Websites')}: ${uris.join(', ')}`);
+  }
+  if (item.passkeys?.length) {
+    const passkeySummary = item.passkeys.map((pk) => [pk.rpId, pk.userName || pk.displayName].filter(Boolean).join(' / ')).filter(Boolean);
+    if (passkeySummary.length) lines.push(`Passkey: ${passkeySummary.join('; ')}`);
+  }
+  if (item.agentNotes?.length) {
+    lines.push(`${localized('Agent 笔记', 'Agent notes')}:`);
+    for (const note of item.agentNotes) {
+      const author = note.author === 'OWNER' ? localized('主人', 'OWNER') : (note.author || 'MCP');
+      lines.push(`- [${author}] ${note.text}`);
+    }
+  }
+  return lines.join('\n');
+}
+
+async function copyFullItem(item, button = null) {
+  if (!item) return;
+  try {
+    let ownerValues = {};
+    try {
+      const view = await api.ownerSecrets(item.id);
+      ownerValues = Object.fromEntries((view?.fields || []).map((field) => [field.name, field.value]));
+    } catch (error) {
+      toast(cleanError(error), 'error');
+      await refreshOwnerLock(false);
+      return;
+    }
+    const formatted = formatFullItemCopy(item, ownerValues);
+    await api.copyOwnerValue(formatted, true);
+    if (button?.isConnected) {
+      button.classList.add('is-copied');
+      button.innerHTML = CARD_ACTION_ICONS.copied;
+      setTimeout(() => {
+        if (!button.isConnected) return;
+        button.classList.remove('is-copied');
+        button.innerHTML = CARD_ACTION_ICONS.copy;
+      }, 1200);
+    }
+    toast(localized(`已工整复制「${item.name}」的全部内容（30 秒后清除剪贴板）`, `Copied full contents of "${item.name}" (clears clipboard in 30s)`));
+  } catch (error) {
+    toast(cleanError(error), 'error');
+  }
+}
+
 function syncVaultViewMode() {
   const list = $('#connections-list');
   if (list) {
     list.dataset.view = vaultViewMode;
+    syncListActionsWidth();
     if (typeof updateItemGridRowHeight === 'function' && itemList) updateItemGridRowHeight();
   }
   const button = $('#vault-view-toggle');
@@ -1098,11 +1534,23 @@ function itemSubtitle(item) {
 
 function itemMetaBadges(item) {
   const badges = [];
-  if (item.passkeys?.length) badges.push('PASSKEY');
+  if (item.passkeys?.length) badges.push({ text: 'PASSKEY' });
   const hasTotp = Boolean(item.hasTotp || (item.modules || []).some((m) => m.kind === 'totp' && m.configured !== false));
-  if (hasTotp) badges.push('2FA');
-  if (item.folder && !itemSubtitle(item).includes(item.folder)) badges.push(item.folder);
-  return badges.slice(0, 2);
+  if (hasTotp) badges.push({ text: '2FA' });
+  const notes = Array.isArray(item.agentNotes) ? item.agentNotes : [];
+  if (notes.length) {
+    const label = notes.length > 1
+      ? localized(`笔记 · ${notes.length}`, `NOTE · ${notes.length}`)
+      : localized('笔记', 'NOTE');
+    const previewLines = notes.slice(0, 3).map((entry) => {
+      const author = entry.author === 'OWNER' ? localized('主人', 'OWNER') : (entry.author || 'MCP');
+      return `[${author}] ${entry.text}`;
+    });
+    if (item.agentNotesLocked) previewLines.unshift(localized('已锁定', 'LOCKED'));
+    badges.push({ text: label, title: previewLines.join('\n'), isNote: true });
+  }
+  if (item.folder && !itemSubtitle(item).includes(item.folder) && badges.length < 3) badges.push({ text: item.folder });
+  return badges.slice(0, 3);
 }
 
 function renderConnections() {
@@ -1110,43 +1558,50 @@ function renderConnections() {
   syncVaultViewMode();
   const query = normalizeSearch(pageSearch.connections);
   const signature = JSON.stringify([state.connections, query, language, editorItemId, currentItemTypeFilter]);
-  if (signature === renderedConnectionsSignature) return;
+  if (signature === renderedConnectionsSignature) {
+    syncListActionsWidth();
+    syncCheckAllButton();
+    return;
+  }
   renderedConnectionsSignature = signature;
-  const items = state.connections.filter((item) => {
-    if (item.id === editorItemId) return true;
-    if (currentItemTypeFilter !== 'all' && itemDisplayKind(item) !== currentItemTypeFilter) return false;
-    if (!query) return true;
-    const fields = (item.secret?.fields || []).map((field) => field.name).join(' ');
-    return normalizeSearch([item.name, item.description, item.folder, itemTypeLabel(item.itemType), itemDisplayType(item), itemCapabilities(item).join(' '), itemDetail(item), itemPermission(item), fields].join(' ')).includes(query);
-  });
+  const existingIds = new Set(state.connections.map((item) => item.id));
+  for (const id of itemCheckStates.keys()) {
+    if (!existingIds.has(id)) itemCheckStates.delete(id);
+  }
+  recomputeCheckAllOutcome();
+  const items = getVisibleConnections();
   const container = $('#connections-list');
   if (editorItemId && !state.connections.some(item => item.id === editorItemId)) closeEditor();
   if (!items.length) {
     const hasItems = state.connections.length > 0;
     container.innerHTML = `<div class="empty-state"><div><div class="empty-code">LOCAL VAULT</div><h3>${hasItems ? localized('没有匹配项目', 'NO MATCHING ITEMS') : localized('还没有秘密项目', 'NO VAULT ITEMS')}</h3><p>${hasItems ? localized('当前筛选没有结果。', 'No items match the current filters.') : localized('保存密码、Passkey、信用卡、身份资料和安全笔记，在需要时使用。', 'Keep passwords, passkeys, cards, identities and secure notes together.')}</p><button class="button primary" data-action="${hasItems ? 'clear-connection-filters' : 'add'}">${hasItems ? localized('清除筛选', 'CLEAR FILTERS') : localized('添加项目', 'ADD ITEM')}</button></div></div>`;
+    syncListActionsWidth();
+    syncCheckAllButton();
     return;
   }
   container.innerHTML = items.map((item) => {
     const type = itemDisplayType(item);
     const canTest = item.enabled && item.canTest;
+    const checkView = itemCheckButtonView(item);
+    const lamp = itemLampView(item);
     const agentActions = itemCapabilities(item).length > 0;
     const subtitle = itemSubtitle(item);
     const badges = itemMetaBadges(item);
-    const reorderLabel = localized(`${item.name}：拖动排序，或按方向键`, `${item.name}: drag to reorder, or use the arrow keys`);
-    const toggleLabel = item.enabled
-      ? localized('停用此项目；Agent 将无法使用其中的秘密', 'Disable this item; agents will no longer be able to use its secrets')
-      : localized('启用此项目；Agent 将可以使用其中的秘密', 'Enable this item so agents can use its secrets');
+    const cardLabel = localized(`${item.name}：点击编辑，长按拖拽排序，方向键可调整位置`, `${item.name}: click to edit, hold to drag, or use arrow keys to reorder`);
+    const checkStateAttr = checkView.state ? ` data-check-state="${checkView.state}"` : '';
+    const checkBusyAttr = checkView.loading ? ' aria-busy="true"' : '';
     return `<article class="connection-card ${itemCapabilities(item).includes('ssh') ? 'ssh' : itemCapabilities(item).includes('http') ? 'http' : 'fill'} ${item.enabled ? '' : 'disabled'}" data-item-id="${escapeHtml(item.id)}">
-      <button class="connection-name" type="button" draggable="false" data-item-reorder="${escapeHtml(item.id)}" aria-label="${escapeHtml(reorderLabel)}" aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight Home End" title="${escapeHtml(reorderLabel)}"><span class="lettering-ink">${escapeHtml(item.name)}</span></button>
-      <span class="connection-meta"><span class="connection-sub">${escapeHtml(subtitle)}</span>${badges.map((badge) => `<span class="connection-badge">${escapeHtml(badge)}</span>`).join('')}</span>
-      <button class="module-state item-toggle" type="button" data-action="toggle-enabled" data-id="${item.id}" aria-pressed="${item.enabled}" title="${toggleLabel}" aria-label="${toggleLabel}"><i class="status-dot ${item.enabled ? '' : 'off'}" aria-hidden="true"></i></button>
+      <button class="connection-name" type="button" draggable="false" data-item-reorder="${escapeHtml(item.id)}" aria-haspopup="dialog" aria-controls="connection-modal" aria-label="${escapeHtml(cardLabel)}" aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight Home End" title="${escapeHtml(cardLabel)}"><span class="lettering-ink">${escapeHtml(item.name)}</span></button>
+      <span class="connection-meta"><span class="connection-sub">${escapeHtml(subtitle)}</span>${badges.map((badge) => `<span class="connection-badge${badge.isNote ? ' is-note' : ''}"${badge.title ? ` title="${escapeHtml(badge.title)}"` : ''}>${escapeHtml(badge.text)}</span>`).join('')}</span>
+      <button class="module-state item-toggle" type="button" data-action="toggle-enabled" data-id="${item.id}" aria-pressed="${item.enabled}" title="${escapeHtml(lamp.label)}" aria-label="${escapeHtml(lamp.label)}"><i class="${lamp.dotClass}" aria-hidden="true"></i></button>
       <span class="connection-type" role="img" data-item-type="${itemDisplayKind(item)}" aria-label="${escapeHtml(type)}" title="${escapeHtml(type)}">${itemTypeIcon(itemDisplayKind(item))}<small aria-hidden="true">${escapeHtml(type)}</small></span>
       <div class="card-actions" role="group" aria-label="${escapeHtml(item.name)}">
-        <div class="item-disclosure-well"><button class="item-disclosure" type="button" data-action="edit" data-id="${item.id}" aria-haspopup="dialog" aria-controls="connection-modal" aria-label="${escapeHtml(localized(`编辑 ${item.name}`, `Edit ${item.name}`))}" title="${localized('编辑项目', 'Edit item')}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 19 3.5-.7L19 7.8 16.2 5 5.7 15.5 5 19Zm9.8-12.6 2.8 2.8"/></svg></button></div>
-        ${agentActions ? `<button class="small-button" type="button" data-action="test" data-id="${item.id}" ${canTest ? '' : 'disabled'}>CHECK</button><button class="small-button" type="button" data-action="copy-name" data-id="${item.id}" title="${localized('复制 OpenKeylet MCP 使用提示', 'Copy OpenKeylet MCP use prompt')}" aria-label="${localized('复制 OpenKeylet MCP 使用提示', 'Copy OpenKeylet MCP use prompt')}">USE</button>` : ''}${item.passwordHistoryCount ? `<button class="small-button" type="button" data-action="history" data-id="${item.id}" title="${localized('密码历史', 'Password history')}" aria-label="${localized('密码历史', 'Password history')}">HIS</button>` : ''}<button class="small-button delete" type="button" data-action="delete" data-id="${item.id}">DEL</button>
+        ${agentActions ? `<button class="small-button card-icon-btn" type="button" data-action="test" data-id="${item.id}"${checkStateAttr}${checkBusyAttr} title="${escapeHtml(checkView.title)}" aria-label="${escapeHtml(checkView.title)}" ${canTest && !checkView.loading ? '' : 'disabled'}>${checkView.html}</button><button class="small-button card-icon-btn" type="button" data-action="copy-name" data-id="${item.id}" title="${localized('复制 OpenKeylet MCP 使用提示', 'Copy OpenKeylet MCP use prompt')}" aria-label="${localized('复制 OpenKeylet MCP 使用提示', 'Copy OpenKeylet MCP use prompt')}">${CARD_ACTION_ICONS.use}</button>` : ''}${item.passwordHistoryCount ? `<button class="small-button card-icon-btn" type="button" data-action="history" data-id="${item.id}" title="${localized('密码历史', 'Password history')}" aria-label="${localized('密码历史', 'Password history')}">${CARD_ACTION_ICONS.history}</button>` : ''}<button class="small-button card-icon-btn item-disclosure" type="button" data-action="copy-item" data-id="${item.id}" aria-label="${escapeHtml(localized(`复制 ${item.name} 的全部内容`, `Copy full contents of ${item.name}`))}" title="${localized('复制项目全部内容', 'Copy full item contents')}">${CARD_ACTION_ICONS.copy}</button><button class="small-button card-icon-btn delete" type="button" data-action="delete" data-id="${item.id}" title="${localized('移入回收站', 'Move to trash')}" aria-label="${localized('移入回收站', 'Move to trash')}">${CARD_ACTION_ICONS.del}</button>
       </div>
     </article>`;
   }).join('');
+  syncListActionsWidth();
+  syncCheckAllButton();
 }
 
 function draftSecretValues(secrets = {}) {
@@ -1212,23 +1667,71 @@ function activitySource(source = '') {
   return source;
 }
 
+function getFilteredActivities() {
+  const query = normalizeSearch(pageSearch.activity);
+  return state.activities
+    .map((activity, sourceIndex) => ({ activity, sourceIndex }))
+    .filter(({ activity }) => {
+      if (currentActivityFilter !== 'all' && activity.status !== currentActivityFilter) return false;
+      return !query || normalizeSearch([activity.action, activity.connectionName, activity.source, activity.status, activity.error].join(' ')).includes(query);
+    });
+}
+
+function isActivityFilterActive() {
+  return currentActivityFilter !== 'all' || Boolean(normalizeSearch(pageSearch.activity));
+}
+
+function syncClearActivityButton(matchedCount) {
+  const button = $('#clear-activity-button');
+  if (!button) return;
+  const totalCount = state?.activities?.length || 0;
+  const filtering = isActivityFilterActive() && matchedCount < totalCount;
+  button.textContent = filtering ? localized('删除匹配', 'DELETE SHOWN') : localized('清空记录', 'CLEAR LOG');
+  button.title = filtering
+    ? localized(`删除当前筛选出的 ${matchedCount} 条记录`, `Delete ${matchedCount} matching log entries`)
+    : localized('清空全部本地操作记录', 'Clear all local activity logs');
+  button.disabled = filtering ? matchedCount === 0 : totalCount === 0;
+}
+
+async function deleteSingleActivity(id, triggerEl = null) {
+  if (!id) return;
+  const rowsBefore = $$('#activity-list .activity-item');
+  const currentIndex = rowsBefore.findIndex((row) => row.dataset.activityId === id);
+  const restoreFocus = Boolean(triggerEl && (document.activeElement === triggerEl || triggerEl.closest?.('.activity-item') === document.activeElement));
+  if (triggerEl) triggerEl.disabled = true;
+  try {
+    await api.deleteActivity(id);
+    expandedActivityErrors.delete(id);
+    state.activities = state.activities.filter((entry) => entry.id !== id);
+    renderActivity();
+    renderMetrics();
+    toast(localized('已删除该条记录', 'Log entry deleted'));
+    if (restoreFocus) {
+      const rowsAfter = $$('#activity-list .activity-item');
+      const nextRow = rowsAfter[Math.min(currentIndex, rowsAfter.length - 1)];
+      (nextRow && $('[data-action="delete-activity"]', nextRow))?.focus({ preventScroll: true });
+    }
+  } catch (error) {
+    if (triggerEl) triggerEl.disabled = false;
+    toast(cleanError(error), 'error');
+  }
+}
+
 function renderActivity() {
   syncActivityFilterControl();
   const container = $('#activity-list');
-  const query = normalizeSearch(pageSearch.activity);
-  const activities = state.activities.map((activity, sourceIndex) => ({ activity, sourceIndex })).filter(({ activity }) => {
-    if (currentActivityFilter !== 'all' && activity.status !== currentActivityFilter) return false;
-    return !query || normalizeSearch([activity.action, activity.connectionName, activity.source, activity.status, activity.error].join(' ')).includes(query);
-  });
+  const activities = getFilteredActivities();
   activityMatchCount = activities.length;
+  syncClearActivityButton(activities.length);
   if (!activities.length) {
     const hasActivity = state.activities.length > 0;
     container.innerHTML = `<div class="empty-state"><div><h3>${hasActivity ? localized('没有匹配记录', 'NO MATCHING ACTIVITY') : localized('暂无操作记录', 'NO ACTIVITY YET')}</h3><p>${hasActivity ? localized('当前搜索或结果筛选没有记录。', 'No activity matches the current search and result filter.') : localized('Agent 使用 OpenKeylet 后，这里只显示不含秘密的摘要。', 'After an agent uses OpenKeylet, only secret-free summaries appear here.')}</p>${hasActivity ? `<button class="button primary" data-action="clear-activity-filters">${localized('重置搜索与筛选', 'RESET SEARCH & FILTER')}</button>` : ''}</div></div>`;
     return;
   }
+  const deleteLabel = localized('删除此记录', 'Delete log entry');
   container.innerHTML = activities.slice(0, activityVisibleCount).map(({ activity, sourceIndex }) => {
     const errorExpanded = expandedActivityErrors.has(activity.id);
-    return `<article class="activity-item"><div class="log-index">${String(state.activities.length - sourceIndex).padStart(4, '0')}</div><div class="activity-status ${activity.status === 'error' ? 'error' : ''}">${activity.status === 'error' ? '×' : '✓'}</div><div><div class="activity-title">${escapeHtml(activityAction(activity.action))} · ${escapeHtml(activity.connectionName)}</div><div class="activity-meta">${escapeHtml(activitySource(activity.source))} · ${activity.durationMs} ms</div>${activity.error ? `<button type="button" class="activity-error ${errorExpanded ? 'expanded' : ''}" data-expand-error="${activity.id}" aria-expanded="${errorExpanded}">${escapeHtml(publicMessage(activity.error, localized('操作失败', 'Operation failed. Details are available in the local log.')))}</button>` : ''}</div><time class="activity-time">${formatTime(activity.time)}</time></article>`;
+    return `<article class="activity-item" data-activity-id="${escapeHtml(activity.id)}" data-activity-status="${escapeHtml(activity.status)}" tabindex="-1"><div class="log-index">${String(state.activities.length - sourceIndex).padStart(4, '0')}</div><div class="activity-status ${activity.status === 'error' ? 'error' : ''}">${activity.status === 'error' ? '×' : '✓'}</div><div class="activity-copy"><div class="activity-title">${escapeHtml(activityAction(activity.action))} · ${escapeHtml(activity.connectionName)}</div><div class="activity-meta">${escapeHtml(activitySource(activity.source))} · ${activity.durationMs} ms</div>${activity.error ? `<button type="button" class="activity-error ${errorExpanded ? 'expanded' : ''}" data-expand-error="${activity.id}" aria-expanded="${errorExpanded}">${escapeHtml(publicMessage(activity.error, localized('操作失败', 'Operation failed. Details are available in the local log.')))}</button>` : ''}</div><div class="activity-trailing"><time class="activity-time">${formatTime(activity.time)}</time><button type="button" class="small-button delete activity-delete-btn" data-action="delete-activity" data-activity-id="${escapeHtml(activity.id)}" title="${escapeHtml(deleteLabel)}" aria-label="${escapeHtml(deleteLabel)}">${CARD_ACTION_ICONS.del}</button></div></article>`;
   }).join('');
 }
 
@@ -1280,6 +1783,11 @@ function renderSettings() {
   $('#owner-auto-lock-option').classList.toggle('hidden', !ownerLockState.pinConfigured && !strongMode);
   const autoLockMinutes = Number(state.settings.ownerAutoLockMinutes || 0);
   $('#owner-auto-lock-minutes').value = [0, 5, 15, 30, 60].includes(autoLockMinutes) ? String(autoLockMinutes) : '0';
+  const autoCheck = getAutoCheckConfig();
+  if ($('#auto-check-enabled')) $('#auto-check-enabled').checked = autoCheck.enabled;
+  if ($('#auto-check-interval-option')) $('#auto-check-interval-option').classList.toggle('hidden', !autoCheck.enabled);
+  if ($('#auto-check-interval-minutes')) $('#auto-check-interval-minutes').value = String(autoCheck.minutes);
+  scheduleAutoCheck();
   $('#close-behavior').value = state.settings.closeBehavior === 'exit' ? 'exit' : 'tray';
   $('#browser-enabled').checked = state.settings.browserEnabled;
   $('#browser-port').value = state.settings.browserPort;
@@ -1395,7 +1903,7 @@ function agentDetail(client) {
 }
 function renderAgents() {
   const container = $('#agent-client-list');
-  container.innerHTML = agentClients.length ? agentClients.map((client) => `<div class="agent-client-row ${client.canRegister ? '' : 'is-disabled'}"><span class="agent-client-copy"><strong>${escapeHtml(client.displayName)}</strong><span>${escapeHtml(agentDetail(client))}</span></span><div class="agent-row-controls"><span class="agent-state ${escapeHtml(client.state)}">${escapeHtml(agentLabels[client.state] || client.state)}</span><div class="agent-row-actions">${client.canRegister ? `<button type="button" class="agent-row-action primary" data-agent-action="connect" data-client-id="${escapeHtml(client.clientId)}">CONNECT</button>` : ''}${client.canRepair ? `<button type="button" class="agent-row-action primary" data-agent-action="repair" data-client-id="${escapeHtml(client.clientId)}">REPAIR</button>` : ''}${client.canRemove ? `<button type="button" class="agent-row-action" data-agent-action="remove" data-client-id="${escapeHtml(client.clientId)}">REMOVE</button>` : ''}</div></div></div>`).join('') : `<div class="agent-scan-placeholder">${localized('没有检测到支持的 Agent', 'NO SUPPORTED AGENT DETECTED')}</div>`;
+  container.innerHTML = agentClients.length ? agentClients.map((client) => `<div class="agent-client-row ${client.canRegister ? '' : 'is-disabled'}" data-agent-state="${escapeHtml(client.state)}" data-client-id="${escapeHtml(client.clientId)}" tabindex="-1"><span class="agent-client-copy"><strong>${escapeHtml(client.displayName)}</strong><span>${escapeHtml(agentDetail(client))}</span></span><div class="agent-row-controls"><span class="agent-state ${escapeHtml(client.state)}">${escapeHtml(agentLabels[client.state] || client.state)}</span><div class="agent-row-actions">${client.canRegister ? `<button type="button" class="agent-row-action primary" data-agent-action="connect" data-client-id="${escapeHtml(client.clientId)}">CONNECT</button>` : ''}${client.canRepair ? `<button type="button" class="agent-row-action primary" data-agent-action="repair" data-client-id="${escapeHtml(client.clientId)}">REPAIR</button>` : ''}${client.canRemove ? `<button type="button" class="agent-row-action" data-agent-action="remove" data-client-id="${escapeHtml(client.clientId)}">REMOVE</button>` : ''}</div></div></div>`).join('') : `<div class="agent-scan-placeholder">${localized('没有检测到支持的 Agent', 'NO SUPPORTED AGENT DETECTED')}</div>`;
   applySettingsSearch();
 }
 
@@ -1532,8 +2040,8 @@ function renderModules() {
       actions = `<span class="module-action-spacer" aria-hidden="true"></span>${secretActionButton('copy', false)}`;
     }
     const removeLabel = localized('删除模块', 'Remove module');
-    const reorderLabel = localized('拖动调整顺序，或聚焦后按上/下方向键', 'Drag to reorder, or focus and use the Up/Down arrow keys');
-    return `<div class="module-row" data-module-index="${index}" data-kind="${escapeHtml(module.kind)}" data-name="${escapeHtml(module.name || '')}" data-existing="${Boolean(module.existing)}" data-configured="${Boolean(module.configured)}" data-private-key-name="${escapeHtml(module.privateKeyName || '')}" data-pending="${Boolean(module.pending)}"><button type="button" class="module-drag-handle" data-module-drag-handle aria-label="${reorderLabel}" title="${reorderLabel}" aria-keyshortcuts="ArrowUp ArrowDown"><svg viewBox="0 0 12 20" aria-hidden="true"><path d="M4 5h.01M8 5h.01M4 10h.01M8 10h.01M4 15h.01M8 15h.01"/></svg></button><button type="button" class="module-agent-toggle" data-module-agent-visible aria-pressed="${agentVisible}" aria-label="${agentVisibilityLabel}" title="${agentVisibilityLabel}"><i aria-hidden="true"></i></button><div class="module-identity">${customName}</div><div class="module-control">${control}</div><div class="module-actions ${actions ? 'full' : 'single'}">${actions}<button type="button" class="remove-module module-action-icon" data-remove-module aria-label="${removeLabel}" title="${removeLabel}"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5.5h14M7.5 5.5V3.25h5v2.25M5.25 5.5l.75 11h8l.75-11M8.25 8.5v5M11.75 8.5v5"/></svg></button></div></div>`;
+    const reorderLabel = localized('长按或拖动卡片调整顺序，或聚焦后按上/下方向键', 'Hold and drag card to reorder, or focus and use the Up/Down arrow keys');
+    return `<div class="module-row" data-module-index="${index}" data-kind="${escapeHtml(module.kind)}" data-name="${escapeHtml(module.name || '')}" data-existing="${Boolean(module.existing)}" data-configured="${Boolean(module.configured)}" data-private-key-name="${escapeHtml(module.privateKeyName || '')}" data-pending="${Boolean(module.pending)}"><button type="button" class="module-agent-toggle" data-module-agent-visible aria-pressed="${agentVisible}" aria-label="${agentVisibilityLabel}" title="${agentVisibilityLabel}"><i aria-hidden="true"></i></button><div class="module-identity" data-module-drag-handle tabindex="0" role="group" aria-label="${reorderLabel}" title="${reorderLabel}" aria-keyshortcuts="ArrowUp ArrowDown">${customName}</div><div class="module-control">${control}</div><div class="module-actions ${actions ? 'full' : 'single'}">${actions}<button type="button" class="remove-module module-action-icon" data-remove-module aria-label="${removeLabel}" title="${removeLabel}"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5.5h14M7.5 5.5V3.25h5v2.25M5.25 5.5l.75 11h8l.75-11M8.25 8.5v5M11.75 8.5v5"/></svg></button></div></div>`;
   }).join('');
   syncModuleDraft();
 }
@@ -1682,6 +2190,8 @@ async function openEditor(item = null, draft = null) {
     editorItemId = item?.id || null;
     $('#connection-modal').classList.remove('hidden');
     $('#passkey-list').innerHTML = (item?.passkeys || []).map(key => `<div class="passkey-summary"><strong>PASSKEY · ${escapeHtml(key.rpId)}</strong><span>${escapeHtml(key.displayName || key.userName)}</span><small>${localized('私钥加密保存在本地；在浏览器中使用。移入回收站会停用 Passkey，恢复后可继续使用。', 'Private key encrypted locally. Moving this item to trash disables its passkeys; restore it to use them again.')}</small></div>`).join('');
+    editingAgentNoteId = null;
+    renderAgentNotes(item, { autoOpen: true });
     $('.form-scroll', $('#connection-modal')).scrollTop = 0;
     editorInitialSnapshot = JSON.stringify(serializeItem(false));
     requestAnimationFrame(() => {
@@ -1711,6 +2221,12 @@ function closeEditor() {
   editorCandidateOnSaved = null;
   editorOpenedFromDraft = false;
   editorInitialSnapshot = '';
+  editingAgentNoteId = null;
+  if ($('#agent-note-input')) $('#agent-note-input').value = '';
+  $('#agent-notes-section')?.classList.add('hidden');
+  if (!editorReturnFocus?.isConnected && editorReturnFocus?.dataset.itemReorder) {
+    editorReturnFocus = $(`[data-item-reorder="${CSS.escape(editorReturnFocus.dataset.itemReorder)}"]`);
+  }
   if (!editorReturnFocus?.isConnected && editorReturnFocus?.dataset.action && editorReturnFocus?.dataset.id) {
     editorReturnFocus = $$('[data-action][data-id]').find(button => button.dataset.action === editorReturnFocus.dataset.action && button.dataset.id === editorReturnFocus.dataset.id);
   }
@@ -1838,9 +2354,11 @@ async function saveDesktopSettings() {
     state.settings = await api.settings({
       closeBehavior: $('#close-behavior').value,
       ownerAutoLockMinutes: Number($('#owner-auto-lock-minutes').value || 0),
+      autoCheckEnabled: $('#auto-check-enabled') ? $('#auto-check-enabled').checked : true,
+      autoCheckIntervalMinutes: Number($('#auto-check-interval-minutes')?.value || 60),
     });
     renderSettings();
-    toast(localized('窗口与锁屏设置已保存', 'Window & lock settings saved'));
+    toast(localized('窗口与偏好设置已保存', 'Window & preference settings saved'));
   } catch (error) {
     toast(cleanError(error), 'error');
     await refresh(false);
@@ -2038,10 +2556,264 @@ $('#history-clear').onclick = async () => {
 
 function renderLoginUris(rules) {
   const choices = [['origin','同源','Same origin'],['domain','主域名','Base domain'],['host','主机与端口','Host and port'],['exact','完整网址','Exact URL'],['prefix','网址前缀','URL prefix'],['regex','正则表达式','Regular expression'],['never','不匹配','Never']];
-  $('#login-uri-list').innerHTML = rules.map(rule => `<div class="login-uri-row"><input class="input" data-login-uri aria-label="${localized('网站地址','Website address')}" value="${escapeHtml(rule.uri)}" maxlength="8192"><select class="input" data-login-match aria-label="${localized('匹配规则','Matching rule')}">${choices.map(([key,zh,en]) => `<option value="${key}" ${rule.matchType===key?'selected':''}>${localized(zh,en)}</option>`).join('')}</select><button class="small-button" data-remove-uri type="button" aria-label="${localized('移除网站','Remove website')}">×</button></div>`).join('');
+  $('#login-uri-list').innerHTML = rules.map(rule => `<div class="login-uri-row"><input class="input" data-login-uri aria-label="${localized('网站地址','Website address')}" value="${escapeHtml(rule.uri)}" maxlength="8192"><select class="input" data-login-match aria-label="${localized('匹配规则','Matching rule')}">${choices.map(([key,zh,en]) => `<option value="${key}" ${rule.matchType===key?'selected':''}>${localized(zh,en)}</option>`).join('')}</select><button class="small-button uri-remove-button" data-remove-uri type="button" aria-label="${localized('移除网站','Remove website')}"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8m0-8-8 8"/></svg></button></div>`).join('');
 }
 $('#login-uri-add').onclick = () => renderLoginUris([...$$('#login-uri-list .login-uri-row').map(row => ({uri:$('[data-login-uri]',row).value,matchType:$('[data-login-match]',row).value})),{uri:'',matchType:'origin'}]);
 $('#login-uri-list').onclick = event => event.target.closest('[data-remove-uri]')?.closest('.login-uri-row').remove();
+
+const MAX_AGENT_NOTES = 5;
+const AGENT_NOTE_ICONS = {
+  edit: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M11.3 2.7a1.6 1.6 0 0 1 2.2 2.2L6 12.4 3 13l.6-3Z"/></svg>',
+  del: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8m0-8-8 8"/></svg>',
+};
+let editingAgentNoteId = null;
+let agentNoteBusy = false;
+
+function formatNoteAuthor(author) {
+  const raw = String(author || '').trim();
+  if (!raw) return 'MCP';
+  if (raw === 'OWNER') return localized('主人', 'OWNER');
+  return raw;
+}
+
+function applyUpdatedAgentNotesItem(updated) {
+  if (!updated?.id) return;
+  if (editorExistingItem?.id === updated.id) {
+    editorExistingItem = updated;
+  }
+  if (state?.connections) {
+    const idx = state.connections.findIndex((candidate) => candidate.id === updated.id);
+    if (idx >= 0) state.connections[idx] = updated;
+  }
+  renderAgentNotes(updated, { autoOpen: false });
+  renderConnections();
+}
+
+function renderAgentNotes(item = editorExistingItem, { autoOpen = false } = {}) {
+  const section = $('#agent-notes-section');
+  if (!section) return;
+  if (!item?.id) {
+    section.classList.add('hidden');
+    section.open = false;
+    return;
+  }
+  section.classList.remove('hidden');
+  const notes = Array.isArray(item.agentNotes) ? item.agentNotes : [];
+  const locked = Boolean(item.agentNotesLocked);
+  if (autoOpen) {
+    section.open = notes.length > 0 || locked;
+  }
+  const countEl = $('#agent-notes-count');
+  if (countEl) countEl.textContent = `${notes.length}/${MAX_AGENT_NOTES}`;
+  const lockBadge = $('#agent-notes-lock-badge');
+  if (lockBadge) {
+    lockBadge.textContent = localized('已锁定', 'LOCKED');
+    lockBadge.classList.toggle('hidden', !locked);
+  }
+  const lockInput = $('#agent-notes-locked');
+  if (lockInput) {
+    lockInput.checked = locked;
+    lockInput.disabled = agentNoteBusy;
+  }
+  const clearBtn = $('#agent-notes-clear');
+  if (clearBtn) {
+    clearBtn.textContent = localized('清空', 'CLEAR');
+    clearBtn.classList.toggle('hidden', notes.length === 0);
+    clearBtn.disabled = agentNoteBusy;
+  }
+  const addInput = $('#agent-note-input');
+  const addBtn = $('#agent-note-add');
+  if (addInput) {
+    addInput.placeholder = localized('添加简短用途备注（如：生产 GPU 服务器、/srv/web）…', 'Add a short note (e.g. prod GPU server, /srv/web)…');
+    addInput.disabled = agentNoteBusy;
+  }
+  if (addBtn) {
+    addBtn.textContent = localized('添加', 'ADD');
+    addBtn.disabled = agentNoteBusy;
+  }
+  const list = $('#agent-notes-list');
+  if (!list) return;
+  if (!notes.length) {
+    list.innerHTML = `<p class="agent-notes-empty">${escapeHtml(localized('尚无 Agent 笔记。Agent 使用此项目后可自动记录简短非敏感用途备注，你也可以在下方手动添加。', 'No agent notes yet. Agents can record short non-secret context after using this item, or you can add one below.'))}</p>`;
+    return;
+  }
+  list.innerHTML = notes.map((note) => {
+    const isEditing = editingAgentNoteId === note.id;
+    const isOwner = note.author === 'OWNER';
+    const timeText = note.updatedAt ? formatTime(note.updatedAt) : '';
+    const body = isEditing
+      ? `<div class="agent-note-edit-row"><input class="input" type="text" maxlength="200" autocomplete="off" spellcheck="false" data-edit-note-input="${escapeHtml(note.id)}" value="${escapeHtml(note.text)}" aria-label="${escapeHtml(localized('编辑笔记', 'Edit note'))}" /><button type="button" class="button primary" data-save-note="${escapeHtml(note.id)}">${escapeHtml(localized('保存', 'SAVE'))}</button><button type="button" class="button quiet" data-cancel-note>${escapeHtml(localized('取消', 'Cancel'))}</button></div>`
+      : `<p class="agent-note-text">${escapeHtml(note.text)}</p>`;
+    return `<div class="agent-note-row" data-note-id="${escapeHtml(note.id)}">
+      <div class="agent-note-head">
+        <span class="agent-note-author${isOwner ? ' is-owner' : ''}">${escapeHtml(formatNoteAuthor(note.author))}</span>
+        <span class="agent-note-time">${escapeHtml(timeText)}</span>
+        <span class="agent-note-actions">
+          ${isEditing ? '' : `<button type="button" class="agent-note-icon-btn" data-edit-note="${escapeHtml(note.id)}" aria-label="${escapeHtml(localized('编辑笔记', 'Edit note'))}" title="${escapeHtml(localized('编辑笔记', 'Edit note'))}">${AGENT_NOTE_ICONS.edit}</button>`}
+          <button type="button" class="agent-note-icon-btn delete" data-delete-note="${escapeHtml(note.id)}" aria-label="${escapeHtml(localized('删除笔记', 'Delete note'))}" title="${escapeHtml(localized('删除笔记', 'Delete note'))}">${AGENT_NOTE_ICONS.del}</button>
+        </span>
+      </div>
+      ${body}
+    </div>`;
+  }).join('');
+}
+
+async function submitNewAgentNote() {
+  if (agentNoteBusy || !editorExistingItem?.id) return;
+  const input = $('#agent-note-input');
+  const text = String(input?.value || '').trim();
+  if (!text) {
+    toast(localized('请先输入笔记内容', 'Enter a note first'), 'error');
+    input?.focus();
+    return;
+  }
+  agentNoteBusy = true;
+  renderAgentNotes(editorExistingItem, { autoOpen: false });
+  try {
+    const updated = await api.addAgentNote(editorExistingItem.id, text);
+    if (input) input.value = '';
+    editingAgentNoteId = null;
+    window.OpenKeyletAppearance?.play?.('success');
+    toast(localized('已添加 Agent 笔记', 'Agent note added'));
+    applyUpdatedAgentNotesItem(updated);
+  } catch (error) {
+    toast(cleanError(error), 'error');
+  } finally {
+    agentNoteBusy = false;
+    renderAgentNotes(editorExistingItem, { autoOpen: false });
+  }
+}
+
+async function saveEditedAgentNote(noteId) {
+  if (agentNoteBusy || !editorExistingItem?.id || !noteId) return;
+  const input = $(`[data-edit-note-input="${CSS.escape(noteId)}"]`);
+  const text = String(input?.value || '').trim();
+  if (!text) {
+    toast(localized('请先输入笔记内容', 'Enter a note first'), 'error');
+    input?.focus();
+    return;
+  }
+  agentNoteBusy = true;
+  renderAgentNotes(editorExistingItem, { autoOpen: false });
+  try {
+    const updated = await api.updateAgentNote(editorExistingItem.id, noteId, text);
+    editingAgentNoteId = null;
+    window.OpenKeyletAppearance?.play?.('success');
+    toast(localized('已更新 Agent 笔记', 'Agent note updated'));
+    applyUpdatedAgentNotesItem(updated);
+  } catch (error) {
+    toast(cleanError(error), 'error');
+  } finally {
+    agentNoteBusy = false;
+    renderAgentNotes(editorExistingItem, { autoOpen: false });
+  }
+}
+
+$('#agent-note-add')?.addEventListener('click', submitNewAgentNote);
+$('#agent-note-input')?.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    event.stopPropagation();
+    submitNewAgentNote();
+  }
+});
+$('#agent-notes-locked')?.addEventListener('change', async (event) => {
+  if (agentNoteBusy || !editorExistingItem?.id) return;
+  const locked = Boolean(event.currentTarget.checked);
+  agentNoteBusy = true;
+  renderAgentNotes(editorExistingItem, { autoOpen: false });
+  try {
+    const updated = await api.setAgentNotesLocked(editorExistingItem.id, locked);
+    window.OpenKeyletAppearance?.play?.('toggle');
+    toast(locked
+      ? localized('已锁定笔记，禁止 Agent 修改', 'Agent notes locked')
+      : localized('已解锁笔记，允许 Agent 写入', 'Agent notes unlocked'));
+    applyUpdatedAgentNotesItem(updated);
+  } catch (error) {
+    toast(cleanError(error), 'error');
+  } finally {
+    agentNoteBusy = false;
+    renderAgentNotes(editorExistingItem, { autoOpen: false });
+  }
+});
+$('#agent-notes-clear')?.addEventListener('click', async () => {
+  if (agentNoteBusy || !editorExistingItem?.id) return;
+  const confirmed = await confirmDestructiveAction({
+    title: localized('清空全部 Agent 笔记？', 'Clear all agent notes?'),
+    message: localized('此项目上所有已保存的 Agent 笔记都会被移除。', 'All saved agent notes on this item will be removed.'),
+    confirmLabel: localized('清空', 'CLEAR'),
+  });
+  if (!confirmed || !editorExistingItem?.id) return;
+  agentNoteBusy = true;
+  renderAgentNotes(editorExistingItem, { autoOpen: false });
+  try {
+    const updated = await api.clearAgentNotes(editorExistingItem.id);
+    editingAgentNoteId = null;
+    window.OpenKeyletAppearance?.play?.('success');
+    toast(localized('已清空全部 Agent 笔记', 'All agent notes cleared'));
+    applyUpdatedAgentNotesItem(updated);
+  } catch (error) {
+    toast(cleanError(error), 'error');
+  } finally {
+    agentNoteBusy = false;
+    renderAgentNotes(editorExistingItem, { autoOpen: false });
+  }
+});
+$('#agent-notes-list')?.addEventListener('click', async (event) => {
+  if (agentNoteBusy || !editorExistingItem?.id) return;
+  const editBtn = event.target.closest('[data-edit-note]');
+  if (editBtn) {
+    editingAgentNoteId = editBtn.dataset.editNote;
+    renderAgentNotes(editorExistingItem, { autoOpen: false });
+    const editInput = $(`[data-edit-note-input="${CSS.escape(editingAgentNoteId)}"]`);
+    editInput?.focus();
+    editInput?.select();
+    return;
+  }
+  const cancelBtn = event.target.closest('[data-cancel-note]');
+  if (cancelBtn) {
+    editingAgentNoteId = null;
+    renderAgentNotes(editorExistingItem, { autoOpen: false });
+    return;
+  }
+  const saveBtn = event.target.closest('[data-save-note]');
+  if (saveBtn) {
+    await saveEditedAgentNote(saveBtn.dataset.saveNote);
+    return;
+  }
+  const delBtn = event.target.closest('[data-delete-note]');
+  if (delBtn) {
+    const noteId = delBtn.dataset.deleteNote;
+    agentNoteBusy = true;
+    renderAgentNotes(editorExistingItem, { autoOpen: false });
+    try {
+      const updated = await api.deleteAgentNote(editorExistingItem.id, noteId);
+      if (editingAgentNoteId === noteId) editingAgentNoteId = null;
+      window.OpenKeyletAppearance?.play?.('success');
+      toast(localized('已删除该条笔记', 'Agent note deleted'));
+      applyUpdatedAgentNotesItem(updated);
+    } catch (error) {
+      toast(cleanError(error), 'error');
+    } finally {
+      agentNoteBusy = false;
+      renderAgentNotes(editorExistingItem, { autoOpen: false });
+    }
+  }
+});
+$('#agent-notes-list')?.addEventListener('keydown', (event) => {
+  const input = event.target.closest('[data-edit-note-input]');
+  if (!input) return;
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    event.stopPropagation();
+    saveEditedAgentNote(input.dataset.editNoteInput);
+  } else if (event.key === 'Escape') {
+    event.preventDefault();
+    event.stopPropagation();
+    editingAgentNoteId = null;
+    renderAgentNotes(editorExistingItem, { autoOpen: false });
+  }
+});
 
 let migrationId = null;
 let migrationMode = 'migration';
@@ -2840,6 +3612,82 @@ document.addEventListener('click', async (event) => {
       $('.settings-layout').scrollTop = 0;
     }
   }
+  const metricAction = event.target.closest('[data-metric-action]');
+  if (metricAction) {
+    const action = metricAction.dataset.metricAction;
+    if (!window.__openkeyletMetricFocusCursor) window.__openkeyletMetricFocusCursor = {};
+    const cursor = window.__openkeyletMetricFocusCursor;
+    if (action === 'focus-repair-agent' || action === 'focus-linked-agents') {
+      await selectPage('settings');
+      if (pageSearch.settings) {
+        pageSearch.settings = '';
+        const searchInput = $('#title-search-input');
+        if (searchInput) searchInput.value = '';
+        syncTitleSearch();
+      }
+      currentSettingsFilter = 'MCP';
+      syncSettingsFilterControl();
+      applySettingsSearch();
+      const selector = action === 'focus-repair-agent'
+        ? '#agent-client-list .agent-client-row[data-agent-state="stale"], #agent-client-list .agent-client-row[data-agent-state="conflict"], #agent-client-list .agent-client-row[data-agent-state="error"]'
+        : '#agent-client-list .agent-client-row[data-agent-state="registered"]';
+      const rows = $$(selector);
+      if (rows.length) {
+        const nextIdx = ((cursor[action] ?? -1) + 1) % rows.length;
+        cursor[action] = nextIdx;
+        const targetRow = rows[nextIdx];
+        targetRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        targetRow.classList.remove('is-focus-pulse');
+        void targetRow.offsetWidth;
+        targetRow.classList.add('is-focus-pulse');
+        const focusTarget = (action === 'focus-repair-agent'
+          ? $('[data-agent-action="repair"]', targetRow)
+          : $('button', targetRow)) || targetRow;
+        focusTarget.focus({ preventScroll: true });
+        setTimeout(() => targetRow.classList.remove('is-focus-pulse'), 1700);
+      } else {
+        const mcpCard = $('[data-module="MCP / 02"]');
+        mcpCard?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    } else if (action === 'focus-activity-errors' || action === 'focus-activity-all') {
+      await selectPage('activity');
+      if (pageSearch.activity) {
+        pageSearch.activity = '';
+        const searchInput = $('#title-search-input');
+        if (searchInput) searchInput.value = '';
+        syncTitleSearch();
+      }
+      currentActivityFilter = action === 'focus-activity-errors' ? 'error' : 'all';
+      activityVisibleCount = ACTIVITY_PAGE_SIZE;
+      renderActivity();
+      const selector = action === 'focus-activity-errors'
+        ? '#activity-list .activity-item[data-activity-status="error"]'
+        : '#activity-list .activity-item';
+      const rows = $$(selector);
+      if (rows.length) {
+        const nextIdx = action === 'focus-activity-errors'
+          ? ((cursor[action] ?? -1) + 1) % rows.length
+          : 0;
+        cursor[action] = nextIdx;
+        let targetRow = rows[nextIdx];
+        const targetId = targetRow.dataset.activityId;
+        if (action === 'focus-activity-errors' && targetId && !expandedActivityErrors.has(targetId)) {
+          expandedActivityErrors.add(targetId);
+          renderActivity();
+          targetRow = $(`#activity-list .activity-item[data-activity-id="${CSS.escape(targetId)}"]`) || rows[nextIdx];
+        }
+        targetRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        targetRow.classList.remove('is-focus-pulse');
+        void targetRow.offsetWidth;
+        targetRow.classList.add('is-focus-pulse');
+        const focusTarget = $('.activity-error', targetRow) || targetRow;
+        focusTarget.focus({ preventScroll: true });
+        setTimeout(() => targetRow.classList.remove('is-focus-pulse'), 1700);
+      } else {
+        $('.activity-panel').scrollTop = 0;
+      }
+    }
+  }
   const windowButton = event.target.closest('[data-window-action]');
   if (windowButton) {
     if (windowButton.dataset.windowAction === 'close' && !$('#connection-modal').classList.contains('hidden')) await closeEditorWithDraft();
@@ -2956,9 +3804,13 @@ document.addEventListener('click', async (event) => {
   if (action?.dataset.action === 'clear-activity-filters') {
     currentActivityFilter = 'all';
     pageSearch.activity = '';
-    $('[data-page-search="activity"]').value = '';
+    syncTitleSearch();
     activityVisibleCount = ACTIVITY_PAGE_SIZE;
     renderActivity();
+  }
+  if (action?.dataset.action === 'delete-activity' && action.dataset.activityId) {
+    await deleteSingleActivity(action.dataset.activityId, action);
+    return;
   }
   if (action?.dataset.id) {
     const item = state.connections.find((candidate) => candidate.id === action.dataset.id);
@@ -2970,6 +3822,7 @@ document.addEventListener('click', async (event) => {
       } catch (error) { toast(cleanError(error), 'error'); }
     }
     if (action.dataset.action === 'edit') await openEditor(item);
+    if (action.dataset.action === 'copy-item') await copyFullItem(item, action);
     if (action.dataset.action === 'history') await openVaultManagement('history', item.id);
     if (action.dataset.action === 'copy-name') {
       try {
@@ -2978,7 +3831,7 @@ document.addEventListener('click', async (event) => {
       } catch (error) { toast(cleanError(error), 'error'); }
     }
     if (action.dataset.action === 'test') {
-      try { toast(publicMessage(await api.test(item.id), localized('连接测试完成', 'Connection test complete'))); await refresh(false); } catch (error) { toast(cleanError(error), 'error'); }
+      await runSingleItemCheck(item, { showToast: true, doRefresh: true });
     }
     if (action.dataset.action === 'delete' && await confirmDestructiveAction({
       title: localized(`将“${item.name}”移入回收站？`, `Move "${item.name}" to trash?`),
@@ -2986,6 +3839,15 @@ document.addEventListener('click', async (event) => {
       acceptLabel: localized('移入回收站', 'MOVE TO TRASH'),
     })) {
       try { await api.remove(item.id, item.updatedAt); toast(localized('已移入回收站', 'Moved to trash')); await refresh(); $('#vault-view-toggle')?.focus(); } catch (error) { toast(cleanError(error), 'error'); }
+    }
+  } else if (!action && !suppressItemClick) {
+    const card = event.target.closest('.connection-card[data-item-id]');
+    if (card && !event.target.closest('.card-actions, .item-toggle')) {
+      const item = state.connections.find((candidate) => candidate.id === card.dataset.itemId);
+      if (item) {
+        $('[data-item-reorder]', card)?.focus({ preventScroll: true });
+        await openEditor(item);
+      }
     }
   }
   const errorDetail = event.target.closest('[data-expand-error]');
@@ -3094,36 +3956,176 @@ async function saveItemOrder(visibleOrder, expectedOrder, focusedId) {
   }
 }
 
-function clearItemDropSeam() {
-  $$('.item-drop-before, .item-drop-after', itemList).forEach(row => row.classList.remove('item-drop-before', 'item-drop-after'));
+const ITEM_LONG_PRESS_MS = 220;
+
+function clearItemFlipTransforms() {
+  for (const el of $$('.connection-card', itemList)) {
+    if (el._flipTimer) {
+      clearTimeout(el._flipTimer);
+      el._flipTimer = 0;
+    }
+    el.style.transition = '';
+    el.style.transform = '';
+  }
 }
 
-function updateItemDropSeam() {
+function restoreItemDomOrder(orderIds) {
+  const byId = new Map($$('.connection-card', itemList).map((el) => [el.dataset.itemId, el]));
+  for (const id of orderIds) {
+    const el = byId.get(id);
+    if (el) itemList.appendChild(el);
+  }
+}
+
+function flipReorderCard(dragRow, refRow, insertAfter) {
+  const siblings = $$('.connection-card', itemList).filter((el) => el !== dragRow);
+  const firstRects = new Map();
+  for (const el of siblings) {
+    firstRects.set(el, el.getBoundingClientRect());
+  }
+  if (insertAfter) refRow.after(dragRow);
+  else refRow.before(dragRow);
+  const moved = [];
+  for (const el of siblings) {
+    const first = firstRects.get(el);
+    const last = el.getBoundingClientRect();
+    const dx = first.left - last.left;
+    const dy = first.top - last.top;
+    if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
+      el.style.transition = 'none';
+      el.style.transform = `translate3d(${dx}px, ${dy}px, 0)`;
+      moved.push(el);
+    }
+  }
+  if (!moved.length) return;
+  window.OpenKeyletAppearance?.play?.('hover');
+  void itemList.offsetHeight;
+  for (const el of moved) {
+    el.style.transition = 'transform 180ms cubic-bezier(0.22, 1, 0.36, 1)';
+    el.style.transform = '';
+    if (el._flipTimer) clearTimeout(el._flipTimer);
+    el._flipTimer = setTimeout(() => {
+      el.style.transition = '';
+      el._flipTimer = 0;
+    }, 200);
+  }
+}
+
+function beginItemDragLift(drag) {
+  if (!drag || drag.started || itemPointerDrag !== drag) return;
+  if (drag.longPressTimer) {
+    clearTimeout(drag.longPressTimer);
+    drag.longPressTimer = 0;
+  }
+  drag.started = true;
+  const rect = drag.row.getBoundingClientRect();
+  drag.originLeft = rect.left;
+  drag.originTop = rect.top;
+  drag.cardWidth = rect.width;
+  drag.cardHeight = rect.height;
+  drag.grabOffsetX = drag.x - rect.left;
+  drag.grabOffsetY = drag.y - rect.top;
+
+  const host = document.createElement('div');
+  host.className = 'item-drag-preview connections-grid';
+  host.dataset.view = vaultViewMode;
+  host.setAttribute('aria-hidden', 'true');
+  const actionsWidth = itemList.style.getPropertyValue('--list-actions-width');
+  if (actionsWidth) host.style.setProperty('--list-actions-width', actionsWidth);
+  host.style.width = `${rect.width}px`;
+  host.style.height = `${rect.height}px`;
+  const clone = drag.row.cloneNode(true);
+  clone.classList.remove('is-item-dragging');
+  clone.classList.add('is-lifted-card');
+  clone.removeAttribute('data-item-id');
+  host.appendChild(clone);
+  document.body.appendChild(host);
+  drag.preview = host;
+
+  window.OpenKeyletAppearance?.hideTooltip?.();
+  drag.row.classList.add('is-item-dragging');
+  itemList.classList.add('is-reordering');
+  document.body.classList.add('item-pointer-dragging');
+  try { itemList.setPointerCapture(drag.pointerId); } catch (_) { /* Document tracking remains active. */ }
+  window.OpenKeyletAppearance?.play?.('select');
+
+  const initX = Math.max(8, Math.min(rect.left, innerWidth - rect.width - 8));
+  const initY = Math.max(8, Math.min(rect.top, innerHeight - rect.height - 8));
+  drag.preview.style.transform = `translate3d(${initX}px, ${initY}px, 0)`;
+}
+
+function cardLayoutRect(card, listRect) {
+  if (card.offsetParent === itemList) {
+    const left = listRect.left + card.offsetLeft - itemList.scrollLeft;
+    const top = listRect.top + card.offsetTop - itemList.scrollTop;
+    const width = card.offsetWidth;
+    const height = card.offsetHeight;
+    return { left, top, right: left + width, bottom: top + height, width, height };
+  }
+  return card.getBoundingClientRect();
+}
+
+function updateItemLivePosition() {
   const drag = itemPointerDrag;
   if (!drag?.started) return;
   const bounds = itemList.getBoundingClientRect();
+  const isList = vaultViewMode === 'list';
   drag.valid = drag.x >= bounds.left && drag.x <= bounds.right && drag.y >= bounds.top && drag.y <= bounds.bottom;
-  const original = drag.row.getBoundingClientRect();
-  const overOriginal = drag.x >= original.left && drag.x <= original.right && drag.y >= original.top && drag.y <= original.bottom;
-  let target = null;
-  if (drag.valid && !overOriginal) {
-    for (const row of $$('.connection-card', itemList)) {
-      if (row === drag.row) continue;
-      const rect = row.getBoundingClientRect();
-      const dx = Math.max(rect.left - drag.x, 0, drag.x - rect.right);
-      const dy = Math.max(rect.top - drag.y, 0, drag.y - rect.bottom);
-      const centerX = rect.left + rect.width / 2, centerY = rect.top + rect.height / 2;
-      const isList = vaultViewMode === 'list';
-      const candidate = { row, after: isList ? drag.y >= centerY : drag.x >= centerX, distance: dx * dx + dy * dy, centerDistance: (drag.x - centerX) ** 2 + (drag.y - centerY) ** 2 };
-      if (!target || candidate.distance < target.distance || (candidate.distance === target.distance && candidate.centerDistance < target.centerDistance)) target = candidate;
+  drag.preview.style.opacity = drag.valid ? '1' : '0.45';
+
+  let posX;
+  if (isList) {
+    const dampX = Math.max(-10, Math.min(10, (drag.x - drag.startX) * 0.12));
+    posX = Math.max(8, Math.min(drag.originLeft + dampX, innerWidth - drag.cardWidth - 8));
+  } else {
+    posX = Math.max(8, Math.min(drag.x - drag.grabOffsetX, innerWidth - drag.cardWidth - 8));
+  }
+  const posY = Math.max(8, Math.min(drag.y - drag.grabOffsetY, innerHeight - drag.cardHeight - 8));
+  drag.preview.style.transform = `translate3d(${posX}px, ${posY}px, 0)`;
+
+  if (!drag.valid) return;
+
+  const cards = $$('.connection-card', itemList);
+  const currentIdx = cards.indexOf(drag.row);
+  if (currentIdx < 0) return;
+
+  if (isList) {
+    const probeY = drag.y;
+    for (let i = 0; i < cards.length; i += 1) {
+      const card = cards[i];
+      if (card === drag.row) continue;
+      const r = cardLayoutRect(card, bounds);
+      const midY = r.top + r.height / 2;
+      if (i < currentIdx && probeY < midY) {
+        flipReorderCard(drag.row, card, false);
+        break;
+      }
+      if (i > currentIdx && probeY > midY) {
+        let targetIdx = i;
+        for (let j = i + 1; j < cards.length; j += 1) {
+          const rj = cardLayoutRect(cards[j], bounds);
+          if (probeY > rj.top + rj.height / 2) targetIdx = j;
+          else break;
+        }
+        flipReorderCard(drag.row, cards[targetIdx], true);
+        break;
+      }
+    }
+  } else {
+    let hit = null;
+    for (let i = 0; i < cards.length; i += 1) {
+      const card = cards[i];
+      if (card === drag.row) continue;
+      const r = cardLayoutRect(card, bounds);
+      if (drag.x >= r.left && drag.x <= r.right && drag.y >= r.top && drag.y <= r.bottom) {
+        hit = { card, idx: i, rect: r };
+        break;
+      }
+    }
+    if (hit) {
+      flipReorderCard(drag.row, hit.card, hit.idx > currentIdx);
     }
   }
-  if (drag.target?.row !== target?.row || drag.target?.after !== target?.after) {
-    drag.target?.row.classList.remove('item-drop-before', 'item-drop-after');
-    target?.row.classList.add(target.after ? 'item-drop-after' : 'item-drop-before');
-  }
-  drag.target = target;
-  drag.preview.style.opacity = drag.valid ? '1' : '.5';
 }
 
 function scheduleItemDragFrame() {
@@ -3140,10 +4142,7 @@ function itemDragFrame() {
     if (drag.y < bounds.top + 32) itemList.scrollTop -= Math.ceil((bounds.top + 32 - drag.y) / 3);
     else if (drag.y > bounds.bottom - 32) itemList.scrollTop += Math.ceil((drag.y - bounds.bottom + 32) / 3);
   }
-  updateItemDropSeam();
-  const x = Math.max(8, Math.min(drag.x + 14, innerWidth - drag.previewWidth - 8));
-  const y = Math.max(44, Math.min(drag.y + 14, innerHeight - drag.previewHeight - 8));
-  drag.preview.style.transform = `translate3d(${x}px, ${y}px, 0)`;
+  updateItemLivePosition();
   if (itemList.scrollTop !== previousScroll) scheduleItemDragFrame();
 }
 
@@ -3151,64 +4150,96 @@ function finishItemPointerDrag(commit) {
   const drag = itemPointerDrag;
   if (!drag) return;
   itemPointerDrag = null;
+  if (drag.longPressTimer) {
+    clearTimeout(drag.longPressTimer);
+    drag.longPressTimer = 0;
+  }
   cancelAnimationFrame(drag.frame);
   try { if (itemList.hasPointerCapture(drag.pointerId)) itemList.releasePointerCapture(drag.pointerId); } catch (_) { /* Already released. */ }
+  const finalIds = drag.started ? $$('.connection-card', itemList).map((el) => el.dataset.itemId) : [];
   drag.row.classList.remove('is-item-dragging');
   itemList.classList.remove('is-reordering');
   document.body.classList.remove('item-pointer-dragging');
   drag.preview?.remove();
-  clearItemDropSeam();
+  clearItemFlipTransforms();
   if (drag.started) {
     suppressItemClick = true;
-    setTimeout(() => { suppressItemClick = false; }, 0);
+    const changed = finalIds.length === drag.visibleOrder.length && finalIds.some((id, idx) => id !== drag.visibleOrder[idx]);
+    if (commit && drag.valid) {
+      window.OpenKeyletAppearance?.play?.('drop');
+    }
+    if (commit && drag.valid && changed) {
+      void saveItemOrder(finalIds, drag.expectedOrder, drag.id);
+    } else {
+      restoreItemDomOrder(drag.visibleOrder);
+      renderConnections();
+    }
   }
-  if (commit && drag.started && drag.valid && drag.target) {
-    const ids = drag.visibleOrder.filter(id => id !== drag.id);
-    const position = ids.indexOf(drag.target.row.dataset.itemId) + (drag.target.after ? 1 : 0);
-    ids.splice(position, 0, drag.id);
-    void saveItemOrder(ids, drag.expectedOrder, drag.id);
-  } else renderConnections();
 }
 
 itemList.addEventListener('dragstart', event => {
-  if (event.target.closest?.('[data-item-reorder]')) event.preventDefault();
+  if (event.target.closest?.('.connection-card')) event.preventDefault();
 });
+document.addEventListener('pointerdown', () => {
+  suppressItemClick = false;
+}, true);
 itemList.addEventListener('pointerdown', event => {
-  const handle = event.target.closest?.('[data-item-reorder]');
-  if (!handle || event.button !== 0 || !event.isPrimary || event.ctrlKey || event.metaKey || event.shiftKey || itemPointerDrag || itemOrderSaving || confirmationResolver || !ownerLockState.unlocked) return;
-  event.preventDefault();
-  handle.focus({ preventScroll: true });
-  itemPointerDrag = { id: handle.dataset.itemReorder, item: state.connections.find(item => item.id === handle.dataset.itemReorder), row: handle.closest('.connection-card'), pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, x: event.clientX, y: event.clientY, started: false, visibleOrder: visibleItemIds(), expectedOrder: state.connections.map(item => item.id) };
+  const card = event.target.closest?.('.connection-card[data-item-id]');
+  if (!card || event.target.closest?.('.card-actions, .item-toggle')) return;
+  if (event.button !== 0 || !event.isPrimary || event.ctrlKey || event.metaKey || event.shiftKey || itemPointerDrag || itemOrderSaving || confirmationResolver || !ownerLockState.unlocked) return;
+  const id = card.dataset.itemId;
+  const item = state.connections.find((candidate) => candidate.id === id);
+  if (!item) return;
+  const drag = {
+    id,
+    item,
+    row: card,
+    pointerId: event.pointerId,
+    pointerType: event.pointerType || 'mouse',
+    startX: event.clientX,
+    startY: event.clientY,
+    x: event.clientX,
+    y: event.clientY,
+    started: false,
+    valid: true,
+    frame: 0,
+    visibleOrder: visibleItemIds(),
+    expectedOrder: state.connections.map((candidate) => candidate.id),
+    longPressTimer: 0,
+  };
+  drag.longPressTimer = setTimeout(() => {
+    if (itemPointerDrag === drag && !drag.started) {
+      beginItemDragLift(drag);
+    }
+  }, ITEM_LONG_PRESS_MS);
+  itemPointerDrag = drag;
 });
 document.addEventListener('pointermove', event => {
   const drag = itemPointerDrag;
   if (!drag || event.pointerId !== drag.pointerId) return;
-  drag.x = event.clientX; drag.y = event.clientY;
-  if (!drag.started && Math.hypot(drag.x - drag.startX, drag.y - drag.startY) < 6) return;
-  event.preventDefault();
+  drag.x = event.clientX;
+  drag.y = event.clientY;
+  const dist = Math.hypot(drag.x - drag.startX, drag.y - drag.startY);
   if (!drag.started) {
-    drag.started = true;
-    drag.row.classList.add('is-item-dragging');
-    itemList.classList.add('is-reordering');
-    document.body.classList.add('item-pointer-dragging');
-    const item = drag.item;
-    drag.preview = document.createElement('div');
-    drag.preview.className = 'item-drag-preview';
-    drag.preview.setAttribute('aria-hidden', 'true');
-    drag.preview.innerHTML = `${itemTypeIcon(itemDisplayKind(item))}<span>${escapeHtml(item.name)}</span>`;
-    document.body.appendChild(drag.preview);
-    try { itemList.setPointerCapture(event.pointerId); } catch (_) { /* Document tracking remains active. */ }
-    drag.previewWidth = drag.preview.offsetWidth;
-    drag.previewHeight = drag.preview.offsetHeight;
-    const initX = Math.max(8, Math.min(drag.x + 14, innerWidth - drag.previewWidth - 8));
-    const initY = Math.max(44, Math.min(drag.y + 14, innerHeight - drag.previewHeight - 8));
-    drag.preview.style.transform = `translate3d(${initX}px, ${initY}px, 0)`;
+    if (drag.pointerType === 'touch') {
+      if (dist >= 10) finishItemPointerDrag(false);
+      return;
+    }
+    if (dist < 8) return;
+    event.preventDefault();
+    beginItemDragLift(drag);
+    updateItemLivePosition();
+    return;
   }
+  event.preventDefault();
   scheduleItemDragFrame();
 }, { passive: false });
 document.addEventListener('pointerup', event => {
   if (itemPointerDrag?.pointerId !== event.pointerId) return;
-  if (itemPointerDrag.started) { event.preventDefault(); updateItemDropSeam(); }
+  if (itemPointerDrag.started) {
+    event.preventDefault();
+    updateItemLivePosition();
+  }
   finishItemPointerDrag(true);
 });
 document.addEventListener('pointercancel', event => { if (itemPointerDrag?.pointerId === event.pointerId) finishItemPointerDrag(false); });
@@ -3217,6 +4248,7 @@ window.addEventListener('blur', () => finishItemPointerDrag(false));
 document.addEventListener('click', event => {
   if (!suppressItemClick) return;
   suppressItemClick = false;
+  if (event.detail === 0) return;
   event.preventDefault(); event.stopImmediatePropagation();
 }, true);
 itemList.addEventListener('keydown', event => {
@@ -3233,83 +4265,194 @@ itemList.addEventListener('keydown', event => {
   void saveItemOrder(ids, state.connections.map(item => item.id), id);
 });
 
-let draggedModuleRow = null;
-let moduleDropTarget = null;
-let moduleDropAfter = false;
-let moduleDragPreview = null;
 let modulePointerDrag = null;
 let suppressModuleClick = false;
 const moduleList = $('#module-list');
-function clearModuleDropSeam() {
-  $$('.module-row.drop-before, .module-row.drop-after', moduleList).forEach((row) => row.classList.remove('drop-before', 'drop-after'));
-  moduleDropTarget = null;
-  moduleDropAfter = false;
+const MODULE_LONG_PRESS_MS = 240;
+
+function clearModuleFlipTransforms() {
+  for (const row of $$('.module-row', moduleList)) {
+    row.style.transition = '';
+    row.style.transform = '';
+    if (row._flipTimer) {
+      clearTimeout(row._flipTimer);
+      row._flipTimer = 0;
+    }
+  }
 }
 
-function beginModulePointerDrag(event) {
-  draggedModuleRow = modulePointerDrag.row;
-  draggedModuleRow.classList.add('is-dragging');
+function flipReorderModuleRow(dragRow, targetRow, insertAfter) {
+  if (!dragRow || !targetRow || dragRow === targetRow) return;
+  const rows = $$('.module-row', moduleList);
+  const beforeRects = new Map();
+  for (const row of rows) {
+    if (row !== dragRow) beforeRects.set(row, row.getBoundingClientRect());
+  }
+  moduleList.insertBefore(dragRow, insertAfter ? targetRow.nextElementSibling : targetRow);
+  const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
+  for (const [row, prev] of beforeRects) {
+    const next = row.getBoundingClientRect();
+    const dy = prev.top - next.top;
+    if (Math.abs(dy) < 0.5) continue;
+    if (reduced) continue;
+    row.style.transition = 'none';
+    row.style.transform = `translate3d(0, ${dy}px, 0)`;
+    void row.offsetHeight;
+    row.style.transition = 'transform 180ms cubic-bezier(0.22, 1, 0.36, 1)';
+    row.style.transform = '';
+    if (row._flipTimer) clearTimeout(row._flipTimer);
+    row._flipTimer = setTimeout(() => {
+      row.style.transition = '';
+      row._flipTimer = 0;
+    }, 200);
+  }
+}
+
+function cloneModuleRowForLift(row) {
+  const clone = row.cloneNode(true);
+  clone.classList.remove('is-dragging');
+  clone.classList.add('is-lifted-card');
+  const origInputs = $$('input, textarea, select', row);
+  const cloneInputs = $$('input, textarea, select', clone);
+  origInputs.forEach((src, i) => {
+    const dst = cloneInputs[i];
+    if (!dst) return;
+    dst.value = src.value;
+    dst.tabIndex = -1;
+    if (src.tagName === 'INPUT') dst.type = src.type;
+    if (src.tagName === 'TEXTAREA' && src.style.height) dst.style.height = src.style.height;
+  });
+  return clone;
+}
+
+function beginModuleDragLift(drag) {
+  if (!drag || drag.started || modulePointerDrag !== drag) return;
+  if (drag.longPressTimer) {
+    clearTimeout(drag.longPressTimer);
+    drag.longPressTimer = 0;
+  }
+  drag.started = true;
+  const rect = drag.row.getBoundingClientRect();
+  drag.originLeft = rect.left;
+  drag.originTop = rect.top;
+  drag.cardWidth = rect.width;
+  drag.cardHeight = rect.height;
+  drag.grabOffsetX = drag.x - rect.left;
+  drag.grabOffsetY = drag.y - rect.top;
+
+  const host = document.createElement('div');
+  host.className = 'module-drag-preview';
+  host.setAttribute('aria-hidden', 'true');
+  host.style.width = `${rect.width}px`;
+  host.style.height = `${rect.height}px`;
+  host.appendChild(cloneModuleRowForLift(drag.row));
+  document.body.appendChild(host);
+  drag.preview = host;
+
+  window.OpenKeyletAppearance?.hideTooltip?.();
+  drag.row.classList.add('is-dragging');
   moduleList.classList.add('is-sorting');
   document.body.classList.add('module-pointer-dragging');
-  const definition = MODULE_DEFS[draggedModuleRow.dataset.kind] || MODULE_DEFS.customSecret;
-  moduleDragPreview = document.createElement('div');
-  moduleDragPreview.className = 'module-drag-preview';
-  moduleDragPreview.innerHTML = `<b>${escapeHtml(definition.code)}</b><span>${escapeHtml(moduleLabel(draggedModuleRow.dataset.kind))}</span>`;
-  document.body.appendChild(moduleDragPreview);
-  modulePointerDrag.started = true;
-  positionModuleDragPreview(event.clientX, event.clientY);
-  try { draggedModuleRow.setPointerCapture(event.pointerId); } catch (_) { /* document tracking remains active */ }
+  try { moduleList.setPointerCapture(drag.pointerId); } catch (_) { /* document tracking remains active */ }
+  window.OpenKeyletAppearance?.play?.('select');
+
+  const initX = Math.max(8, Math.min(rect.left, window.innerWidth - rect.width - 8));
+  const initY = Math.max(8, Math.min(rect.top, window.innerHeight - rect.height - 8));
+  drag.preview.style.transform = `translate3d(${initX}px, ${initY}px, 0)`;
 }
 
-function updateModuleDropSeam(clientY) {
-  clearModuleDropSeam();
-  const rows = $$('.module-row', moduleList);
-  if (!rows.length) return;
-  const seams = rows.map((row) => ({ row, after: false, y: row.getBoundingClientRect().top }));
-  const lastRow = rows.at(-1);
-  seams.push({ row: lastRow, after: true, y: lastRow.getBoundingClientRect().bottom });
-  const closest = seams.reduce((best, seam) => Math.abs(clientY - seam.y) < Math.abs(clientY - best.y) ? seam : best);
-  moduleDropTarget = closest.row;
-  moduleDropAfter = closest.after;
-  moduleDropTarget.classList.add(moduleDropAfter ? 'drop-after' : 'drop-before');
-}
-
-function positionModuleDragPreview(clientX, clientY) {
-  if (!moduleDragPreview) return;
-  const w = moduleDragPreview.offsetWidth || 176;
-  const h = moduleDragPreview.offsetHeight || 38;
-  const x = Math.max(8, Math.min(Math.round(clientX + 14), window.innerWidth - w - 8));
-  const y = Math.max(44, Math.min(Math.round(clientY + 14), window.innerHeight - h - 8));
-  moduleDragPreview.style.transform = `translate3d(${x}px, ${y}px, 0)`;
-}
-
-function autoScrollModuleEditor(clientY) {
+function updateModuleLivePosition() {
+  const drag = modulePointerDrag;
+  if (!drag?.started) return;
   const scroller = $('.form-scroll', $('#connection-modal'));
-  if (!scroller) return;
-  const bounds = scroller.getBoundingClientRect();
-  if (clientY < bounds.top + 34) scroller.scrollTop -= 12;
-  else if (clientY > bounds.bottom - 34) scroller.scrollTop += 12;
+  const bounds = (scroller || moduleList).getBoundingClientRect();
+  drag.valid = drag.x >= bounds.left - 24 && drag.x <= bounds.right + 24 && drag.y >= bounds.top - 24 && drag.y <= bounds.bottom + 24;
+  drag.preview.style.opacity = drag.valid ? '1' : '0.45';
+
+  const dampX = Math.max(-10, Math.min(10, (drag.x - drag.startX) * 0.12));
+  const posX = Math.max(8, Math.min(drag.originLeft + dampX, window.innerWidth - drag.cardWidth - 8));
+  const posY = Math.max(8, Math.min(drag.y - drag.grabOffsetY, window.innerHeight - drag.cardHeight - 8));
+  drag.preview.style.transform = `translate3d(${posX}px, ${posY}px, 0)`;
+
+  if (!drag.valid) return;
+
+  const rows = $$('.module-row', moduleList);
+  const currentIdx = rows.indexOf(drag.row);
+  if (currentIdx < 0) return;
+
+  const probeY = drag.y;
+  for (let i = 0; i < rows.length; i += 1) {
+    const row = rows[i];
+    if (row === drag.row) continue;
+    const r = row.getBoundingClientRect();
+    const midY = r.top + r.height / 2;
+    if (i < currentIdx && probeY < midY) {
+      flipReorderModuleRow(drag.row, row, false);
+      break;
+    }
+    if (i > currentIdx && probeY > midY) {
+      let targetIdx = i;
+      for (let j = i + 1; j < rows.length; j += 1) {
+        const rj = rows[j].getBoundingClientRect();
+        if (probeY > rj.top + rj.height / 2) targetIdx = j;
+        else break;
+      }
+      flipReorderModuleRow(drag.row, rows[targetIdx], true);
+      break;
+    }
+  }
+}
+
+function scheduleModuleDragFrame() {
+  const drag = modulePointerDrag;
+  if (drag?.started && !drag.frame) drag.frame = requestAnimationFrame(moduleDragFrame);
+}
+
+function moduleDragFrame() {
+  const drag = modulePointerDrag;
+  if (!drag?.started) return;
+  drag.frame = 0;
+  const scroller = $('.form-scroll', $('#connection-modal'));
+  if (scroller) {
+    const bounds = scroller.getBoundingClientRect();
+    const previousScroll = scroller.scrollTop;
+    if (drag.x >= bounds.left && drag.x <= bounds.right && drag.y >= bounds.top && drag.y <= bounds.bottom) {
+      if (drag.y < bounds.top + 32) scroller.scrollTop -= Math.ceil((bounds.top + 32 - drag.y) / 3);
+      else if (drag.y > bounds.bottom - 32) scroller.scrollTop += Math.ceil((drag.y - bounds.bottom + 32) / 3);
+    }
+    updateModuleLivePosition();
+    if (scroller.scrollTop !== previousScroll) scheduleModuleDragFrame();
+  } else {
+    updateModuleLivePosition();
+  }
 }
 
 function finishModulePointerDrag(commit) {
-  if (!modulePointerDrag) return;
-  const { row, pointerId, started } = modulePointerDrag;
-  if (started && commit && moduleDropTarget) {
-    moduleList.insertBefore(row, moduleDropAfter ? moduleDropTarget.nextElementSibling : moduleDropTarget);
+  const drag = modulePointerDrag;
+  if (!drag) return;
+  modulePointerDrag = null;
+  if (drag.longPressTimer) {
+    clearTimeout(drag.longPressTimer);
+    drag.longPressTimer = 0;
   }
-  try { if (row.hasPointerCapture(pointerId)) row.releasePointerCapture(pointerId); } catch (_) { /* capture may already be released */ }
-  row.classList.remove('is-dragging');
+  cancelAnimationFrame(drag.frame);
+  try { if (moduleList.hasPointerCapture(drag.pointerId)) moduleList.releasePointerCapture(drag.pointerId); } catch (_) { /* already released */ }
+  drag.row.classList.remove('is-dragging');
   moduleList.classList.remove('is-sorting');
   document.body.classList.remove('module-pointer-dragging');
-  moduleDragPreview?.remove();
-  moduleDragPreview = null;
-  draggedModuleRow = null;
-  modulePointerDrag = null;
-  clearModuleDropSeam();
-  if (started && commit) {
-    syncModuleDraft();
-    $('[data-module-drag-handle]', row)?.focus({ preventScroll: true });
-    announceModuleOrder(row);
+  drag.preview?.remove();
+  clearModuleFlipTransforms();
+  if (drag.started) {
+    if (commit && drag.valid) {
+      window.OpenKeyletAppearance?.play?.('drop');
+      syncModuleDraft();
+      announceModuleOrder(drag.row);
+    } else if (drag.initialOrder?.length) {
+      for (const row of drag.initialOrder) {
+        if (row.parentElement === moduleList) moduleList.appendChild(row);
+      }
+      syncModuleDraft();
+    }
   }
 }
 
@@ -3321,49 +4464,83 @@ function announceModuleOrder(row) {
 }
 
 moduleList.addEventListener('dragstart', (event) => {
-  if (event.target.closest?.('[data-module-drag-handle]')) event.preventDefault();
+  if (event.target.closest?.('.module-row')) event.preventDefault();
 });
 moduleList.addEventListener('pointerdown', (event) => {
-  if (event.button !== 0 || !event.isPrimary || confirmationResolver) return;
-  const handle = event.target.closest?.('[data-module-drag-handle]');
-  const row = handle?.closest('.module-row');
-  if (!row || modulePointerDrag) return;
-  event.preventDefault();
-  handle.focus({ preventScroll: true });
-  modulePointerDrag = { row, pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, started: false };
+  if (event.button !== 0 || !event.isPrimary || event.ctrlKey || event.metaKey || event.shiftKey || confirmationResolver || modulePointerDrag) return;
+  const row = event.target.closest?.('.module-row');
+  if (!row) return;
+  // Never steal pointer from inputs, buttons, switches, or action icons.
+  if (event.target.closest?.('input, textarea, select, button, a, .module-agent-toggle, .module-actions')) return;
+  const drag = {
+    row,
+    pointerId: event.pointerId,
+    pointerType: event.pointerType || 'mouse',
+    startX: event.clientX,
+    startY: event.clientY,
+    x: event.clientX,
+    y: event.clientY,
+    started: false,
+    valid: true,
+    frame: 0,
+    preview: null,
+    initialOrder: $$('.module-row', moduleList),
+    longPressTimer: 0,
+  };
+  drag.longPressTimer = setTimeout(() => {
+    if (modulePointerDrag === drag && !drag.started) {
+      beginModuleDragLift(drag);
+    }
+  }, MODULE_LONG_PRESS_MS);
+  modulePointerDrag = drag;
 });
 moduleList.addEventListener('keydown', (event) => {
   const handle = event.target.closest?.('[data-module-drag-handle]');
-  if (!handle || confirmationResolver || modulePointerDrag || !['ArrowUp', 'ArrowDown'].includes(event.key)) return;
+  if (!handle || event.target.matches?.('input, textarea, select') || confirmationResolver || modulePointerDrag || !['ArrowUp', 'ArrowDown'].includes(event.key)) return;
   event.preventDefault();
   const row = handle.closest('.module-row');
   const sibling = event.key === 'ArrowUp' ? row.previousElementSibling : row.nextElementSibling;
   if (!sibling) return;
-  moduleList.insertBefore(row, event.key === 'ArrowUp' ? sibling : sibling.nextElementSibling);
+  flipReorderModuleRow(row, sibling, event.key === 'ArrowDown');
   syncModuleDraft();
   handle.focus({ preventScroll: true });
   row.scrollIntoView({ block: 'nearest' });
   announceModuleOrder(row);
 });
 document.addEventListener('pointermove', (event) => {
-  if (!modulePointerDrag || event.pointerId !== modulePointerDrag.pointerId) return;
-  if (!modulePointerDrag.started && Math.hypot(event.clientX - modulePointerDrag.startX, event.clientY - modulePointerDrag.startY) < 6) return;
-  if (!modulePointerDrag.started) beginModulePointerDrag(event);
+  const drag = modulePointerDrag;
+  if (!drag || event.pointerId !== drag.pointerId) return;
+  drag.x = event.clientX;
+  drag.y = event.clientY;
+  const dist = Math.hypot(drag.x - drag.startX, drag.y - drag.startY);
+  if (!drag.started) {
+    if (drag.pointerType === 'touch') {
+      if (dist >= 10) finishModulePointerDrag(false);
+      return;
+    }
+    if (dist < 6) return;
+    event.preventDefault();
+    beginModuleDragLift(drag);
+    updateModuleLivePosition();
+    return;
+  }
   event.preventDefault();
-  autoScrollModuleEditor(event.clientY);
-  updateModuleDropSeam(event.clientY);
-  positionModuleDragPreview(event.clientX, event.clientY);
+  scheduleModuleDragFrame();
 }, { passive: false });
 document.addEventListener('pointerup', (event) => {
   if (!modulePointerDrag || event.pointerId !== modulePointerDrag.pointerId) return;
   if (modulePointerDrag.started) {
     event.preventDefault();
+    updateModuleLivePosition();
     suppressModuleClick = true;
     setTimeout(() => { suppressModuleClick = false; }, 0);
   }
   finishModulePointerDrag(true);
 });
 document.addEventListener('pointercancel', (event) => {
+  if (modulePointerDrag?.pointerId === event.pointerId) finishModulePointerDrag(false);
+});
+moduleList.addEventListener('lostpointercapture', (event) => {
   if (modulePointerDrag?.pointerId === event.pointerId) finishModulePointerDrag(false);
 });
 document.addEventListener('click', (event) => {
@@ -3448,6 +4625,11 @@ document.addEventListener('keydown', (event) => {
       event.preventDefault();
       $('#owner-pin-cancel')?.click();
     }
+    return;
+  }
+  if ((event.ctrlKey || event.metaKey) && !event.altKey && event.shiftKey && event.key.toLowerCase() === 'l' && ownerLockState.pinConfigured && ownerLockState.unlocked) {
+    event.preventDefault();
+    void lockOwner();
     return;
   }
   const secondaryModal = topSecondaryModal();
@@ -3561,14 +4743,17 @@ document.addEventListener('keydown', (event) => {
       void selectPage({ 1: 'connections', 2: 'import', 3: 'activity', 4: 'settings' }[key]);
       return;
     }
-    if (key === 'l' && event.shiftKey && ownerLockState.pinConfigured && ownerLockState.unlocked) {
-      event.preventDefault();
-      void lockOwner();
-      return;
-    }
     if (isMacOS && event.metaKey && !event.ctrlKey && key === 'w') {
       event.preventDefault();
       void api.window('close');
+      return;
+    }
+  }
+  if (event.key === 'Delete' || event.key === 'Backspace') {
+    const focusedActivity = event.target.closest?.('#activity-list .activity-item[data-activity-id]');
+    if (noModalOpen && activePage === 'activity' && focusedActivity && !event.target.closest?.('input, textarea, select')) {
+      event.preventDefault();
+      void deleteSingleActivity(focusedActivity.dataset.activityId, $('[data-action="delete-activity"]', focusedActivity));
       return;
     }
   }
@@ -3678,6 +4863,27 @@ $('#confirmation-modal').addEventListener('click', (event) => {
   if (event.target.closest('#confirmation-accept')) finishConfirmation(true);
 });
 $('#clear-activity-button').addEventListener('click', async () => {
+  const matched = getFilteredActivities();
+  const filtering = isActivityFilterActive() && matched.length < state.activities.length;
+  if (filtering) {
+    if (!matched.length) return;
+    const count = matched.length;
+    if (!await confirmDestructiveAction({
+      title: localized(`删除当前筛选的 ${count} 条记录？`, `Delete ${count} matching log entries?`),
+      message: localized('仅删除当前筛选结果中的本地操作记录，其余记录将保留。', 'Only matching local activity entries will be permanently deleted. Other entries will be kept.'),
+      acceptLabel: localized('删除', 'DELETE'),
+      tag: localized('确认清空记录', 'CONFIRM LOG DELETION'),
+    })) return;
+    try {
+      const ids = matched.map(({ activity }) => activity.id);
+      await api.deleteActivities(ids);
+      ids.forEach((id) => expandedActivityErrors.delete(id));
+      toast(localized(`已删除 ${count} 条操作记录`, `Deleted ${count} log entries`));
+      await refresh();
+    } catch (error) { toast(cleanError(error), 'error'); }
+    return;
+  }
+  if (!state.activities.length) return;
   if (!await confirmDestructiveAction({
     title: localized('清空本地操作记录？', 'Clear the local activity log?'),
     message: localized('全部本地操作记录将永久删除。', 'All local activity entries will be permanently deleted.'),
@@ -3689,7 +4895,8 @@ $('#clear-activity-button').addEventListener('click', async () => {
     currentActivityFilter = 'all';
     pageSearch.activity = '';
     expandedActivityErrors.clear();
-    $('[data-page-search="activity"]').value = '';
+    syncTitleSearch();
+    toast(localized('已清空操作记录', 'Activity log cleared'));
     await refresh();
   } catch (error) { toast(cleanError(error), 'error'); }
 });
@@ -3739,6 +4946,8 @@ $('#launch-at-login-enabled').addEventListener('change', (event) => setSystemInt
 $('#pin-enabled').addEventListener('change', savePinSettings);
 $('#close-behavior').addEventListener('change', saveDesktopSettings);
 $('#owner-auto-lock-minutes').addEventListener('change', saveDesktopSettings);
+$('#auto-check-enabled')?.addEventListener('change', saveDesktopSettings);
+$('#auto-check-interval-minutes')?.addEventListener('change', saveDesktopSettings);
 const BROWSER_EXTENSIONS_URL = 'chrome://extensions/';
 $('#browser-extensions-url').addEventListener('click', (event) => {
   event.currentTarget.select();
@@ -3920,6 +5129,29 @@ $('#page-activity .activity-panel').addEventListener('scroll', (event) => {
 }, { passive: true });
 
 window.__TAURI__.event.listen('state-changed', async () => { await refresh(false); await refreshDrafts(); });
+window.__TAURI__.event.listen('tray-command', async (event) => {
+  const action = event?.payload?.action;
+  if (!action) return;
+  await refreshOwnerLock(false);
+  if (!ownerLockState.unlocked) return;
+  if (action === 'new-item') {
+    await selectPage('connections');
+    await selectCreationMode('add');
+  } else if (action === 'smart-import') {
+    await selectPage('import');
+  } else if (action === 'settings') {
+    await selectPage('settings');
+  } else if (action === 'update') {
+    const indicator = $('#title-update-indicator');
+    if (indicator && !indicator.classList.contains('hidden')) {
+      indicator.click();
+    } else {
+      await selectPage('settings');
+      const updateCard = $('[data-module="UPDATE / 07"]');
+      updateCard?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }
+});
 window.__TAURI__.event.listen('pin-setup-requested', async () => {
   await refreshOwnerLock(false);
   if (ownerLockState.pinConfigured) return;
@@ -3969,8 +5201,21 @@ $('#drag-extension-button').addEventListener('pointermove', async event => {
 $('#drag-extension-button').addEventListener('dragstart', event => event.preventDefault());
 $('#drag-extension-button').addEventListener('keydown', event => { if(event.key==='Enter' || event.key===' ') { event.preventDefault(); api.extensionFolder().catch(error=>toast(cleanError(error),'error')); } });
 
+$('#check-all-button')?.addEventListener('click', () => {
+  if (checkAllRunning) return;
+  if (lastCheckAllOutcome) {
+    clearCheckAllResults();
+    return;
+  }
+  void runCheckAll();
+});
+
 $('#vault-view-toggle')?.addEventListener('click', () => {
   setVaultViewMode(vaultViewMode === 'list' ? 'grid' : 'list');
+});
+
+document.fonts?.ready?.then(() => {
+  syncListActionsWidth();
 });
 
 (() => {
@@ -4137,6 +5382,7 @@ $('#vault-view-toggle')?.addEventListener('click', () => {
     if (activeSelect) {
       if (event.key === 'Escape') {
         event.preventDefault();
+        event.stopImmediatePropagation();
         closeSelectMenu(true);
         return;
       }
@@ -4179,7 +5425,7 @@ $('#vault-view-toggle')?.addEventListener('click', () => {
       event.preventDefault();
       openSelectMenu(select);
     }
-  });
+  }, true);
 
   window.addEventListener('resize', () => closeSelectMenu(false));
   window.addEventListener('blur', () => closeSelectMenu(false));
@@ -4219,6 +5465,8 @@ async function applySmartParseToEditor(parsed, options = {}) {
   $('#connection-type').innerHTML = typeOptions('', sourceInput.itemType || 'custom');
   value('#connection-folder', sourceInput.folder || '');
   renderLoginUris(sourceInput.loginUris || []);
+  editingAgentNoteId = null;
+  renderAgentNotes(null);
   $('#connection-enabled').checked = sourceInput.enabled ?? true;
   $('#template-picker').classList.add('hidden');
   const ownerValues = draftSecretValues(sourceInput.secrets);
@@ -4578,7 +5826,14 @@ document.addEventListener('paste', (event) => {
     edge.addEventListener('mousedown', (event) => {
       if (event.button !== 0) return;
       event.preventDefault();
-      invoke('start_vertical_resize', { direction: edge.dataset.resizeEdge }).catch(() => {});
+      const rawDir = edge.dataset.resizeEdge;
+      invoke('start_vertical_resize', { direction: rawDir })
+        .then((handled) => {
+          if (handled) return;
+          const tauriDir = rawDir === 'north' || rawDir === 'top' ? 'North' : 'South';
+          window.__TAURI__?.window?.getCurrentWindow?.().startResizeDragging?.(tauriDir)?.catch?.(() => {});
+        })
+        .catch(() => {});
     });
   }
 
@@ -4622,6 +5877,11 @@ document.addEventListener('paste', (event) => {
   if (window.__TAURI__?.event?.listen) {
     window.__TAURI__.event.listen('edge-dock-state', (event) => {
       applyEdgeDockState(event?.payload);
+    });
+    window.__TAURI__.event.listen('edge-dock-preference-changed', (event) => {
+      edgeDockEnabled = Boolean(event?.payload);
+      try { localStorage.setItem(EDGE_DOCK_KEY, edgeDockEnabled ? 'true' : 'false'); } catch (_) {}
+      if (edgeDockInput) edgeDockInput.checked = edgeDockEnabled;
     });
   }
   syncEdgeDockToBackend();

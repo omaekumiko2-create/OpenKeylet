@@ -14,6 +14,7 @@ use crate::{
     },
     session_broker::SessionBroker,
     storage::app_data_dir,
+    tray_menu::{self, TRAY_ID, TRAY_MENU_LABEL, TrayActionResult, TrayMenuController, TrayMenuState},
     updater::{self, UpdateManager, UpdateStatus},
     vault::Vault,
 };
@@ -27,10 +28,10 @@ use std::{
     },
     time::{Duration, Instant},
 };
+#[cfg(not(target_os = "linux"))]
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
 use tauri::{
-    AppHandle, Emitter, LogicalSize, Manager, State, WebviewWindow,
-    menu::{Menu, MenuItem, PredefinedMenuItem},
-    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    AppHandle, Emitter, LogicalSize, Manager, State, WebviewWindow, tray::TrayIconBuilder,
 };
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
@@ -47,11 +48,13 @@ pub struct AppRuntime {
     pending_import: Mutex<Option<PendingImport>>,
     pending_backup_source: Mutex<Option<PendingBackupSource>>,
     pending_backup_import: Mutex<Option<PendingBackupImport>>,
+    discovered_mvault_paths: Mutex<Vec<PathBuf>>,
     owner_session: Mutex<OwnerSession>,
     github_backup: Mutex<GithubBackup>,
     session_broker: SessionBroker,
     updater: Arc<UpdateManager>,
     edge_dock: Arc<EdgeDockController>,
+    tray_menu: Arc<TrayMenuController>,
     auto_sync_generation: AtomicU64,
     agent_registry: AgentRegistry,
     tray_available: AtomicBool,
@@ -267,10 +270,12 @@ fn command_error(error: impl std::fmt::Display) -> String {
 
 fn emit_changed(app: &AppHandle) {
     let _ = app.emit("state-changed", ());
+    schedule_tray_refresh(app);
 }
 
 fn emit_update_status(app: &AppHandle, status: &UpdateStatus) {
     let _ = app.emit("update-state-changed", status);
+    schedule_tray_refresh(app);
 }
 
 fn schedule_auto_update_check(app: &AppHandle, delay_ms: u64) {
@@ -391,6 +396,7 @@ async fn owner_touch(runtime: State<'_, AppRuntime>) -> Result<OwnerLockState, S
 
 #[tauri::command]
 async fn owner_set_pin(
+    app: AppHandle,
     runtime: State<'_, AppRuntime>,
     pin: String,
 ) -> Result<OwnerLockState, String> {
@@ -399,17 +405,22 @@ async fn owner_set_pin(
     }
     runtime.vault.set_owner_pin(&pin).map_err(command_error)?;
     keep_owner_unlocked(&runtime).await;
+    schedule_tray_refresh(&app);
     owner_lock_state(&runtime).await
 }
 
 #[tauri::command]
-async fn owner_disable_pin(runtime: State<'_, AppRuntime>) -> Result<OwnerLockState, String> {
+async fn owner_disable_pin(
+    app: AppHandle,
+    runtime: State<'_, AppRuntime>,
+) -> Result<OwnerLockState, String> {
     require_owner_unlocked(&runtime).await?;
     if runtime.vault.is_strong_mode() {
         return Err("Disconnect your GitHub Strong Cloud Vault to revert to local-only mode".to_owned());
     }
     runtime.vault.disable_owner_pin().map_err(command_error)?;
     runtime.owner_session.lock().await.lock();
+    schedule_tray_refresh(&app);
     owner_lock_state(&runtime).await
 }
 
@@ -468,6 +479,7 @@ async fn owner_unlock(
         return Err("Incorrect PIN".to_owned());
     }
     keep_owner_unlocked(&runtime).await;
+    schedule_tray_refresh(&app);
     owner_lock_state(&runtime).await
 }
 
@@ -496,7 +508,9 @@ async fn owner_lock(
     *runtime.pending_import.lock().await = None;
     *runtime.pending_backup_source.lock().await = None;
     *runtime.pending_backup_import.lock().await = None;
+    runtime.discovered_mvault_paths.lock().await.clear();
     clipboard::clear_if_unchanged(&app, &runtime.clipboard, None);
+    schedule_tray_refresh(&app);
     owner_lock_state(&runtime).await
 }
 
@@ -746,6 +760,91 @@ async fn owner_clear_password_history(
 }
 
 #[tauri::command]
+async fn owner_add_agent_note(
+    app: AppHandle,
+    runtime: State<'_, AppRuntime>,
+    id: Uuid,
+    text: String,
+) -> Result<PublicConnection, String> {
+    require_owner_unlocked(&runtime).await?;
+    let updated = runtime
+        .vault
+        .add_agent_note(id, &text, "OWNER", false)
+        .map_err(command_error)?;
+    emit_changed(&app);
+    schedule_auto_sync(&app, 3000);
+    Ok(updated)
+}
+
+#[tauri::command]
+async fn owner_update_agent_note(
+    app: AppHandle,
+    runtime: State<'_, AppRuntime>,
+    id: Uuid,
+    note_id: String,
+    text: String,
+) -> Result<PublicConnection, String> {
+    require_owner_unlocked(&runtime).await?;
+    let updated = runtime
+        .vault
+        .update_agent_note(id, &note_id, &text, Some("OWNER"), false)
+        .map_err(command_error)?;
+    emit_changed(&app);
+    schedule_auto_sync(&app, 3000);
+    Ok(updated)
+}
+
+#[tauri::command]
+async fn owner_delete_agent_note(
+    app: AppHandle,
+    runtime: State<'_, AppRuntime>,
+    id: Uuid,
+    note_id: String,
+) -> Result<PublicConnection, String> {
+    require_owner_unlocked(&runtime).await?;
+    let updated = runtime
+        .vault
+        .remove_agent_note(id, &note_id, false)
+        .map_err(command_error)?;
+    emit_changed(&app);
+    schedule_auto_sync(&app, 3000);
+    Ok(updated)
+}
+
+#[tauri::command]
+async fn owner_clear_agent_notes(
+    app: AppHandle,
+    runtime: State<'_, AppRuntime>,
+    id: Uuid,
+) -> Result<PublicConnection, String> {
+    require_owner_unlocked(&runtime).await?;
+    let updated = runtime
+        .vault
+        .clear_agent_notes(id)
+        .map_err(command_error)?;
+    emit_changed(&app);
+    schedule_auto_sync(&app, 3000);
+    Ok(updated)
+}
+
+#[tauri::command]
+async fn owner_set_agent_notes_locked(
+    app: AppHandle,
+    runtime: State<'_, AppRuntime>,
+    id: Uuid,
+    locked: bool,
+) -> Result<PublicConnection, String> {
+    require_owner_unlocked(&runtime).await?;
+    let updated = runtime
+        .vault
+        .set_agent_notes_locked(id, locked)
+        .map_err(command_error)?;
+    emit_changed(&app);
+    schedule_auto_sync(&app, 3000);
+    Ok(updated)
+}
+
+#[tauri::command]
 async fn test_connection(
     app: AppHandle,
     runtime: State<'_, AppRuntime>,
@@ -804,6 +903,12 @@ async fn update_settings(
         .update_settings_patch(patch)
         .map_err(command_error)?;
     runtime.browser.sync().await;
+    let effective_theme = runtime.tray_menu.current_theme();
+    let effective_language = runtime.tray_menu.resolve_language(&settings.language);
+    runtime
+        .browser
+        .sync_appearance(Some(effective_theme), Some(effective_language))
+        .await;
     if enabling_browser && settings.browser_enabled {
         let _ = runtime.browser.start_quick_pairing().await;
     }
@@ -860,6 +965,42 @@ async fn set_launch_at_login(
         enabled,
     )
     .map_err(command_error)
+}
+
+#[tauri::command]
+async fn delete_activity(
+    app: AppHandle,
+    runtime: State<'_, AppRuntime>,
+    id: String,
+) -> Result<bool, String> {
+    require_owner_unlocked(&runtime).await?;
+    let id = Uuid::parse_str(&id).map_err(|_| "Invalid activity id".to_owned())?;
+    let removed = runtime.vault.delete_activity(id).map_err(command_error)?;
+    if removed {
+        emit_changed(&app);
+    }
+    Ok(removed)
+}
+
+#[tauri::command]
+async fn delete_activities(
+    app: AppHandle,
+    runtime: State<'_, AppRuntime>,
+    ids: Vec<String>,
+) -> Result<usize, String> {
+    require_owner_unlocked(&runtime).await?;
+    let mut parsed = Vec::with_capacity(ids.len());
+    for raw in ids {
+        parsed.push(Uuid::parse_str(&raw).map_err(|_| "Invalid activity id".to_owned())?);
+    }
+    let removed = runtime
+        .vault
+        .delete_activities(&parsed)
+        .map_err(command_error)?;
+    if removed > 0 {
+        emit_changed(&app);
+    }
+    Ok(removed)
 }
 
 #[tauri::command]
@@ -1901,13 +2042,95 @@ async fn smart_extract_dropped_binary(
 #[tauri::command]
 async fn smart_scan_local_dev_configs(
     runtime: State<'_, AppRuntime>,
-) -> Result<crate::smart_extract::SmartExtractBatchResult, String> {
+) -> Result<serde_json::Value, String> {
     require_owner_unlocked(&runtime).await?;
     let existing = runtime
         .vault
         .list_decrypted_connections()
         .map_err(command_error)?;
-    crate::smart_extract::scan_local_dev_configs(&existing).map_err(command_error)
+    let outcome = tokio::task::spawn_blocking(move || {
+        crate::smart_extract::scan_local_dev_configs_with_mvaults(&existing)
+    })
+    .await
+    .map_err(command_error)?
+    .map_err(command_error)?;
+    *runtime.discovered_mvault_paths.lock().await = outcome.mvault_paths;
+    let mut value = serde_json::to_value(&outcome.batch).map_err(command_error)?;
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert(
+            "discoveredMvaults".to_owned(),
+            serde_json::to_value(&outcome.discovered_mvaults).map_err(command_error)?,
+        );
+        obj.insert(
+            "scanReport".to_owned(),
+            serde_json::to_value(&outcome.report).map_err(command_error)?,
+        );
+    }
+    Ok(value)
+}
+
+#[tauri::command]
+async fn smart_scan_workspace_folder(
+    app: AppHandle,
+    runtime: State<'_, AppRuntime>,
+) -> Result<Option<serde_json::Value>, String> {
+    require_owner_unlocked(&runtime).await?;
+    let Some(picked) = app.dialog().file().blocking_pick_folder() else {
+        return Ok(None);
+    };
+    require_owner_unlocked(&runtime).await?;
+    let folder_path = picked.into_path().map_err(command_error)?;
+    let existing = runtime
+        .vault
+        .list_decrypted_connections()
+        .map_err(command_error)?;
+    let outcome = tokio::task::spawn_blocking(move || {
+        crate::smart_extract::scan_workspace_directory(&folder_path, &existing)
+    })
+    .await
+    .map_err(command_error)?
+    .map_err(command_error)?;
+    *runtime.discovered_mvault_paths.lock().await = outcome.mvault_paths;
+    let mut value = serde_json::to_value(&outcome.batch).map_err(command_error)?;
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert(
+            "discoveredMvaults".to_owned(),
+            serde_json::to_value(&outcome.discovered_mvaults).map_err(command_error)?,
+        );
+        obj.insert(
+            "scanReport".to_owned(),
+            serde_json::to_value(&outcome.report).map_err(command_error)?,
+        );
+    }
+    Ok(Some(value))
+}
+
+#[tauri::command]
+async fn open_discovered_mvault(
+    runtime: State<'_, AppRuntime>,
+    index: usize,
+) -> Result<serde_json::Value, String> {
+    require_owner_unlocked(&runtime).await?;
+    let path = runtime
+        .discovered_mvault_paths
+        .lock()
+        .await
+        .get(index)
+        .cloned()
+        .ok_or_else(|| "Discovered .mvault backup is no longer available; scan again".to_owned())?;
+    let requires_password =
+        backup::inspect_file_requires_password(&path).map_err(command_error)?;
+    let file_name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("openkeylet-backup.mvault")
+        .to_owned();
+    *runtime.pending_backup_import.lock().await = None;
+    *runtime.pending_backup_source.lock().await = Some(PendingBackupSource::Path(path));
+    Ok(serde_json::json!({
+        "fileName": file_name,
+        "requiresPassword": requires_password,
+    }))
 }
 
 #[tauri::command]
@@ -2326,14 +2549,15 @@ async fn window_action(
     action: String,
 ) -> Result<(), String> {
     match action.as_str() {
-        "minimize" => window.minimize().map_err(command_error),
+        "minimize" => {
+            window.minimize().map_err(command_error)?;
+            schedule_tray_refresh(window.app_handle());
+            Ok(())
+        }
         "close" => {
             let tray_available = runtime.tray_available.load(Ordering::Acquire);
             if !tray_available {
-                runtime.vault.lock_strong();
-                runtime.session_broker.stop();
-                clipboard::clear_if_unchanged(window.app_handle(), &runtime.clipboard, None);
-                window.app_handle().exit(0);
+                perform_clean_quit(window.app_handle());
                 return Ok(());
             }
             let close_behavior = runtime
@@ -2342,13 +2566,12 @@ async fn window_action(
                 .map_err(command_error)?
                 .close_behavior;
             if !should_hide_on_close(&close_behavior, tray_available) {
-                runtime.vault.lock_strong();
-                runtime.session_broker.stop();
-                clipboard::clear_if_unchanged(window.app_handle(), &runtime.clipboard, None);
-                window.app_handle().exit(0);
+                perform_clean_quit(window.app_handle());
                 Ok(())
             } else {
-                window.hide().map_err(command_error)
+                window.hide().map_err(command_error)?;
+                schedule_tray_refresh(window.app_handle());
+                Ok(())
             }
         }
         _ => Err("Unknown window operation".to_owned()),
@@ -2356,7 +2579,7 @@ async fn window_action(
 }
 
 #[tauri::command]
-async fn start_vertical_resize(window: WebviewWindow, direction: String) -> Result<(), String> {
+async fn start_vertical_resize(window: WebviewWindow, direction: String) -> Result<bool, String> {
     let is_north = match direction.as_str() {
         "north" | "top" => true,
         "south" | "bottom" => false,
@@ -2377,12 +2600,13 @@ async fn start_vertical_resize(window: WebviewWindow, direction: String) -> Resu
             PostMessageW(Some(HWND(hwnd.0)), WM_SYSCOMMAND, WPARAM(cmd), LPARAM(0))
                 .map_err(command_error)?;
         }
+        Ok(true)
     }
     #[cfg(not(windows))]
     {
         let _ = (window, is_north);
+        Ok(false)
     }
-    Ok(())
 }
 
 #[tauri::command]
@@ -2392,6 +2616,7 @@ async fn set_edge_dock_enabled(
     enabled: bool,
 ) -> Result<(), String> {
     runtime.edge_dock.set_enabled(&window, enabled);
+    schedule_tray_refresh(window.app_handle());
     Ok(())
 }
 
@@ -2418,7 +2643,34 @@ fn should_hide_on_close(close_behavior: &str, tray_available: bool) -> bool {
     tray_available && !close_behavior.eq_ignore_ascii_case("exit")
 }
 
+fn perform_clean_quit(app: &AppHandle) {
+    if let Some(runtime) = app.try_state::<AppRuntime>() {
+        runtime.vault.lock_strong();
+        runtime.session_broker.stop();
+        clipboard::clear_if_unchanged(app, &runtime.clipboard, None);
+        if let Err(error) = crate::runtime_epoch::invalidate(runtime.vault.data_dir()) {
+            eprintln!("OpenKeylet: failed to stop MCP sessions: {error:#}");
+        }
+    }
+    app.exit(0);
+}
+
+fn main_window_is_visible(app: &AppHandle) -> bool {
+    let Some(window) = app.get_webview_window("main") else {
+        return false;
+    };
+    let visible = window.is_visible().unwrap_or(false);
+    let minimized = window.is_minimized().unwrap_or(false);
+    let collapsed = app
+        .try_state::<AppRuntime>()
+        .is_some_and(|runtime| runtime.edge_dock.is_collapsed());
+    visible && !minimized && !collapsed
+}
+
 fn show_main_window(app: &AppHandle) {
+    if let Some(runtime) = app.try_state::<AppRuntime>() {
+        tray_menu::hide_tray_menu(app, &runtime.tray_menu, false);
+    }
     #[cfg(target_os = "macos")]
     let _ = app.show();
     if let Some(window) = app.get_webview_window("main") {
@@ -2429,14 +2681,289 @@ fn show_main_window(app: &AppHandle) {
         }
         let _ = window.set_focus();
     }
+    schedule_tray_refresh(app);
+}
+
+fn hide_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.hide();
+    }
+    schedule_tray_refresh(app);
+}
+
+async fn collect_tray_menu_state(app: &AppHandle, runtime: &AppRuntime) -> TrayMenuState {
+    let lock = owner_lock_state(runtime).await.unwrap_or(OwnerLockState {
+        pin_configured: true,
+        unlocked: false,
+        expires_in_seconds: 0,
+        strong_mode: runtime.vault.is_strong_mode(),
+        mode: if runtime.vault.is_strong_mode() {
+            "strong".to_owned()
+        } else {
+            "pin".to_owned()
+        },
+    });
+    let settings = runtime.vault.settings().unwrap_or_default();
+    let browser = runtime.browser.status().await;
+    let update = runtime.updater.status().await;
+    let item_count = if lock.unlocked {
+        runtime.vault.list_connections().ok().map(|items| items.len())
+    } else {
+        None
+    };
+    let active_update_phase = matches!(
+        update.phase.as_str(),
+        "available" | "downloading" | "verifying" | "ready" | "applying"
+    );
+    let skipped = update
+        .latest_version
+        .as_deref()
+        .is_some_and(|ver| !ver.is_empty() && ver == update.skipped_version)
+        && matches!(update.phase.as_str(), "available");
+    let update_available = active_update_phase && update.latest_version.is_some() && !skipped;
+    let resolved_language = runtime.tray_menu.resolve_language(&settings.language);
+    let version = if update.current_version.is_empty() {
+        env!("CARGO_PKG_VERSION").to_owned()
+    } else {
+        update.current_version
+    };
+
+    TrayMenuState {
+        version,
+        language: settings.language,
+        resolved_language,
+        theme: runtime.tray_menu.current_theme(),
+        unlocked: lock.unlocked,
+        pin_configured: lock.pin_configured,
+        strong_mode: lock.strong_mode,
+        item_count,
+        main_visible: main_window_is_visible(app),
+        browser_enabled: settings.browser_enabled,
+        browser_status: browser.status,
+        browser_connected: browser.connected,
+        edge_dock_enabled: runtime.edge_dock.is_enabled(),
+        update_available,
+        latest_version: if update_available {
+            update.latest_version
+        } else {
+            None
+        },
+        platform: tray_menu::platform_name().to_owned(),
+    }
+}
+
+fn schedule_tray_refresh(app: &AppHandle) {
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let Some(runtime) = handle.try_state::<AppRuntime>() else {
+            return;
+        };
+        let state = collect_tray_menu_state(&handle, &runtime).await;
+        tray_menu::sync_tray_surface(&handle, &runtime.tray_menu, &state);
+    });
+}
+
+async fn execute_tray_action(app: &AppHandle, action: &str) -> Result<TrayActionResult, String> {
+    let runtime = app.state::<AppRuntime>();
+    match action {
+        "show-main" | "tray-open" => {
+            show_main_window(app);
+            Ok(TrayActionResult::done())
+        }
+        "toggle-main" | "tray-toggle-main" => {
+            if main_window_is_visible(app) && runtime.tray_available.load(Ordering::Acquire) {
+                tray_menu::hide_tray_menu(app, &runtime.tray_menu, false);
+                hide_main_window(app);
+            } else {
+                show_main_window(app);
+            }
+            Ok(TrayActionResult::done())
+        }
+        "new-item" | "tray-new-item" => {
+            show_main_window(app);
+            let _ = app.emit("tray-command", serde_json::json!({ "action": "new-item" }));
+            Ok(TrayActionResult::done())
+        }
+        "smart-import" | "tray-smart-import" => {
+            show_main_window(app);
+            let _ = app.emit(
+                "tray-command",
+                serde_json::json!({ "action": "smart-import" }),
+            );
+            Ok(TrayActionResult::done())
+        }
+        "generate-password" | "tray-generate-password" => {
+            require_owner_unlocked(&runtime).await?;
+            let generated = zeroize::Zeroizing::new(
+                crate::generator::password(&crate::generator::Options {
+                    length: 24,
+                    uppercase: true,
+                    lowercase: true,
+                    digits: true,
+                    symbols: true,
+                })
+                .map_err(command_error)?,
+            );
+            clipboard::write_text(
+                app,
+                &runtime.clipboard,
+                &generated,
+                true,
+                SENSITIVE_CLIPBOARD_TTL_SECS,
+            )
+            .map_err(command_error)?;
+            Ok(TrayActionResult::stay(
+                Some("password-copied"),
+                Some(SENSITIVE_CLIPBOARD_TTL_SECS),
+            ))
+        }
+        "toggle-browser-bridge" | "tray-toggle-browser-bridge" => {
+            require_owner_unlocked(&runtime).await?;
+            let current = runtime
+                .vault
+                .settings()
+                .map_err(command_error)?
+                .browser_enabled;
+            let next_enabled = !current;
+            let settings = runtime
+                .vault
+                .update_settings_patch(SettingsPatch {
+                    browser_enabled: Some(next_enabled),
+                    ..Default::default()
+                })
+                .map_err(command_error)?;
+            runtime.browser.sync().await;
+            if next_enabled && settings.browser_enabled {
+                let _ = runtime.browser.start_quick_pairing().await;
+            }
+            emit_changed(app);
+            Ok(TrayActionResult::stay(None, None))
+        }
+        "toggle-edge-dock" | "tray-toggle-edge-dock" => {
+            let next_enabled = !runtime.edge_dock.is_enabled();
+            if let Some(window) = app.get_webview_window("main") {
+                runtime.edge_dock.set_enabled(&window, next_enabled);
+            }
+            let _ = app.emit("edge-dock-preference-changed", next_enabled);
+            schedule_tray_refresh(app);
+            Ok(TrayActionResult::stay(None, None))
+        }
+        "open-settings" | "tray-open-settings" => {
+            show_main_window(app);
+            let _ = app.emit("tray-command", serde_json::json!({ "action": "settings" }));
+            Ok(TrayActionResult::done())
+        }
+        "open-update" | "tray-open-update" => {
+            show_main_window(app);
+            let _ = app.emit("tray-command", serde_json::json!({ "action": "update" }));
+            Ok(TrayActionResult::done())
+        }
+        "lock-or-unlock" | "tray-lock" | "tray-lock-or-unlock" => {
+            let lock = owner_lock_state(&runtime).await?;
+            if !lock.unlocked {
+                show_main_window(app);
+                return Ok(TrayActionResult::done());
+            }
+            if !lock.strong_mode && !lock.pin_configured {
+                show_main_window(app);
+                let _ = app.emit("pin-setup-requested", ());
+                return Ok(TrayActionResult::done());
+            }
+            runtime.owner_session.lock().await.lock();
+            if lock.strong_mode {
+                runtime.vault.lock_strong();
+                runtime.session_broker.stop();
+            }
+            *runtime.pending_import.lock().await = None;
+            *runtime.pending_backup_source.lock().await = None;
+            *runtime.pending_backup_import.lock().await = None;
+            runtime.discovered_mvault_paths.lock().await.clear();
+            clipboard::clear_if_unchanged(app, &runtime.clipboard, None);
+            tray_menu::hide_tray_menu(app, &runtime.tray_menu, false);
+            emit_changed(app);
+            Ok(TrayActionResult::done())
+        }
+        "quit" | "tray-quit" => {
+            tray_menu::hide_tray_menu(app, &runtime.tray_menu, false);
+            perform_clean_quit(app);
+            Ok(TrayActionResult::done())
+        }
+        _ => Err("Unknown tray action".to_owned()),
+    }
+}
+
+#[tauri::command]
+async fn tray_menu_state(
+    app: AppHandle,
+    runtime: State<'_, AppRuntime>,
+) -> Result<TrayMenuState, String> {
+    Ok(collect_tray_menu_state(&app, &runtime).await)
+}
+
+#[tauri::command]
+async fn tray_menu_action(app: AppHandle, action: String) -> Result<TrayActionResult, String> {
+    let result = execute_tray_action(&app, &action).await?;
+    if !result.keep_open
+        && let Some(runtime) = app.try_state::<AppRuntime>()
+    {
+        tray_menu::hide_tray_menu(&app, &runtime.tray_menu, false);
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+async fn tray_menu_resize(
+    app: AppHandle,
+    runtime: State<'_, AppRuntime>,
+    height: f64,
+) -> Result<(), String> {
+    tray_menu::resize_tray_menu(&app, &runtime.tray_menu, height).map_err(command_error)
+}
+
+#[tauri::command]
+async fn tray_menu_hide(app: AppHandle, runtime: State<'_, AppRuntime>) -> Result<(), String> {
+    tray_menu::hide_tray_menu(&app, &runtime.tray_menu, false);
+    Ok(())
+}
+
+#[tauri::command]
+async fn sync_appearance_theme(
+    app: AppHandle,
+    runtime: State<'_, AppRuntime>,
+    theme: Option<String>,
+    resolved_language: Option<String>,
+) -> Result<(), String> {
+    if let Some(ref next_theme) = theme {
+        let normalized = if next_theme == "light" { "light" } else { "dark" };
+        tray_menu::set_tray_window_theme(&app, &runtime.tray_menu, normalized);
+        let _ = app.emit(
+            "appearance-changed",
+            serde_json::json!({ "theme": normalized }),
+        );
+    }
+    if let Some(ref locale) = resolved_language {
+        runtime
+            .tray_menu
+            .set_appearance(None, Some(locale.as_str()));
+    }
+    let effective_theme = runtime.tray_menu.current_theme();
+    let lang_setting = runtime
+        .vault
+        .settings()
+        .map(|s| s.language)
+        .unwrap_or_else(|_| "auto".to_owned());
+    let effective_language = runtime.tray_menu.resolve_language(&lang_setting);
+    let browser = runtime.browser.clone();
+    tauri::async_runtime::spawn(async move {
+        browser
+            .sync_appearance(Some(effective_theme), Some(effective_language))
+            .await;
+    });
+    schedule_tray_refresh(&app);
+    Ok(())
 }
 
 fn install_tray(app: &tauri::App) -> Result<()> {
-    let open = MenuItem::with_id(app, "tray-open", "OPEN OpenKeylet", true, None::<&str>)?;
-    let lock = MenuItem::with_id(app, "tray-lock", "LOCK", true, None::<&str>)?;
-    let separator = PredefinedMenuItem::separator(app)?;
-    let quit = MenuItem::with_id(app, "tray-quit", "QUIT", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&open, &lock, &separator, &quit])?;
     #[cfg(target_os = "macos")]
     let icon = app
         .default_window_icon()
@@ -2445,68 +2972,109 @@ fn install_tray(app: &tauri::App) -> Result<()> {
     #[cfg(not(target_os = "macos"))]
     let icon = tauri::include_image!("icons/tray.png");
 
-    let builder = TrayIconBuilder::with_id("openkeylet-tray")
+    let runtime = app.state::<AppRuntime>();
+    let initial_settings = runtime.vault.settings().unwrap_or_default();
+    let initial_resolved_lang = runtime
+        .tray_menu
+        .resolve_language(&initial_settings.language);
+    let initial_strong = runtime.vault.is_strong_mode();
+    let initial_pin = if initial_strong {
+        true
+    } else {
+        runtime.vault.owner_pin_configured().unwrap_or(false)
+    };
+    let initial_unlocked = !initial_strong && !initial_pin;
+    let initial_state = TrayMenuState {
+        version: env!("CARGO_PKG_VERSION").to_owned(),
+        language: initial_settings.language,
+        resolved_language: initial_resolved_lang,
+        theme: runtime.tray_menu.current_theme(),
+        unlocked: initial_unlocked,
+        pin_configured: initial_pin,
+        strong_mode: initial_strong,
+        item_count: None,
+        main_visible: true,
+        browser_enabled: initial_settings.browser_enabled,
+        browser_status: if initial_settings.browser_enabled {
+            "listening".to_owned()
+        } else {
+            "off".to_owned()
+        },
+        browser_connected: false,
+        edge_dock_enabled: runtime.edge_dock.is_enabled(),
+        update_available: false,
+        latest_version: None,
+        platform: tray_menu::platform_name().to_owned(),
+    };
+    let initial_tooltip = tray_menu::format_tooltip(&initial_state);
+    let _ = runtime.tray_menu.update_cached_tooltip(&initial_tooltip);
+
+    let builder = TrayIconBuilder::with_id(TRAY_ID)
         .icon(icon)
         .icon_as_template(cfg!(target_os = "macos"))
-        .tooltip("OpenKeylet — LOCAL VAULT")
-        .menu(&menu)
+        .tooltip(initial_tooltip)
         .show_menu_on_left_click(false);
-    #[cfg(target_os = "linux")]
-    let builder = builder.temp_dir_path(
-        app.path()
-            .app_cache_dir()?
-            .join("tray")
-            .join(std::process::id().to_string()),
-    );
 
-    let tray = builder
-        .on_menu_event(|app, event| {
-            if event.id() == "tray-open" {
-                show_main_window(app);
-            } else if event.id() == "tray-lock" {
+    #[cfg(target_os = "linux")]
+    let builder = {
+        let menu = tray_menu::build_native_linux_menu(app.handle(), &initial_state)?;
+        let _ = runtime.tray_menu.should_rebuild_linux_menu(&initial_state);
+        builder
+            .menu(&menu)
+            .temp_dir_path(
+                app.path()
+                    .app_cache_dir()?
+                    .join("tray")
+                    .join(std::process::id().to_string()),
+            )
+            .on_menu_event(|app, event| {
+                let id = event.id().as_ref().to_owned();
                 let handle = app.clone();
                 tauri::async_runtime::spawn(async move {
-                    let runtime = handle.state::<AppRuntime>();
-                    let strong_mode = runtime.vault.is_strong_mode();
-                    let pin_configured = runtime.vault.owner_pin_configured();
-                    runtime.owner_session.lock().await.lock();
-                    if strong_mode {
-                        runtime.vault.lock_strong();
-                        runtime.session_broker.stop();
-                    }
-                    *runtime.pending_import.lock().await = None;
-                    clipboard::clear_if_unchanged(&handle, &runtime.clipboard, None);
-                    show_main_window(&handle);
-                    if !strong_mode && matches!(pin_configured, Ok(false)) {
-                        let _ = handle.emit("pin-setup-requested", ());
-                    } else {
-                        emit_changed(&handle);
+                    if let Err(error) = execute_tray_action(&handle, &id).await {
+                        eprintln!("OpenKeylet: tray menu action '{id}' failed: {error}");
                     }
                 });
-            } else if event.id() == "tray-quit" {
-                let runtime = app.state::<AppRuntime>();
-                runtime.vault.lock_strong();
-                runtime.session_broker.stop();
-                clipboard::clear_if_unchanged(app, &runtime.clipboard, None);
-                if let Err(error) = crate::runtime_epoch::invalidate(runtime.vault.data_dir()) {
-                    eprintln!("OpenKeylet: failed to stop MCP sessions: {error:#}");
-                }
-                app.exit(0);
-            }
-        })
-        .on_tray_icon_event(|tray, event| match event {
-            TrayIconEvent::Click {
-                button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
-                ..
-            }
-            | TrayIconEvent::DoubleClick {
-                button: MouseButton::Left,
-                ..
-            } => show_main_window(tray.app_handle()),
-            _ => {}
-        })
-        .build(app)?;
+            })
+    };
+
+    #[cfg(not(target_os = "linux"))]
+    let builder = builder.on_tray_icon_event(|tray, event| match event {
+        TrayIconEvent::Click {
+            button: MouseButton::Left,
+            button_state: MouseButtonState::Up,
+            ..
+        }
+        | TrayIconEvent::DoubleClick {
+            button: MouseButton::Left,
+            ..
+        } => {
+            show_main_window(tray.app_handle());
+        }
+        TrayIconEvent::Click {
+            button: MouseButton::Right,
+            button_state: MouseButtonState::Up,
+            position,
+            rect,
+            ..
+        } => {
+            let handle = tray.app_handle().clone();
+            let scale = handle
+                .get_webview_window(TRAY_MENU_LABEL)
+                .or_else(|| handle.get_webview_window("main"))
+                .and_then(|win| win.scale_factor().ok())
+                .unwrap_or(1.0);
+            let anchor = tray_menu::anchor_from_event(position, rect, scale);
+            tauri::async_runtime::spawn(async move {
+                let runtime = handle.state::<AppRuntime>();
+                let state = collect_tray_menu_state(&handle, &runtime).await;
+                tray_menu::toggle_custom_tray_menu(&handle, &runtime.tray_menu, anchor, &state);
+            });
+        }
+        _ => {}
+    });
+
+    let tray = builder.build(app)?;
     #[cfg(target_os = "linux")]
     {
         // GTK exports the dbusmenu tree from idle callbacks. Keep the indicator
@@ -2521,7 +3089,18 @@ fn install_tray(app: &tauri::App) -> Result<()> {
         });
     }
     #[cfg(not(target_os = "linux"))]
-    let _ = tray;
+    {
+        let _ = tray;
+        // Pre-warm the hidden custom tray popover after initial paint so right-clicking
+        // the taskbar/menu-bar icon opens instantaneously with zero blank flash.
+        let handle = app.handle().clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(450)).await;
+            if let Some(runtime) = handle.try_state::<AppRuntime>() {
+                let _ = tray_menu::ensure_tray_window(&handle, &runtime.tray_menu);
+            }
+        });
+    }
     Ok(())
 }
 
@@ -2611,12 +3190,14 @@ pub fn run_gui() -> Result<()> {
             ));
             let edge_dock = Arc::new(EdgeDockController::new());
             edge_dock.spawn_monitor(app.handle().clone());
+            let tray_menu = Arc::new(TrayMenuController::new());
             app.manage(AppRuntime {
                 _gui_instance: gui_instance,
                 github_backup: Mutex::new(GithubBackup::new(vault.clone())?),
                 session_broker,
                 updater,
                 edge_dock,
+                tray_menu,
                 vault,
                 executable,
                 browser,
@@ -2625,6 +3206,7 @@ pub fn run_gui() -> Result<()> {
                 pending_import: Mutex::new(None),
                 pending_backup_source: Mutex::new(None),
                 pending_backup_import: Mutex::new(None),
+                discovered_mvault_paths: Mutex::new(Vec::new()),
                 owner_session: Mutex::new(OwnerSession::default()),
                 auto_sync_generation: AtomicU64::new(0),
                 agent_registry,
@@ -2669,7 +3251,19 @@ pub fn run_gui() -> Result<()> {
             {
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
-                    handle.state::<AppRuntime>().browser.sync().await;
+                    let runtime = handle.state::<AppRuntime>();
+                    runtime.browser.sync().await;
+                    let theme = runtime.tray_menu.current_theme();
+                    let lang_setting = runtime
+                        .vault
+                        .settings()
+                        .map(|s| s.language)
+                        .unwrap_or_else(|_| "auto".to_owned());
+                    let lang = runtime.tray_menu.resolve_language(&lang_setting);
+                    runtime
+                        .browser
+                        .sync_appearance(Some(theme), Some(lang))
+                        .await;
                     emit_changed(&handle);
                 });
             }
@@ -2678,6 +3272,31 @@ pub fn run_gui() -> Result<()> {
             Ok(())
         })
         .on_window_event(|window, event| {
+            if window.label() == TRAY_MENU_LABEL {
+                match event {
+                    tauri::WindowEvent::Focused(false) => {
+                        if let Some(runtime) = window.try_state::<AppRuntime>() {
+                            tray_menu::hide_tray_menu(
+                                window.app_handle(),
+                                &runtime.tray_menu,
+                                true,
+                            );
+                        }
+                    }
+                    tauri::WindowEvent::CloseRequested { api, .. } => {
+                        api.prevent_close();
+                        if let Some(runtime) = window.try_state::<AppRuntime>() {
+                            tray_menu::hide_tray_menu(
+                                window.app_handle(),
+                                &runtime.tray_menu,
+                                false,
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+                return;
+            }
             if let tauri::WindowEvent::DragDrop(drag_event) = event {
                 match drag_event {
                     tauri::DragDropEvent::Enter { paths, .. } => {
@@ -2831,7 +3450,11 @@ pub fn run_gui() -> Result<()> {
             if matches!(event, tauri::WindowEvent::Moved(_)) {
                 window.state::<AppRuntime>().edge_dock.on_window_moved();
             }
-            if let tauri::WindowEvent::Resized(size) = event {
+            if let tauri::WindowEvent::Resized(size) = event
+                && size.width > 0
+                && size.height > 0
+                && !window.is_minimized().unwrap_or(false)
+            {
                 let scale = window.scale_factor().unwrap_or(1.0);
                 let logical_w = size.width as f64 / scale;
                 let logical_h = (size.height as f64 / scale)
@@ -2861,6 +3484,7 @@ pub fn run_gui() -> Result<()> {
                 ) {
                     api.prevent_close();
                     let _ = window.hide();
+                    schedule_tray_refresh(window.app_handle());
                 } else {
                     runtime.vault.lock_strong();
                     runtime.session_broker.stop();
@@ -2897,11 +3521,18 @@ pub fn run_gui() -> Result<()> {
             owner_purge_item,
             owner_password_history,
             owner_clear_password_history,
+            owner_add_agent_note,
+            owner_update_agent_note,
+            owner_delete_agent_note,
+            owner_clear_agent_notes,
+            owner_set_agent_notes_locked,
             test_connection,
             update_settings,
             system_integration_status,
             set_desktop_shortcut,
             set_launch_at_login,
+            delete_activity,
+            delete_activities,
             clear_activities,
             copy_mcp_config,
             agent_mcp_status,
@@ -2932,6 +3563,8 @@ pub fn run_gui() -> Result<()> {
             smart_extract_dropped_binary,
             smart_pick_and_extract_files,
             smart_scan_local_dev_configs,
+            smart_scan_workspace_folder,
+            open_discovered_mvault,
             commit_smart_batch,
             undo_smart_batch,
             read_owner_clipboard,
@@ -2962,6 +3595,11 @@ pub fn run_gui() -> Result<()> {
             set_edge_dock_enabled,
             edge_dock_expand,
             edge_dock_hover,
+            tray_menu_state,
+            tray_menu_action,
+            tray_menu_resize,
+            tray_menu_hide,
+            sync_appearance_theme,
         ])
         .build(context)
         .context("OpenKeylet GUI startup failed")?;

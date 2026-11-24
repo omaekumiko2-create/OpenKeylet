@@ -30,6 +30,8 @@ pub struct Settings {
     pub browser_paired: bool,
     pub browser_agent_passkey: bool,
     pub owner_auto_lock_minutes: u32,
+    pub auto_check_enabled: bool,
+    pub auto_check_interval_minutes: u32,
     pub update_auto_check: bool,
     pub update_auto_download: bool,
     pub update_skipped_version: String,
@@ -44,6 +46,8 @@ pub struct SettingsPatch {
     pub browser_port: Option<u16>,
     pub browser_agent_passkey: Option<bool>,
     pub owner_auto_lock_minutes: Option<u32>,
+    pub auto_check_enabled: Option<bool>,
+    pub auto_check_interval_minutes: Option<u32>,
     pub update_auto_check: Option<bool>,
     pub update_auto_download: Option<bool>,
     pub update_skipped_version: Option<String>,
@@ -59,6 +63,8 @@ impl Default for Settings {
             browser_paired: false,
             browser_agent_passkey: true,
             owner_auto_lock_minutes: 0,
+            auto_check_enabled: true,
+            auto_check_interval_minutes: 60,
             update_auto_check: true,
             update_auto_download: true,
             update_skipped_version: String::new(),
@@ -80,6 +86,8 @@ mod settings_tests {
         assert_eq!(settings.close_behavior, "tray");
         assert!(settings.browser_agent_passkey);
         assert_eq!(settings.owner_auto_lock_minutes, 0);
+        assert!(settings.auto_check_enabled);
+        assert_eq!(settings.auto_check_interval_minutes, 60);
         assert!(settings.update_auto_check);
         assert!(settings.update_auto_download);
         assert!(settings.update_skipped_version.is_empty());
@@ -214,6 +222,24 @@ impl PublicItemModule {
     }
 }
 
+pub const MAX_AGENT_NOTES: usize = 5;
+pub const MAX_AGENT_NOTE_CHARS: usize = 200;
+pub const MAX_AGENT_NOTE_AUTHOR_CHARS: usize = 40;
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentNoteEntry {
+    pub id: String,
+    pub text: String,
+    #[serde(default)]
+    pub author: String,
+    pub updated_at: String,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 #[serde(rename_all = "camelCase")]
 pub struct SecretBundle {
@@ -221,6 +247,11 @@ pub struct SecretBundle {
     pub password_history: Vec<PasswordHistoryEntry>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub passkeys: Vec<crate::passkey::StoredPasskey>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_notes: Vec<AgentNoteEntry>,
+    #[zeroize(skip)]
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub agent_notes_locked: bool,
     #[zeroize(skip)]
     #[serde(default)]
     pub private_key_name: Option<String>,
@@ -446,6 +477,10 @@ pub struct PublicConnection {
     pub folder: String,
     pub favorite: bool,
     pub passkeys: Vec<crate::passkey::PasskeySummary>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_notes: Vec<AgentNoteEntry>,
+    #[serde(default)]
+    pub agent_notes_locked: bool,
     pub id: Uuid,
     pub capabilities: Vec<String>,
     pub can_test: bool,
@@ -578,6 +613,10 @@ impl StoredConnection {
                         .collect()
                 })
                 .unwrap_or_default(),
+            agent_notes: secrets
+                .map(|bundle| bundle.agent_notes.clone())
+                .unwrap_or_default(),
+            agent_notes_locked: secrets.is_some_and(|bundle| bundle.agent_notes_locked),
             id: self.id,
             capabilities: secrets
                 .map(|bundle| self.capabilities(bundle))

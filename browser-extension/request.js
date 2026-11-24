@@ -51,8 +51,6 @@ async function load() {
   }
 }
 
-$("#theme-toggle").addEventListener("click", () => OpenKeyletUI.toggleTheme());
-
 $("#request-form").addEventListener("submit", async e => {
   e.preventDefault();
   $("#confirm").disabled = true;

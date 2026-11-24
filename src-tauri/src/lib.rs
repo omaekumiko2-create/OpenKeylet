@@ -40,6 +40,8 @@ pub mod desktop;
 pub mod gui_instance;
 #[cfg(feature = "gui")]
 pub mod system_integration;
+#[cfg(feature = "gui")]
+pub mod tray_menu;
 
 #[cfg(feature = "gui")]
 pub use commands::run_gui;

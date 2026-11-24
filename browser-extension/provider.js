@@ -3,308 +3,6 @@ const bridgeRequests = new Map();
 const credentialRequests = new Map();
 const preparingCredentials = new Map();
 const agentPasskeyWaiters = [];
-const quickCaptures = new Map();
-const QUICK_CAPTURE_TTL = 5 * 60 * 1000;
-
-function clearQuickCapture(id) {
-  const draft = quickCaptures.get(id);
-  if (!draft) return;
-  clearTimeout(draft.timer);
-  quickCaptures.delete(id);
-}
-
-function clearQuickCaptures() {
-  for (const id of [...quickCaptures.keys()]) clearQuickCapture(id);
-}
-
-function createQuickCapture({ tabId, origin, text, source = "selection" }) {
-  while (quickCaptures.size >= 10) clearQuickCapture(quickCaptures.keys().next().value);
-  const id = crypto.randomUUID();
-  const draft = { id, tabId, origin, text, source, expiresAt: Date.now() + QUICK_CAPTURE_TTL };
-  draft.timer = setTimeout(() => clearQuickCapture(id), QUICK_CAPTURE_TTL);
-  quickCaptures.set(id, draft);
-  return draft;
-}
-
-function getQuickCapture(id) {
-  const draft = quickCaptures.get(id);
-  if (!draft) return null;
-  if (draft.expiresAt <= Date.now()) { clearQuickCapture(id); return null; }
-  return draft;
-}
-
-async function decodeVisibleTabQr(windowId, regions = []) {
-  if (typeof OffscreenCanvas !== "function" || typeof createImageBitmap !== "function" || !self.OpenKeyletQRDecoder) {
-    return null;
-  }
-  const dataUrl = await chrome.tabs.captureVisibleTab(windowId, { format: "png" }).catch(() => null);
-  if (!dataUrl) return null;
-  const blob = await (await fetch(dataUrl)).blob();
-  const bitmap = await createImageBitmap(blob);
-  try {
-    const bw = bitmap.width;
-    const bh = bitmap.height;
-    const tryCrop = (sx, sy, sw, sh) => {
-      if (sw < 24 || sh < 24) return null;
-      const maxSide = 480;
-      const scale = Math.min(1, maxSide / Math.max(sw, sh));
-      const dw = Math.max(24, Math.round(sw * scale));
-      const dh = Math.max(24, Math.round(sh * scale));
-      const pad = 16;
-      const canvas = new OffscreenCanvas(dw + pad * 2, dh + pad * 2);
-      const ctx = canvas.getContext("2d", { willReadFrequently: true });
-      ctx.fillStyle = "#ffffff";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.imageSmoothingEnabled = scale < 1;
-      ctx.drawImage(bitmap, sx, sy, sw, sh, pad, pad, dw, dh);
-      const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      return self.OpenKeyletQRDecoder.decode(imgData);
-    };
-
-    const found = [];
-    // 1. Scan candidate bounding boxes first (fast & high-precision)
-    for (const r of regions.slice(0, 12)) {
-      const dpr = r.dpr || 1;
-      const padPx = Math.round(16 * dpr);
-      const sx = Math.max(0, Math.floor(r.x * dpr) - padPx);
-      const sy = Math.max(0, Math.floor(r.y * dpr) - padPx);
-      const sw = Math.min(bw - sx, Math.ceil(r.width * dpr) + padPx * 2);
-      const sh = Math.min(bh - sy, Math.ceil(r.height * dpr) + padPx * 2);
-      const val = tryCrop(sx, sy, sw, sh);
-      if (val) found.push(val.trim());
-    }
-    if (found.some(v => v.toLowerCase().startsWith("otpauth://"))) {
-      return found.find(v => v.toLowerCase().startsWith("otpauth://"));
-    }
-
-    // 2. Scan full visible viewport (handles CSS-grid/table QR codes and Shadow DOM)
-    for (const maxSide of [1200, 720]) {
-      const scale = Math.min(1, maxSide / Math.max(bw, bh));
-      const dw = Math.round(bw * scale);
-      const dh = Math.round(bh * scale);
-      const canvas = new OffscreenCanvas(dw, dh);
-      const ctx = canvas.getContext("2d", { willReadFrequently: true });
-      ctx.drawImage(bitmap, 0, 0, dw, dh);
-      const val = self.OpenKeyletQRDecoder.decode(ctx.getImageData(0, 0, dw, dh));
-      if (val) {
-        const trimmed = val.trim();
-        if (trimmed.toLowerCase().startsWith("otpauth://")) return trimmed;
-        found.push(trimmed);
-      }
-    }
-    return found[0] || null;
-  } finally {
-    bitmap.close?.();
-  }
-}
-
-async function scanQrOnTab(tabId, targetSrcUrl = "") {
-  // Inject offline pure-JS QR decoder into isolated world (works on Windows/Linux/macOS)
-  await chrome.scripting.executeScript({
-    target: { tabId, frameIds: [0] },
-    files: ["qr-decoder.js"],
-  }).catch(() => {});
-
-  const [execution] = await chrome.scripting.executeScript({
-    target: { tabId, frameIds: [0] },
-    func: async (srcFilter) => {
-      const found = [];
-      const regions = [];
-      const dpr = window.devicePixelRatio || 1;
-      const recordRegion = (el) => {
-        const r = el.getBoundingClientRect();
-        if (r.width >= 40 && r.height >= 40 && r.width <= 900 && r.height <= 900
-            && r.bottom > 0 && r.right > 0 && r.top < window.innerHeight && r.left < window.innerWidth) {
-          regions.push({ x: r.left, y: r.top, width: r.width, height: r.height, dpr });
-        }
-      };
-
-      // Pass 0: Check direct otpauth:// links or query parameters
-      for (const a of document.querySelectorAll('a[href^="otpauth://"]')) {
-        const href = String(a.getAttribute("href") || "").trim();
-        if (href) found.push(href);
-      }
-      if (found.length) return { value: found[0] };
-
-      const extractOtpauthFromUrl = (rawUrl) => {
-        if (!rawUrl || rawUrl.length > 4096) return null;
-        try {
-          if (rawUrl.toLowerCase().startsWith("otpauth://")) return rawUrl;
-          const u = new URL(rawUrl, location.href);
-          for (const [, v] of u.searchParams.entries()) {
-            if (v && v.toLowerCase().startsWith("otpauth://")) return v.trim();
-          }
-        } catch {}
-        return null;
-      };
-
-      const nativeDetector = typeof BarcodeDetector === "function"
-        ? new BarcodeDetector({ formats: ["qr_code"] })
-        : null;
-      const jsDecoder = window.OpenKeyletQRDecoder?.decode;
-
-      const decodeElementWithCanvas = (el, natW, natH) => {
-        if (!jsDecoder || !natW || !natH) return null;
-        try {
-          const pad = 20;
-          const targetMax = 440;
-          const targetMin = 240;
-          let scale = 1;
-          const maxDim = Math.max(natW, natH);
-          if (maxDim > targetMax) scale = targetMax / maxDim;
-          else if (maxDim < targetMin) scale = Math.ceil(targetMin / maxDim);
-          const dw = Math.round(natW * scale);
-          const dh = Math.round(natH * scale);
-          const canvas = document.createElement("canvas");
-          canvas.width = dw + pad * 2;
-          canvas.height = dh + pad * 2;
-          const ctx = canvas.getContext("2d", { willReadFrequently: true });
-          ctx.fillStyle = "#ffffff";
-          ctx.fillRect(0, 0, canvas.width, canvas.height);
-          ctx.imageSmoothingEnabled = scale < 1;
-          ctx.drawImage(el, pad, pad, dw, dh);
-          const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-          return jsDecoder(imageData);
-        } catch {
-          return null; // Tainted cross-origin image -> handled by screenshot fallback
-        }
-      };
-
-      const tryDetect = async (el, natW, natH) => {
-        if (nativeDetector) {
-          try {
-            const codes = await nativeDetector.detect(el);
-            for (const c of codes) if (c?.rawValue) found.push(String(c.rawValue).trim());
-            if (found.some(v => v.toLowerCase().startsWith("otpauth://"))) return true;
-          } catch {}
-        }
-        const jsVal = decodeElementWithCanvas(el, natW, natH);
-        if (jsVal) {
-          found.push(String(jsVal).trim());
-          if (jsVal.toLowerCase().startsWith("otpauth://")) return true;
-        }
-        return false;
-      };
-
-      const imgs = [...document.querySelectorAll("img")].filter(el => el.complete && el.naturalWidth > 20 && el.naturalHeight > 20);
-      const orderedImgs = [];
-      if (srcFilter) {
-        const exact = imgs.find(el => el.currentSrc === srcFilter || el.src === srcFilter);
-        if (exact) orderedImgs.push(exact);
-      }
-      for (const el of imgs) {
-        const embedded = extractOtpauthFromUrl(el.currentSrc || el.src);
-        if (embedded) return { value: embedded };
-        if (!orderedImgs.includes(el) && el.getClientRects().length) orderedImgs.push(el);
-      }
-
-      for (const el of orderedImgs.slice(0, 24)) {
-        recordRegion(el);
-        if (await tryDetect(el, el.naturalWidth, el.naturalHeight)) break;
-      }
-
-      if (!found.some(v => v.toLowerCase().startsWith("otpauth://"))) {
-        for (const canvas of [...document.querySelectorAll("canvas")].slice(0, 16)) {
-          if (canvas.width > 20 && canvas.height > 20 && canvas.getClientRects().length) {
-            recordRegion(canvas);
-            if (await tryDetect(canvas, canvas.width, canvas.height)) break;
-          }
-        }
-      }
-
-      if (!found.some(v => v.toLowerCase().startsWith("otpauth://"))) {
-        const svgs = [...document.querySelectorAll("svg")].filter(el => {
-          const r = el.getBoundingClientRect();
-          return r.width >= 48 && r.height >= 48 && r.width <= 800 && r.height <= 800;
-        });
-        for (const svg of svgs.slice(0, 12)) {
-          recordRegion(svg);
-          try {
-            const rect = svg.getBoundingClientRect();
-            const clone = svg.cloneNode(true);
-            if (!clone.getAttribute("xmlns")) clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
-            if (!clone.getAttribute("width")) clone.setAttribute("width", String(Math.round(rect.width)));
-            if (!clone.getAttribute("height")) clone.setAttribute("height", String(Math.round(rect.height)));
-            const xml = new XMLSerializer().serializeToString(clone);
-            const url = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(xml)}`;
-            const img = new Image();
-            await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = url; });
-            if (await tryDetect(img, img.naturalWidth || Math.round(rect.width), img.naturalHeight || Math.round(rect.height))) break;
-          } catch {}
-        }
-      }
-
-      if (found.length) {
-        const totp = found.find(v => v.toLowerCase().startsWith("otpauth://"));
-        return { value: totp || found[0] };
-      }
-      return { value: null, regions };
-    },
-    args: [targetSrcUrl || ""],
-  });
-
-  const res = execution?.result;
-  if (res?.value) return res.value;
-
-  // Pass 2: Visible tab screenshot fallback (handles cross-origin images, CSS tables, Shadow DOM)
-  const tab = await chrome.tabs.get(tabId).catch(() => null);
-  if (tab?.windowId != null) {
-    const shotVal = await decodeVisibleTabQr(tab.windowId, res?.regions || []);
-    if (shotVal) return shotVal;
-  }
-
-  throw new Error("未在当前网页检测到可读的 2FA 二维码 / No readable QR code found on this page");
-}
-
-function registerContextMenus() {
-  if (!chrome.contextMenus) return;
-  chrome.contextMenus.removeAll(() => {
-    chrome.contextMenus.create({
-      id: "openkeylet-save-selection",
-      title: "存到 OpenKeylet / Save to OpenKeylet",
-      contexts: ["selection"],
-    });
-    chrome.contextMenus.create({
-      id: "openkeylet-scan-qr-image",
-      title: "扫描 2FA 二维码到 OpenKeylet / Scan 2FA QR",
-      contexts: ["image"],
-    });
-  });
-}
-
-if (chrome.contextMenus) {
-  chrome.runtime.onInstalled.addListener(registerContextMenus);
-  chrome.runtime.onStartup.addListener(registerContextMenus);
-  registerContextMenus();
-  chrome.contextMenus.onClicked.addListener(async (info, tab) => {
-    if (!tab?.id || !/^https?:\/\//.test(tab.url || "")) return;
-    const origin = new URL(tab.url).origin;
-    if (info.menuItemId === "openkeylet-save-selection") {
-      const text = String(info.selectionText || "").trim();
-      if (!text || text.length > 65536) return;
-      const draft = createQuickCapture({ tabId: tab.id, origin, text, source: "selection" });
-      await chrome.windows.create({
-        url: chrome.runtime.getURL(`popup.html?quick=${draft.id}&tab=${tab.id}`),
-        type: "popup", width: 420, height: 640,
-      }).catch(() => {});
-    } else if (info.menuItemId === "openkeylet-scan-qr-image") {
-      try {
-        const value = await scanQrOnTab(tab.id, info.srcUrl || "");
-        const draft = createQuickCapture({ tabId: tab.id, origin, text: value, source: "qr" });
-        await chrome.windows.create({
-          url: chrome.runtime.getURL(`popup.html?quick=${draft.id}&tab=${tab.id}`),
-          type: "popup", width: 420, height: 640,
-        }).catch(() => {});
-      } catch {
-        // Fallback: open popup anyway so user can see status or paste setup key.
-        await chrome.windows.create({
-          url: chrome.runtime.getURL(`popup.html?tab=${tab.id}`),
-          type: "popup", width: 420, height: 640,
-        }).catch(() => {});
-      }
-    }
-  });
-}
 function bridgeCall(method, params = {}) {
   if (socket?.readyState !== WebSocket.OPEN) return Promise.reject(new Error("Open OpenKeylet and connect Browser Bridge first"));
   if (bridgeRequests.size >= 32) return Promise.reject(new Error("Too many pending requests"));
@@ -323,7 +21,6 @@ function finishBridgeRequest(message) {
 }
 function failBridgeRequests() {
   clearLoginCaptures();
-  clearQuickCaptures();
   for (const p of bridgeRequests.values()) { clearTimeout(p.timer); p.reject(new Error("OpenKeylet disconnected")); }
   bridgeRequests.clear();
   preparingCredentials.clear();
@@ -369,68 +66,28 @@ async function formAction(tab, origin, mode, login, target) {
 }
 async function popupAction(message) {
   if (["capture-read", "capture-save", "capture-dismiss"].includes(message.action)) return captureUiAction(message);
-  const vaultMethods = {"vault-get":"vault.get","vault-save":"vault.save","vault-trash":"vault.trash","vault-restore":"vault.restore","vault-purge":"vault.purge","vault-history":"vault.history","vault-clear-history":"vault.clearHistory"};
-  if (Object.hasOwn(vaultMethods,message.action)) return bridgeCall(vaultMethods[message.action], {
-    id:message.id, input:message.input, expectedUpdatedAt:message.expectedUpdatedAt, deletedAt:message.deletedAt });
   if (message.action === "unlock") return bridgeCall("unlock", { pin: message.pin });
-  if (message.action === "lock") { clearLoginCaptures(); clearQuickCaptures(); return bridgeCall("lock"); }
+  if (message.action === "lock") { clearLoginCaptures(); return bridgeCall("lock"); }
   if (message.action === "generate") return bridgeCall("password.generate", message.options);
-  if (message.action === "quick-capture-read") {
-    const draft = getQuickCapture(message.quickId);
-    if (!draft) throw new Error("待保存信息已过期 / Quick-save draft expired");
-    return { id: draft.id, origin: draft.origin, text: draft.text, source: draft.source };
-  }
-  if (message.action === "quick-capture-dismiss") {
-    if (message.quickId) clearQuickCapture(message.quickId);
-    return {};
-  }
-  if (message.action === "quick-parse") {
-    return bridgeCall("quick.parse", { text: message.text, origin: message.origin || "" });
-  }
-  if (message.action === "quick-save") {
-    const saved = await bridgeCall("quick.save", { input: message.input });
-    if (message.quickId) clearQuickCapture(message.quickId);
-    return saved;
-  }
-  if (message.action === "attach-totp") {
-    const saved = await bridgeCall("password.attachTotp", {
-      origin: message.origin,
-      id: message.id || null,
-      expectedUpdatedAt: message.expectedUpdatedAt,
-      name: message.name,
-      username: message.username,
-      totp: message.totp,
-    });
-    if (message.quickId) clearQuickCapture(message.quickId);
-    return saved;
-  }
-  if (message.action === "scan-page-qr") {
-    const page = await activePage();
-    const value = await scanQrOnTab(page.tab.id);
-    const parsed = await bridgeCall("quick.parse", { text: value, origin: page.origin });
-    return { text: value, parsed, origin: page.origin };
-  }
   if (message.action === "list") {
     const status = await bridgeCall("status");
     const captured = message.captureId ? await captureForUi(message).catch(() => null) : null;
-    const quick = message.quickId ? getQuickCapture(message.quickId) : null;
     const page = captured ? { tab: await chrome.tabs.get(captured.tabId), origin: captured.origin }
-      : quick ? { tab: await chrome.tabs.get(quick.tabId).catch(() => null), origin: quick.origin }
       : await activePage(false);
     const target = page?.tab && !status.locked ? await loginPage(page.tab, page.origin).catch(()=>null) : null;
-    const listOrigin = captured?.url || target?.url || quick?.origin || "";
-    return { ...status, pageAvailable: Boolean(page?.origin), origin: page?.origin || "",
+    const listOrigin = captured?.url || target?.url || "";
+    return {
+      ...status,
+      pageAvailable: Boolean(page?.origin),
+      origin: page?.origin || "",
       capture: captureSummary(captured || (page?.tab && getLoginCapture(page.tab.id))),
       captureExpired: Boolean(message.captureId && !captured),
-      quickExpired: Boolean(message.quickId && !quick),
       entries: status.locked || !listOrigin ? [] : await bridgeCall("password.list", { origin: listOrigin }),
       personal: status.locked ? [] : await bridgeCall("personal.list"),
-      vault: status.locked ? null : await bridgeCall("vault.list") };
+      lastAgentAction: typeof lastAgentAction !== "undefined" ? lastAgentAction : null,
+      pendingPasskeys: credentialRequests.size,
+    };
   }
-  if (message.action === "personal-edit") return bridgeCall("personal.get", { id: message.id });
-  if (message.action === "personal-save") return bridgeCall("personal.save", {
-    id: message.id || null, itemType: message.itemType, name: message.name,
-    fields: message.fields, expectedUpdatedAt: message.expectedUpdatedAt });
   const { tab, origin } = await activePage();
   if (message.origin !== origin) throw new Error("The website changed; reopen the extension");
   if (message.action === "personal-fill") {
@@ -811,7 +468,6 @@ function cancelTabCredentials(tabId) {
 }
 chrome.tabs.onRemoved.addListener(tabId => {
   cancelTabCredentials(tabId);
-  for (const [id, draft] of quickCaptures) if (draft.tabId === tabId) clearQuickCapture(id);
 });
 chrome.tabs.onUpdated.addListener((tabId, change) => { if (change.status === "loading") cancelTabCredentials(tabId); });
 chrome.runtime.onMessage.addListener((message, sender, respond) => {

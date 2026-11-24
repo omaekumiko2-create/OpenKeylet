@@ -24,14 +24,19 @@ New-Item -ItemType Directory -Path $stage,$output -Force | Out-Null
 try {
   # Explicit allowlist: no tests, desktop binary, private keys, backups or repository files.
   $files = @('manifest.json','service-worker.js','content-script.js','webauthn-main.js',
-    'form-reader.js','provider.js','capture.js','agent-actions.js','popup.html','popup.js','popup.css',
-    'vault.js','request.html','request.js','privacy.html')
+    'form-reader.js','provider.js','capture.js','agent-actions.js','ui-core.js',
+    'popup.html','popup.js','popup.css','request.html','request.js','privacy.html')
   foreach ($file in $files) {
     Copy-Item -LiteralPath (Join-Path $source $file) -Destination (Join-Path $stage $file)
   }
   New-Item -ItemType Directory -Path (Join-Path $stage 'icons') | Out-Null
   Get-ChildItem -LiteralPath (Join-Path $source 'icons') -File -Filter '*.png' |
     Copy-Item -Destination (Join-Path $stage 'icons')
+  if (Test-Path -LiteralPath (Join-Path $source 'fonts')) {
+    New-Item -ItemType Directory -Path (Join-Path $stage 'fonts') | Out-Null
+    Get-ChildItem -LiteralPath (Join-Path $source 'fonts') -File -Filter '*.woff2' |
+      Copy-Item -Destination (Join-Path $stage 'fonts')
+  }
   # The Web Store assigns the production identity. Never ship a signing private key.
   $manifest.PSObject.Properties.Remove('key')
   $manifest.PSObject.Properties.Remove('update_url')
@@ -44,7 +49,7 @@ try {
     $entries = @($zip.Entries | ForEach-Object { $_.FullName.Replace('\','/') })
     foreach ($file in $files) { if ($file -notin $entries) { throw "Missing ZIP entry: $file" } }
     if ('icons/128x128.png' -notin $entries) { throw 'Missing store icon.' }
-    if (@($entries | Where-Object { $_ -notin $files -and $_ -notmatch '^icons/[0-9]+x[0-9]+\.png$' }).Count) {
+    if (@($entries | Where-Object { $_ -notin $files -and $_ -notmatch '^icons/[0-9]+x[0-9]+\.png$' -and $_ -notmatch '^fonts/[a-z0-9-]+\.woff2$' }).Count) {
       throw 'Unexpected ZIP contents.'
     }
   } finally { $zip.Dispose() }

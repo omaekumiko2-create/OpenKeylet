@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src ipc: http://ipc.localhost" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>OpenKeylet</title>
+    <link rel="stylesheet" href="tray-menu.css" />
+    <script src="tray-menu.js" defer></script>
+  </head>
+  <body>
+    <div class="tray-surface" id="tray-surface" role="menu" aria-label="OpenKeylet tray menu">
+      <header class="tray-header">
+        <div class="tray-brand-row">
+          <div class="tray-brand">
+            <span class="tray-logo-wrap" aria-hidden="true">
+              <svg class="tray-logo" viewBox="0 0 400 400" aria-hidden="true">
+                <path class="logo-ring" fill-rule="evenodd" d="M24 8H276A16 16 0 0 1 292 24V276A16 16 0 0 1 276 292H24A16 16 0 0 1 8 276V24A16 16 0 0 1 24 8ZM124 108H176A16 16 0 0 1 192 124V176A16 16 0 0 1 176 192H124A16 16 0 0 1 108 176V124A16 16 0 0 1 124 108Z" />
+                <path class="logo-bit" d="M324 208H376A16 16 0 0 1 392 224V376A16 16 0 0 1 376 392H224A16 16 0 0 1 208 376V324A16 16 0 0 1 224 308H292A16 16 0 0 0 308 292V224A16 16 0 0 1 324 208Z" />
+              </svg>
+            </span>
+            <strong class="tray-wordmark"><span class="brand-open">Open</span><span class="brand-keylet">Keylet</span></strong>
+          </div>
+
+          <button class="tray-theme-switch" id="tray-theme-toggle" type="button" role="switch" aria-checked="false" aria-label="Light mode" title="Switch theme">
+            <span class="tray-theme-opt" data-state="false" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M20 12A8 8 0 1 1 12 4A6 6 0 0 0 20 12Z" /></svg>
+            </span>
+            <span class="tray-theme-opt" data-state="true" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4" /><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5" /></svg>
+            </span>
+          </button>
+        </div>
+
+        <div class="tray-status-strip" id="tray-status-strip">
+          <span class="tray-status-dot" id="tray-status-dot" aria-hidden="true"></span>
+          <span class="tray-status-text" id="tray-status-text">Unlocked</span>
+          <span class="tray-version" id="tray-version">v0.16.0</span>
+        </div>
+
+        <button class="tray-update-pill hidden" id="tray-update-pill" type="button" role="menuitem" data-action="open-update">
+          <span class="tray-update-dot" aria-hidden="true"></span>
+          <span class="tray-update-label" id="tray-update-label">Update available</span>
+          <svg class="tray-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg>
+        </button>
+      </header>
+
+      <div class="tray-divider" role="separator"></div>
+
+      <section class="tray-group" aria-label="Quick actions">
+        <button class="tray-item primary-item" id="item-toggle-main" type="button" role="menuitem" data-action="toggle-main">
+          <span class="tray-item-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5" /><path d="M3.5 9.5h17" /></svg>
+          </span>
+          <span class="tray-item-label" id="label-toggle-main">Show OpenKeylet</span>
+        </button>
+
+        <button class="tray-item" id="item-new-item" type="button" role="menuitem" data-action="new-item">
+          <span class="tray-item-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3" /><path d="M12 8.5v7M8.5 12h7" /></svg>
+          </span>
+          <span class="tray-item-label" id="label-new-item">New item</span>
+        </button>
+
+        <button class="tray-item" id="item-smart-import" type="button" role="menuitem" data-action="smart-import">
+          <span class="tray-item-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M13 2.5 4.5 13h6.5l-1 8.5L19.5 11H13z" /></svg>
+          </span>
+          <span class="tray-item-label" id="label-smart-import">Smart import</span>
+        </button>
+
+        <button class="tray-item" id="item-gen-password" type="button" role="menuitem" data-action="generate-password">
+          <span class="tray-item-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><circle cx="8" cy="12" r="3.5" /><path d="M11.5 12H20M17 12v3M14.5 12v2" /></svg>
+          </span>
+          <span class="tray-item-label" id="label-gen-password">Copy strong password</span>
+          <span class="tray-badge hidden" id="badge-gen-password"></span>
+        </button>
+      </section>
+
+      <div class="tray-divider" role="separator"></div>
+
+      <section class="tray-group" aria-label="Quick toggles">
+        <button class="tray-item toggle-item" id="item-browser-bridge" type="button" role="menuitemcheckbox" aria-checked="false" data-action="toggle-browser-bridge">
+          <span class="tray-item-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5" /><path d="M3.5 12h17M12 3.5c2.6 2.6 2.6 14.4 0 17M12 3.5c-2.6 2.6-2.6 14.4 0 17" /></svg>
+          </span>
+          <span class="tray-item-copy">
+            <span class="tray-item-label" id="label-browser-bridge">Browser bridge</span>
+            <small class="tray-item-sub" id="sub-browser-bridge">Off</small>
+          </span>
+          <span class="tray-pill-switch" id="switch-browser-bridge" aria-hidden="true"><i></i></span>
+        </button>
+
+        <button class="tray-item toggle-item" id="item-edge-dock" type="button" role="menuitemcheckbox" aria-checked="true" data-action="toggle-edge-dock">
+          <span class="tray-item-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5" /><path d="M15.5 4.5v15" /></svg>
+          </span>
+          <span class="tray-item-copy">
+            <span class="tray-item-label" id="label-edge-dock">Edge-dock drawer</span>
+          </span>
+          <span class="tray-pill-switch" id="switch-edge-dock" aria-hidden="true"><i></i></span>
+        </button>
+      </section>
+
+      <div class="tray-divider" role="separator"></div>
+
+      <section class="tray-group" aria-label="System and security">
+        <button class="tray-item" id="item-settings" type="button" role="menuitem" data-action="open-settings">
+          <span class="tray-item-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 12h4M12 12h8M4 17h12M20 17h0" /><circle cx="16" cy="7" r="2" /><circle cx="10" cy="12" r="2" /><circle cx="18" cy="17" r="2" /></svg>
+          </span>
+          <span class="tray-item-label" id="label-settings">System settings</span>
+        </button>
+
+        <button class="tray-item" id="item-lock" type="button" role="menuitem" data-action="lock-or-unlock">
+          <span class="tray-item-icon" id="icon-lock" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><rect x="4.5" y="10.5" width="15" height="10" rx="2" /><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3" /></svg>
+          </span>
+          <span class="tray-item-label" id="label-lock">Lock vault</span>
+        </button>
+      </section>
+
+      <div class="tray-divider" role="separator"></div>
+
+      <section class="tray-group" aria-label="Quit">
+        <button class="tray-item danger-item" id="item-quit" type="button" role="menuitem" data-action="quit">
+          <span class="tray-item-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M12 3.5v8M7.5 6.3a7.5 7.5 0 1 0 9 0" /></svg>
+          </span>
+          <span class="tray-item-label" id="label-quit">Quit OpenKeylet</span>
+        </button>
+      </section>
+    </div>
+  </body>
+</html>

@@ -15,7 +15,7 @@ use axum::{
     extract::{Path, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{Html, IntoResponse},
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::Deserialize;
@@ -167,7 +167,8 @@ fn build_router(state: AdminState) -> Router {
         .route("/api/items/{id}/trash", post(api_trash_item))
         .route("/api/trash/{id}/restore", post(api_restore_item))
         .route("/api/trash/{id}/purge", post(api_purge_item))
-        .route("/api/activities", get(api_activities))
+        .route("/api/activities", get(api_activities).delete(api_clear_activities))
+        .route("/api/activities/{id}", delete(api_delete_activity))
         .route("/api/session/rotate", post(api_rotate_token))
         .route("/api/session/revoke", post(api_revoke_token))
         .with_state(state)
@@ -501,6 +502,31 @@ async fn api_activities(
     Ok(Json(json!({ "activities": activities.into_iter().take(100).collect::<Vec<_>>() })))
 }
 
+async fn api_delete_activity(
+    State(state): State<AdminState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    require_auth(&state, &headers).await?;
+    let deleted = state
+        .vault
+        .delete_activity(id)
+        .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(Json(json!({ "ok": true, "deleted": deleted })))
+}
+
+async fn api_clear_activities(
+    State(state): State<AdminState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    require_auth(&state, &headers).await?;
+    state
+        .vault
+        .clear_activities()
+        .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(Json(json!({ "ok": true })))
+}
+
 async fn api_rotate_token(
     State(state): State<AdminState>,
     headers: HeaderMap,
@@ -528,36 +554,79 @@ const ADMIN_HTML: &str = r##"<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>OpenKeylet · Headless Admin</title>
 <style>
-  :root { color-scheme: dark; --bg:#0d0d0f; --panel:#16161a; --line:#292930; --fg:#f2f2f4; --muted:#9a9aa6; --ok:#3ad29f; --danger:#f26b6b; }
-  * { box-sizing: border-box; font-family: ui-sans-serif, system-ui, -apple-system, sans-serif; }
-  body { margin:0; background:var(--bg); color:var(--fg); padding:24px; max-width:960px; margin-inline:auto; }
-  header { display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--line); padding-bottom:14px; margin-bottom:20px; }
-  h1 { font-size:18px; margin:0; letter-spacing:0.04em; }
-  .badge { font-size:12px; color:var(--muted); border:1px solid var(--line); padding:3px 8px; border-radius:4px; }
-  .card { background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:16px; margin-bottom:16px; }
-  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
-  input, textarea, button { background:#101014; color:var(--fg); border:1px solid var(--line); border-radius:4px; padding:8px 10px; font-size:13px; }
-  input, textarea { width:100%; }
-  button { cursor:pointer; width:auto; font-weight:500; }
-  button:hover { border-color:#5a5a68; }
-  button.primary { background:#f2f2f4; color:#0d0d0f; border-color:#f2f2f4; }
-  button.danger { border-color:var(--danger); color:var(--danger); }
-  table { width:100%; border-collapse:collapse; font-size:13px; }
-  th, td { text-align:left; padding:10px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
-  th { color:var(--muted); font-weight:500; }
-  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; background:#555; }
+  :root {
+    color-scheme: dark;
+    --canvas:#070708; --surface-1:#111114; --surface-2:#17171b; --surface-3:#1f1f25;
+    --border-subtle:rgba(255,255,255,0.08); --border-default:rgba(255,255,255,0.14); --border-strong:rgba(255,255,255,0.24);
+    --ink:#f4f4f5; --muted:#a1a1aa; --faint:#71717a;
+    --accent:#f4f4f5; --accent-fg:#09090b;
+    --ok:#34d399; --danger:#f87171; --danger-soft:rgba(248,113,113,0.13);
+    --radius-lg:10px; --radius:8px; --radius-sm:6px; --radius-xs:4px;
+    --control-h:32px; --compact-h:28px;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      color-scheme: light;
+      --canvas:#f7f7f8; --surface-1:#ffffff; --surface-2:#f2f2f5; --surface-3:#e6e6eb;
+      --border-subtle:rgba(17,17,20,0.08); --border-default:rgba(17,17,20,0.14); --border-strong:rgba(17,17,20,0.24);
+      --ink:#111114; --muted:#52525b; --faint:#8a8a94;
+      --accent:#111114; --accent-fg:#ffffff;
+      --ok:#059669; --danger:#dc2626; --danger-soft:rgba(220,38,38,0.10);
+    }
+  }
+  html[data-theme="light"] {
+    color-scheme: light;
+    --canvas:#f7f7f8; --surface-1:#ffffff; --surface-2:#f2f2f5; --surface-3:#e6e6eb;
+    --border-subtle:rgba(17,17,20,0.08); --border-default:rgba(17,17,20,0.14); --border-strong:rgba(17,17,20,0.24);
+    --ink:#111114; --muted:#52525b; --faint:#8a8a94;
+    --accent:#111114; --accent-fg:#ffffff;
+    --ok:#059669; --danger:#dc2626; --danger-soft:rgba(220,38,38,0.10);
+  }
+  * { box-sizing:border-box; font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; }
+  body { margin:0; background:var(--canvas); color:var(--ink); padding:24px 16px 40px; max-width:960px; margin-inline:auto; font-size:13px; line-height:1.45; }
+  header { display:flex; justify-content:space-between; align-items:center; gap:12px; padding-bottom:12px; margin-bottom:16px; border-bottom:1px solid var(--border-subtle); }
+  h1 { font-size:15px; font-weight:600; margin:0; letter-spacing:0.03em; }
+  .header-right { display:flex; align-items:center; gap:8px; }
+  .badge { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11px; color:var(--muted); border:1px solid var(--border-default); background:var(--surface-1); padding:4px 8px; border-radius:var(--radius-sm); }
+  .card { background:var(--surface-1); border:1px solid var(--border-default); border-radius:var(--radius-lg); padding:12px; margin-bottom:12px; }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  input, textarea, button { background:var(--surface-2); color:var(--ink); border:1px solid var(--border-default); border-radius:var(--radius-sm); font-size:12px; }
+  input { height:var(--control-h); padding:0 10px; width:100%; }
+  textarea { padding:8px 10px; width:100%; resize:vertical; }
+  button { cursor:pointer; width:auto; min-height:var(--control-h); padding:0 12px; font-weight:500; transition:border-color 120ms ease, background-color 120ms ease; }
+  button.compact { min-height:var(--compact-h); height:var(--compact-h); padding:0 10px; }
+  button:hover { border-color:var(--border-strong); background:var(--surface-3); }
+  button.primary { background:var(--accent); color:var(--accent-fg); border-color:var(--accent); font-weight:600; }
+  button.primary:hover { opacity:0.9; background:var(--accent); }
+  button.danger { border-color:color-mix(in srgb, var(--danger) 55%, transparent); color:var(--danger); background:transparent; }
+  button.danger:hover { background:var(--danger-soft); border-color:var(--danger); }
+  .banner { padding:8px 12px; border-radius:var(--radius); border:1px solid var(--border-default); background:var(--surface-2); font-size:12px; margin-bottom:12px; display:flex; justify-content:space-between; align-items:center; gap:8px; }
+  .banner.error { border-color:var(--danger); background:var(--danger-soft); color:var(--danger); }
+  table { width:100%; border-collapse:collapse; font-size:12px; }
+  th, td { text-align:left; padding:8px; border-bottom:1px solid var(--border-subtle); vertical-align:middle; }
+  th { color:var(--muted); font-weight:500; font-size:11px; text-transform:uppercase; letter-spacing:0.04em; }
+  tr:last-child td { border-bottom:0; }
+  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; background:var(--faint); }
   .dot.on { background:var(--ok); }
-  .muted { color:var(--muted); font-size:12px; }
-  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; }
-  pre { background:#0a0a0c; border:1px solid var(--line); padding:10px; border-radius:4px; overflow:auto; font-size:12px; }
+  .muted { color:var(--muted); font-size:11.5px; }
+  .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11.5px; }
+  pre { background:var(--surface-2); border:1px solid var(--border-subtle); padding:10px; border-radius:var(--radius-sm); overflow:auto; font-size:11.5px; margin:8px 0 0; }
   [hidden] { display:none !important; }
 </style>
 </head>
 <body>
 <header>
   <h1>OPENKEYLET · HEADLESS VAULT ADMIN</h1>
-  <span class="badge" id="hdr-status">LOCKED</span>
+  <div class="header-right">
+    <button id="btn-theme" type="button" class="compact">Theme</button>
+    <span class="badge" id="hdr-status">LOCKED</span>
+  </div>
 </header>
+
+<div id="status-banner" class="banner" hidden role="status">
+  <span id="status-banner-text"></span>
+  <button id="status-banner-close" type="button" class="compact">Dismiss</button>
+</div>
 
 <section class="card" id="auth-card">
   <strong>Authenticate Session</strong>
@@ -574,18 +643,18 @@ const ADMIN_HTML: &str = r##"<!doctype html>
     <div class="row" style="justify-content:space-between">
       <div>
         <strong>Vault Diagnostics</strong>
-        <div id="diag" class="muted mono" style="margin-top:6px"></div>
+        <div id="diag" class="muted mono" style="margin-top:4px"></div>
       </div>
       <div class="row">
-        <button id="btn-refresh">Refresh</button>
-        <button id="btn-rotate">Rotate Token</button>
-        <button id="btn-revoke" class="danger">Revoke Session</button>
+        <button id="btn-refresh" type="button" class="compact">Refresh</button>
+        <button id="btn-rotate" type="button" class="compact">Rotate Token</button>
+        <button id="btn-revoke" type="button" class="compact danger">Revoke Session</button>
       </div>
     </div>
   </section>
 
   <section class="card">
-    <div class="row" style="justify-content:space-between; margin-bottom:10px">
+    <div class="row" style="justify-content:space-between; margin-bottom:8px">
       <strong>Vault Items (Secrets Hidden by Default)</strong>
       <input id="search" type="search" placeholder="Filter by name / type..." style="max-width:260px">
     </div>
@@ -593,10 +662,10 @@ const ADMIN_HTML: &str = r##"<!doctype html>
       <thead><tr><th>Name</th><th>Type</th><th>Agent Access</th><th>Actions</th></tr></thead>
       <tbody id="items-body"></tbody>
     </table>
-    <div id="reveal-box" hidden style="margin-top:14px">
+    <div id="reveal-box" hidden style="margin-top:12px">
       <div class="row" style="justify-content:space-between">
         <strong id="reveal-title">Revealed Secret</strong>
-        <button id="reveal-close">Hide</button>
+        <button id="reveal-close" type="button" class="compact">Hide</button>
       </div>
       <pre id="reveal-pre" class="mono"></pre>
     </div>
@@ -633,6 +702,19 @@ let allItems = [];
 let pinConfigured = false;
 const $ = s => document.querySelector(s);
 
+function showBanner(msg, isError = false) {
+  const el = $("#status-banner");
+  $("#status-banner-text").textContent = msg;
+  el.classList.toggle("error", Boolean(isError));
+  el.hidden = false;
+}
+$("#status-banner-close").addEventListener("click", () => { $("#status-banner").hidden = true; });
+$("#btn-theme").addEventListener("click", () => {
+  const cur = document.documentElement.dataset.theme;
+  const isLight = cur ? cur === "light" : window.matchMedia?.("(prefers-color-scheme: light)")?.matches;
+  document.documentElement.dataset.theme = isLight ? "dark" : "light";
+});
+
 async function api(path, opts = {}) {
   const res = await fetch(path, {
     ...opts,
@@ -666,7 +748,6 @@ function renderItems() {
     if (q && !item.name.toLowerCase().includes(q) && !(item.itemType || "").toLowerCase().includes(q)) continue;
     const tr = document.createElement("tr");
     const tdName = document.createElement("td");
-    tdName.innerHTML = "";
     const strong = document.createElement("strong");
     strong.textContent = item.name;
     tdName.appendChild(strong);
@@ -686,29 +767,39 @@ function renderItems() {
     const row = document.createElement("div");
     row.className = "row";
     const toggleBtn = document.createElement("button");
+    toggleBtn.type = "button";
+    toggleBtn.className = "compact";
     toggleBtn.textContent = item.enabled ? "Disable" : "Enable";
     toggleBtn.onclick = async () => {
-      await api(`/api/items/${item.id}/enabled`, { method: "POST", body: JSON.stringify({ enabled: !item.enabled }) });
-      await refresh();
+      try {
+        await api(`/api/items/${item.id}/enabled`, { method: "POST", body: JSON.stringify({ enabled: !item.enabled }) });
+        await refresh();
+      } catch (e) { showBanner(e.message, true); }
     };
     const revBtn = document.createElement("button");
+    revBtn.type = "button";
+    revBtn.className = "compact";
     revBtn.textContent = "Reveal";
     revBtn.onclick = async () => {
       const pin = pinConfigured ? (prompt("Enter 6-digit Owner PIN to reveal secrets:") || "") : "";
+      if (pinConfigured && !pin) return;
       try {
         const res = await api(`/api/items/${item.id}/reveal`, { method: "POST", body: JSON.stringify({ pin }) });
         $("#reveal-title").textContent = "Revealed: " + item.name;
         $("#reveal-pre").textContent = JSON.stringify(res.fields, null, 2);
         $("#reveal-box").hidden = false;
-      } catch (e) { alert(e.message); }
+      } catch (e) { showBanner(e.message, true); }
     };
     const trashBtn = document.createElement("button");
-    trashBtn.className = "danger";
+    trashBtn.type = "button";
+    trashBtn.className = "compact danger";
     trashBtn.textContent = "Trash";
     trashBtn.onclick = async () => {
       if (!confirm(`Move "${item.name}" to trash?`)) return;
-      await api(`/api/items/${item.id}/trash`, { method: "POST", body: JSON.stringify({ expectedUpdatedAt: item.updatedAt }) });
-      await refresh();
+      try {
+        await api(`/api/items/${item.id}/trash`, { method: "POST", body: JSON.stringify({ expectedUpdatedAt: item.updatedAt }) });
+        await refresh();
+      } catch (e) { showBanner(e.message, true); }
     };
     row.append(toggleBtn, revBtn, trashBtn);
     tdAct.appendChild(row);
@@ -730,13 +821,31 @@ function renderTrash(trash) {
     tdAt.className = "mono muted";
     tdAt.textContent = entry.deletedAt;
     const tdAct = document.createElement("td");
+    const row = document.createElement("div");
+    row.className = "row";
     const restoreBtn = document.createElement("button");
+    restoreBtn.type = "button";
+    restoreBtn.className = "compact";
     restoreBtn.textContent = "Restore";
     restoreBtn.onclick = async () => {
-      await api(`/api/trash/${item.id}/restore`, { method: "POST", body: JSON.stringify({ deletedAt: entry.deletedAt }) });
-      await refresh();
+      try {
+        await api(`/api/trash/${item.id}/restore`, { method: "POST", body: JSON.stringify({ deletedAt: entry.deletedAt }) });
+        await refresh();
+      } catch (e) { showBanner(e.message, true); }
     };
-    tdAct.appendChild(restoreBtn);
+    const purgeBtn = document.createElement("button");
+    purgeBtn.type = "button";
+    purgeBtn.className = "compact danger";
+    purgeBtn.textContent = "Purge";
+    purgeBtn.onclick = async () => {
+      if (!confirm(`Permanently delete "${item.name}"? This cannot be undone.`)) return;
+      try {
+        await api(`/api/trash/${item.id}/purge`, { method: "POST", body: JSON.stringify({ deletedAt: entry.deletedAt }) });
+        await refresh();
+      } catch (e) { showBanner(e.message, true); }
+    };
+    row.append(restoreBtn, purgeBtn);
+    tdAct.appendChild(row);
     tr.append(tdName, tdAt, tdAct);
     body.appendChild(tr);
   }
@@ -758,7 +867,7 @@ $("#auth-form").addEventListener("submit", async e => {
 });
 
 $("#search").addEventListener("input", renderItems);
-$("#btn-refresh").addEventListener("click", () => refresh().catch(e => alert(e.message)));
+$("#btn-refresh").addEventListener("click", () => refresh().catch(e => showBanner(e.message, true)));
 $("#reveal-close").addEventListener("click", () => { $("#reveal-pre").textContent = ""; $("#reveal-box").hidden = true; });
 $("#smart-form").addEventListener("submit", async e => {
   e.preventDefault();
@@ -784,18 +893,20 @@ $("#btn-rotate").addEventListener("click", async () => {
   try {
     const res = await api("/api/session/rotate", { method: "POST" });
     token = res.token;
-    alert("Session token rotated. New token:\n\n" + res.token);
-  } catch (err) { alert(err.message); }
+    showBanner("Session token rotated. New token: " + res.token);
+  } catch (err) { showBanner(err.message, true); }
 });
 $("#btn-revoke").addEventListener("click", async () => {
   if (!confirm("Revoke current session token? You will need to restart `openkeylet admin serve`.")) return;
   try {
     await api("/api/session/revoke", { method: "POST" });
     token = "";
+    $("#reveal-pre").textContent = "";
+    $("#reveal-box").hidden = true;
     $("#app").hidden = true;
     $("#auth-card").hidden = false;
     $("#hdr-status").textContent = "REVOKED";
-  } catch (err) { alert(err.message); }
+  } catch (err) { showBanner(err.message, true); }
 });
 </script>
 </body>
@@ -922,6 +1033,41 @@ mod tests {
             .unwrap();
         assert_eq!(toggle.status(), StatusCode::OK);
         assert!(!vault.get_connection(saved.id).unwrap().stored.enabled);
+
+        // Delete a single activity entry and clear remaining activities.
+        for label in ["seed-one", "seed-two"] {
+            vault
+                .add_activity(NewActivity {
+                    status: "success".to_owned(),
+                    source: "admin".to_owned(),
+                    connection_name: "Prod API".to_owned(),
+                    action: label.to_owned(),
+                    duration_ms: 5,
+                    error: String::new(),
+                })
+                .unwrap();
+        }
+        let before_acts = vault.activities().unwrap();
+        assert!(before_acts.len() >= 2);
+        let del_one: Value = client
+            .delete(format!("{base}/api/activities/{}", before_acts[0].id))
+            .bearer_auth(&*running.token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(del_one["deleted"], Value::Bool(true));
+        assert_eq!(vault.activities().unwrap().len(), before_acts.len() - 1);
+        let clear_res = client
+            .delete(format!("{base}/api/activities"))
+            .bearer_auth(&*running.token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(clear_res.status(), StatusCode::OK);
+        assert!(vault.activities().unwrap().is_empty());
 
         // Rotate token invalidates old token immediately.
         let rotated: Value = client

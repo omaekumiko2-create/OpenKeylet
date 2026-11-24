@@ -5,10 +5,13 @@
   document.documentElement.classList.toggle('platform-macos', isMac);
   document.documentElement.classList.toggle('platform-linux', !isMac && navigator.platform.startsWith('Linux'));
   const storageKey = 'openkeylet.appearance.v1';
-  let preferences = { theme: 'dark', sound: false };
+  let preferences = { theme: 'dark', sound: true };
   try {
     const saved = JSON.parse(localStorage.getItem(storageKey) || 'null');
-    preferences = { theme: saved?.theme === 'light' ? 'light' : 'dark', sound: saved?.sound === true };
+    preferences = {
+      theme: saved?.theme === 'light' ? 'light' : 'dark',
+      sound: saved && typeof saved.sound === 'boolean' ? saved.sound : true,
+    };
   } catch { /* Unavailable storage leaves safe defaults. */ }
   document.documentElement.dataset.theme = preferences.theme;
   let localize = (zh, en) => en;
@@ -31,16 +34,20 @@
     theme.setAttribute('aria-label', localize('明亮模式', 'Light mode'));
     sound.setAttribute('aria-label', localize('界面音效', 'Interface sounds'));
   }
+  function syncThemeToBackend(theme) {
+    window.__TAURI__?.core?.invoke?.('sync_appearance_theme', { theme }).catch(() => {});
+  }
   function save() {
     try { localStorage.setItem(storageKey, JSON.stringify(preferences)); } catch { /* Session-only preferences still work. */ }
     render();
   }
-  function setTheme(light) {
+  function setTheme(light, { silent = false, syncBackend = true } = {}) {
     const theme = light ? 'light' : 'dark';
     if (preferences.theme === theme) return;
     preferences.theme = theme;
     save();
-    void play(light ? 'toggleOn' : 'toggleOff');
+    if (syncBackend) syncThemeToBackend(theme);
+    if (!silent) void play(light ? 'toggleOn' : 'toggleOff');
   }
   function setSound(enabled) {
     if (preferences.sound === enabled) return;
@@ -132,7 +139,7 @@
   }
 
   async function play(kind = 'tap') {
-    if (!preferences.sound || document.hidden) return;
+    if (!preferences.sound || document.hidden || kind === 'hover') return;
     const nowMs = performance.now();
     const cooldown = (kind === 'tap' || kind === 'select') ? 38 : 75;
     if (nowMs - (lastPlayedAt[kind] || -Infinity) < cooldown) return;
@@ -146,6 +153,18 @@
       const jitter = 1 + (Math.random() - 0.5) * 0.03;
 
       switch (kind) {
+        case 'hover':
+          // Feather-light tactile ceramic micro-whisper on pointer hover / slot slide
+          playTick(ctx, masterBus, { freq: 4200 * jitter, q: 3.5, duration: 0.0045, peak: 0.012 });
+          playTone(ctx, masterBus, { freq: 660 * jitter, endFreq: 540 * jitter, duration: 0.011, peak: 0.009, attack: 0.0012, cutoff: 3200 });
+          break;
+
+        case 'drop':
+          // Grounded, damped mechanical settle when placing/dropping a dragged card
+          playTick(ctx, masterBus, { freq: 2150 * jitter, q: 2.3, duration: 0.009, peak: 0.036 });
+          playTone(ctx, masterBus, { freq: 295 * jitter, endFreq: 165 * jitter, duration: 0.028, peak: 0.038, attack: 0.002, cutoff: 1450 });
+          break;
+
         case 'select':
           // Ultra-light ceramic detent for tabs, filters, view & language switches
           playTick(ctx, masterBus, { freq: 3300 * jitter, q: 2.8, duration: 0.007, peak: 0.034 });
@@ -221,7 +240,7 @@
     if (control.matches('input[type="checkbox"]')) return control.checked ? 'toggleOn' : 'toggleOff';
     if (control.matches('#owner-lock-button')) return 'lock';
     if (control.matches('.button.danger, .button.danger-soft, .small-button.delete, [data-action="delete"]')) return 'danger';
-    if (control.matches('[data-action="copy-name"], [data-copy-module-secret], [data-copy-module-value], [data-copy-totp-code], [data-copy-format], #copy-extensions-url-button, #generator-copy, #github-copy-key, #github-copy-saved-key')) return 'copy';
+    if (control.matches('[data-action="copy-name"], [data-action="copy-item"], [data-copy-module-secret], [data-copy-module-value], [data-copy-totp-code], [data-copy-format], #copy-extensions-url-button, #generator-copy, #github-copy-key, #github-copy-saved-key')) return 'copy';
     if (control.matches('.nav-item, .filter-strip button, .language-switch button, #vault-view-toggle, summary, [data-item-template]')) return 'select';
     if (control.matches('.button.primary, .agent-row-action.primary')) return 'primary';
     return 'tap';
@@ -233,7 +252,174 @@
     setSound,
     play(kind = 'tap') { void play(kind); },
     feedback(kind = 'tap') { void play(kind); },
+    hideTooltip() { hideUiTooltip(); },
   };
+
+  /* ---- OpenKeylet-styled floating tooltip (replaces native OS title popups) ---- */
+  let tooltipEl = null;
+  let tooltipTarget = null;
+  let tooltipShowTimer = 0;
+  let tooltipLastHiddenAt = 0;
+  let tooltipObserver = null;
+  const stashedTitles = new WeakMap();
+  const suppressedTitleNodes = new Set();
+
+  function ensureTooltipEl() {
+    if (tooltipEl?.isConnected) return tooltipEl;
+    tooltipEl = document.createElement('div');
+    tooltipEl.id = 'ui-tooltip';
+    tooltipEl.className = 'ui-tooltip';
+    tooltipEl.setAttribute('role', 'tooltip');
+    tooltipEl.setAttribute('aria-hidden', 'true');
+    document.body.append(tooltipEl);
+    return tooltipEl;
+  }
+
+  function restoreStashedTitles() {
+    for (const node of suppressedTitleNodes) {
+      const saved = stashedTitles.get(node);
+      if (saved && node.isConnected && !node.hasAttribute('title')) {
+        node.setAttribute('title', saved);
+      }
+      stashedTitles.delete(node);
+    }
+    suppressedTitleNodes.clear();
+  }
+
+  function disconnectTooltipObserver() {
+    if (tooltipObserver) {
+      tooltipObserver.disconnect();
+      tooltipObserver = null;
+    }
+  }
+
+  function positionUiTooltip(target) {
+    if (!tooltipEl || !target?.isConnected) return;
+    const rect = target.getBoundingClientRect();
+    if (!rect.width && !rect.height) {
+      hideUiTooltip();
+      return;
+    }
+    tooltipEl.style.left = '0px';
+    tooltipEl.style.top = '0px';
+    const tipWidth = tooltipEl.offsetWidth;
+    const tipHeight = tooltipEl.offsetHeight;
+    const gap = 7;
+    const margin = 8;
+    const canPlaceAbove = rect.top - tipHeight - gap >= margin;
+    const placement = canPlaceAbove ? 'top' : 'bottom';
+    const rawY = placement === 'top'
+      ? rect.top - tipHeight - gap
+      : rect.bottom + gap;
+    const y = Math.max(margin, Math.min(rawY, window.innerHeight - tipHeight - margin));
+    const centeredX = rect.left + (rect.width - tipWidth) / 2;
+    const x = Math.max(margin, Math.min(centeredX, window.innerWidth - tipWidth - margin));
+    tooltipEl.dataset.placement = placement;
+    tooltipEl.style.left = `${Math.round(x)}px`;
+    tooltipEl.style.top = `${Math.round(y)}px`;
+  }
+
+  function showUiTooltipNow(target, text) {
+    if (!target?.isConnected || !text) return;
+    if (document.body.classList.contains('item-pointer-dragging') || document.body.classList.contains('module-pointer-dragging')) return;
+    const el = ensureTooltipEl();
+    el.textContent = text;
+    el.setAttribute('aria-hidden', 'false');
+    positionUiTooltip(target);
+    el.classList.add('is-visible');
+  }
+
+  function hideUiTooltip(restore = true) {
+    if (tooltipShowTimer) {
+      clearTimeout(tooltipShowTimer);
+      tooltipShowTimer = 0;
+    }
+    disconnectTooltipObserver();
+    if (tooltipEl?.classList.contains('is-visible')) {
+      tooltipEl.classList.remove('is-visible');
+      tooltipEl.setAttribute('aria-hidden', 'true');
+      tooltipLastHiddenAt = performance.now();
+    }
+    tooltipTarget = null;
+    if (restore) restoreStashedTitles();
+  }
+
+  function resolveTooltipChain(startNode) {
+    let bestTarget = null;
+    let bestText = '';
+    const nodesWithTitle = [];
+    let current = startNode instanceof Element ? startNode : startNode?.parentElement;
+    while (current && current !== document.documentElement) {
+      const text = (current.getAttribute('title') || stashedTitles.get(current) || current.dataset?.tooltip || '').trim();
+      if (text) {
+        if (!bestTarget) {
+          bestTarget = current;
+          bestText = text;
+        }
+        nodesWithTitle.push([current, text]);
+      }
+      current = current.parentElement;
+    }
+    return { bestTarget, bestText, nodesWithTitle };
+  }
+
+  function activateTooltipFor(startNode, { immediate = false } = {}) {
+    const { bestTarget, bestText, nodesWithTitle } = resolveTooltipChain(startNode);
+    if (!bestTarget || !bestText) {
+      if (tooltipTarget) hideUiTooltip(true);
+      return;
+    }
+    if (bestTarget === tooltipTarget) {
+      // Still suppress any newly added native title attribute on the chain
+      for (const [node, text] of nodesWithTitle) {
+        if (node.hasAttribute('title')) {
+          stashedTitles.set(node, text);
+          suppressedTitleNodes.add(node);
+          node.removeAttribute('title');
+        }
+      }
+      return;
+    }
+    hideUiTooltip(true);
+    for (const [node, text] of nodesWithTitle) {
+      if (node.hasAttribute('title')) {
+        stashedTitles.set(node, text);
+        suppressedTitleNodes.add(node);
+        node.removeAttribute('title');
+      }
+    }
+    tooltipTarget = bestTarget;
+    disconnectTooltipObserver();
+    tooltipObserver = new MutationObserver(() => {
+      if (!tooltipTarget?.isConnected) {
+        hideUiTooltip(true);
+        return;
+      }
+      const next = (tooltipTarget.getAttribute('title') || '').trim();
+      if (next) {
+        stashedTitles.set(tooltipTarget, next);
+        suppressedTitleNodes.add(tooltipTarget);
+        tooltipTarget.removeAttribute('title');
+        if (tooltipEl?.classList.contains('is-visible')) {
+          tooltipEl.textContent = next;
+          positionUiTooltip(tooltipTarget);
+        }
+      }
+    });
+    tooltipObserver.observe(bestTarget, { attributes: true, attributeFilter: ['title'] });
+
+    const warm = (performance.now() - tooltipLastHiddenAt) < 420;
+    const delay = immediate ? 140 : (warm ? 80 : 240);
+    tooltipShowTimer = setTimeout(() => {
+      tooltipShowTimer = 0;
+      if (tooltipTarget === bestTarget && bestTarget.isConnected) {
+        const currentText = stashedTitles.get(bestTarget) || bestTarget.dataset?.tooltip || bestText;
+        showUiTooltipNow(bestTarget, currentText);
+      }
+    }, delay);
+  }
+
+  let lastHoveredControl = null;
 
   document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('theme-toggle').addEventListener('click', () => {
@@ -241,6 +427,56 @@
     });
     document.getElementById('sound-toggle').addEventListener('click', () => {
       setSound(!preferences.sound);
+    });
+    document.addEventListener('pointerover', (event) => {
+      if (event.pointerType === 'touch') return;
+      if (document.body.classList.contains('item-pointer-dragging') || document.body.classList.contains('module-pointer-dragging')) {
+        hideUiTooltip(true);
+        return;
+      }
+      activateTooltipFor(event.target);
+    }, true);
+    document.addEventListener('pointerout', (event) => {
+      if (!event.relatedTarget) {
+        lastHoveredControl = null;
+        hideUiTooltip(true);
+        return;
+      }
+      if (tooltipTarget && (!(event.relatedTarget instanceof Node) || !tooltipTarget.contains(event.relatedTarget))) {
+        const nextChain = resolveTooltipChain(event.relatedTarget);
+        if (nextChain.bestTarget !== tooltipTarget) hideUiTooltip(true);
+      } else if (!tooltipTarget && suppressedTitleNodes.size > 0) {
+        const stillInsideSuppressed = event.relatedTarget instanceof Node && [...suppressedTitleNodes].some((node) => node.contains(event.relatedTarget));
+        if (!stillInsideSuppressed) restoreStashedTitles();
+      }
+    }, true);
+    document.addEventListener('pointerdown', () => {
+      hideUiTooltip(false);
+      if (preferences.sound) {
+        const ctx = ensureAudio();
+        if (ctx && ctx.state === 'suspended') void ctx.resume().catch(() => {});
+      }
+    }, true);
+    document.addEventListener('scroll', () => {
+      if (tooltipTarget) hideUiTooltip(true);
+    }, true);
+    document.addEventListener('wheel', () => {
+      if (tooltipTarget) hideUiTooltip(true);
+    }, { capture: true, passive: true });
+    document.addEventListener('focusin', (event) => {
+      if (event.target instanceof Element && event.target.matches(':focus-visible')) {
+        activateTooltipFor(event.target, { immediate: true });
+      }
+    }, true);
+    document.addEventListener('focusout', () => {
+      if (tooltipTarget) hideUiTooltip(true);
+    }, true);
+    document.addEventListener('keydown', () => {
+      if (tooltipTarget) hideUiTooltip(true);
+    }, true);
+    window.addEventListener('blur', () => {
+      lastHoveredControl = null;
+      hideUiTooltip(true);
     });
     document.addEventListener('click', (event) => {
       const control = event.target.closest('button, summary, input[type="checkbox"], [role="button"]');
@@ -251,6 +487,22 @@
       const select = event.target.closest('select');
       if (select && !select.disabled) void play('select');
     });
+    window.__TAURI__?.event?.listen?.('appearance-changed', (event) => {
+      const next = event?.payload?.theme;
+      if (next === 'light' || next === 'dark') {
+        setTheme(next === 'light', { silent: true, syncBackend: false });
+      }
+    });
+    window.addEventListener('storage', (event) => {
+      if (event.key !== storageKey) return;
+      try {
+        const saved = JSON.parse(event.newValue || 'null');
+        if (saved?.theme === 'light' || saved?.theme === 'dark') {
+          setTheme(saved.theme === 'light', { silent: true, syncBackend: false });
+        }
+      } catch { /* ignore */ }
+    });
+    syncThemeToBackend(preferences.theme);
     render();
   });
 })();

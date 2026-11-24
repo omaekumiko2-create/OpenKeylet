@@ -1,4 +1,6 @@
-use crate::model::{SecretBundle, StoredConnection};
+use crate::model::{
+    MAX_AGENT_NOTE_AUTHOR_CHARS, MAX_AGENT_NOTE_CHARS, SecretBundle, StoredConnection,
+};
 use anyhow::{Result, bail};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use reqwest::header::HeaderMap;
@@ -97,6 +99,204 @@ pub fn redaction_candidates(raw_secrets: &[String]) -> Vec<String> {
     candidates.dedup();
     candidates.retain(|candidate| !candidate.is_empty());
     candidates
+}
+
+pub fn sanitize_agent_note_text(raw: &str) -> Result<String> {
+    let cleaned = raw
+        .chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if cleaned.is_empty() {
+        bail!("Agent note cannot be empty");
+    }
+    if cleaned.chars().count() > MAX_AGENT_NOTE_CHARS {
+        bail!(
+            "Agent note cannot exceed {} characters",
+            MAX_AGENT_NOTE_CHARS
+        );
+    }
+    Ok(cleaned)
+}
+
+pub fn sanitize_agent_note_author(raw: &str) -> String {
+    let cleaned = raw
+        .chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let truncated: String = cleaned.chars().take(MAX_AGENT_NOTE_AUTHOR_CHARS).collect();
+    if truncated.is_empty() {
+        "MCP CLIENT".to_owned()
+    } else {
+        truncated
+    }
+}
+
+fn contains_secret_pattern(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    if lower.contains("-----begin ")
+        || lower.contains("otpauth://")
+        || lower.contains("okv1_")
+        || lower.contains("oka1_")
+    {
+        return true;
+    }
+    const TOKEN_PREFIXES: &[&str] = &[
+        "sk-proj-",
+        "sk-ant-",
+        "sk-live-",
+        "sk-test-",
+        "sk-or-",
+        "ghp_",
+        "gho_",
+        "ghu_",
+        "ghs_",
+        "ghr_",
+        "github_pat_",
+        "glpat-",
+        "xoxb-",
+        "xoxp-",
+        "xoxa-",
+        "xoxr-",
+    ];
+    for prefix in TOKEN_PREFIXES {
+        if let Some(pos) = text.find(prefix) {
+            let tail_len = text[pos + prefix.len()..]
+                .chars()
+                .take_while(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
+                .count();
+            if tail_len >= 10 {
+                return true;
+            }
+        }
+    }
+    // AWS access key IDs (AKIA + 16 uppercase alnum) or Google API keys (AIza + 20+ token chars)
+    for token in text.split_whitespace() {
+        let trimmed = token.trim_matches(|ch: char| {
+            matches!(ch, '"' | '\'' | ',' | ';' | '(' | ')' | '[' | ']' | '{' | '}')
+        });
+        if trimmed.len() == 20
+            && trimmed.starts_with("AKIA")
+            && trimmed[4..]
+                .chars()
+                .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit())
+        {
+            return true;
+        }
+        if trimmed.len() >= 28
+            && trimmed.starts_with("AIza")
+            && trimmed
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
+        {
+            return true;
+        }
+        if trimmed.len() >= 36
+            && trimmed.starts_with("eyJ")
+            && trimmed.matches('.').count() == 2
+            && trimmed
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn secret_values_for_note_guard(
+    stored: &StoredConnection,
+    secrets: &SecretBundle,
+    is_target: bool,
+) -> Vec<(String, usize)> {
+    let min_len = if is_target { 4 } else { 6 };
+    let mut values = Vec::new();
+    for value in [
+        secrets.password.as_deref(),
+        secrets.passphrase.as_deref(),
+        secrets.private_key.as_deref(),
+        secrets.token.as_deref(),
+        secrets.api_key.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if !value.is_empty() {
+            values.push((value.to_owned(), min_len));
+        }
+    }
+    for entry in &secrets.password_history {
+        if !entry.password.is_empty() {
+            values.push((entry.password.clone(), min_len));
+        }
+    }
+    let username_hidden = stored
+        .modules
+        .iter()
+        .find(|m| m.kind == "username")
+        .is_some_and(|m| !m.agent_visible());
+    for (name, value) in secrets.named_secrets.iter() {
+        if value.is_empty() {
+            continue;
+        }
+        if name == "username" {
+            // Avoid blocking generic words like "root" or "admin" in usage notes,
+            // while still protecting longer hidden usernames on the target item.
+            if is_target && username_hidden {
+                values.push((value.clone(), 6));
+            }
+            continue;
+        }
+        values.push((value.clone(), min_len));
+    }
+    values
+}
+
+pub fn validate_agent_note_no_secrets(
+    note: &str,
+    target: (&StoredConnection, &SecretBundle),
+    all_connections: &[(&StoredConnection, &SecretBundle)],
+) -> Result<()> {
+    const REJECT_MSG: &str = "Refused to save agent note because it appears to contain a secret value. Write only non-sensitive context such as server role, environment, workspace path, or account purpose.";
+    if contains_secret_pattern(note) {
+        bail!("{REJECT_MSG}");
+    }
+    for &(stored, secrets) in all_connections {
+        let is_target = stored.id == target.0.id;
+        for (secret, min_len) in secret_values_for_note_guard(stored, secrets, is_target) {
+            if secret.len() >= min_len && note.contains(&secret) {
+                bail!("{REJECT_MSG}");
+            }
+            // Catch partial lines from multi-line PEM private keys or long credentials.
+            if secret.contains('\n') {
+                for line in secret.lines().map(str::trim) {
+                    if line.len() >= 24
+                        && !line.starts_with("-----")
+                        && note.contains(line)
+                    {
+                        bail!("{REJECT_MSG}");
+                    }
+                }
+            }
+            if secret.len() >= 6 {
+                let encoded = STANDARD.encode(secret.as_bytes());
+                if encoded.len() >= 8 && note.contains(&encoded) {
+                    bail!("{REJECT_MSG}");
+                }
+                let url_encoded: String =
+                    url::form_urlencoded::byte_serialize(secret.as_bytes()).collect();
+                if url_encoded.len() >= 6 && note.contains(&url_encoded) {
+                    bail!("{REJECT_MSG}");
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -231,6 +431,72 @@ mod tests {
         assert_eq!(
             visible.get("set-cookie").map(String::as_str),
             Some("session=server-secret")
+        );
+    }
+
+    #[test]
+    fn agent_note_sanitization_and_secret_guards_work() {
+        assert_eq!(
+            sanitize_agent_note_text("  Prod\nGPU\tserver  /srv/ml ").unwrap(),
+            "Prod GPU server /srv/ml"
+        );
+        assert!(sanitize_agent_note_text("   \n\t ").is_err());
+        assert!(sanitize_agent_note_text(&"a".repeat(201)).is_err());
+        assert_eq!(sanitize_agent_note_text(&"中".repeat(200)).unwrap().chars().count(), 200);
+
+        let conn = connection();
+        let mut secrets = SecretBundle::default();
+        secrets.password = Some("Sup3rS3cretPass!".into());
+        secrets.token = Some("my-secret-api-token-99".into());
+        secrets
+            .named_secrets
+            .insert("username".into(), "root".into());
+
+        let pairs = vec![(&conn, &secrets)];
+        // Non-secret usage context (including generic "root") is accepted
+        assert!(
+            validate_agent_note_no_secrets(
+                "Ubuntu 24.04 prod node, SSH as root, app at /srv/web",
+                (&conn, &secrets),
+                &pairs,
+            )
+            .is_ok()
+        );
+        // Raw stored secret is rejected
+        assert!(
+            validate_agent_note_no_secrets(
+                "Password is Sup3rS3cretPass! for admin",
+                (&conn, &secrets),
+                &pairs,
+            )
+            .is_err()
+        );
+        // Base64-encoded stored secret is rejected
+        let b64 = STANDARD.encode(b"my-secret-api-token-99");
+        assert!(
+            validate_agent_note_no_secrets(
+                &format!("Encoded token {b64}"),
+                (&conn, &secrets),
+                &pairs,
+            )
+            .is_err()
+        );
+        // Well-known token prefixes / PEM markers are rejected even if not in vault
+        assert!(
+            validate_agent_note_no_secrets(
+                "Uses key sk-proj-abcdefghijklmnop",
+                (&conn, &secrets),
+                &pairs,
+            )
+            .is_err()
+        );
+        assert!(
+            validate_agent_note_no_secrets(
+                "-----BEGIN OPENSSH PRIVATE KEY-----",
+                (&conn, &secrets),
+                &pairs,
+            )
+            .is_err()
         );
     }
 }

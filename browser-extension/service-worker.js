@@ -3,6 +3,7 @@ let reconnectTimer;
 let heartbeatTimer;
 let connectTask;
 let forceReconnectAfterCurrent = false;
+let lastAgentAction = null;
 const focusedFrameByTab = new Map();
 const JOB_TIMEOUT_MS = 35_000;
 const EXTENSION_VERSION = chrome.runtime.getManifest?.().version || "";
@@ -34,6 +35,19 @@ chrome.windows.onFocusChanged.addListener((windowId) => {
 
 async function setStatus(status, detail) {
   await chrome.storage.local.set({ bridgeStatus: status, bridgeDetail: detail });
+}
+
+async function applyDesktopAppearance(payload) {
+  const patch = {};
+  if (payload?.theme === "light" || payload?.theme === "dark") {
+    patch.uiTheme = payload.theme;
+  }
+  if (typeof payload?.language === "string" && payload.language.trim()) {
+    patch.uiLang = payload.language.trim();
+  }
+  if (Object.keys(patch).length) {
+    await chrome.storage.local.set(patch);
+  }
 }
 
 function reconnectAfter(delay = 1500) {
@@ -211,12 +225,17 @@ async function connectOnce(force = false) {
       chrome.runtime.reload();
       return;
     }
+    if (message.type === "appearance") {
+      await applyDesktopAppearance(message);
+      return;
+    }
     if (message.type === "ready") {
       const appVersion = typeof message.appVersion === "string" ? message.appVersion.trim() : "";
       await chrome.storage.local.set({
         desktopAppVersion: appVersion,
         extensionVersion: EXTENSION_VERSION,
       });
+      await applyDesktopAppearance(message);
       if (appVersion && EXTENSION_VERSION && appVersion !== EXTENSION_VERSION) {
         const { lastAutoReloadedForVersion = "" } = await chrome.storage.local.get("lastAutoReloadedForVersion");
         if (lastAutoReloadedForVersion !== appVersion) {
@@ -242,6 +261,18 @@ async function connectOnce(force = false) {
     }
     if (message.type === "job") {
       const result = await handleBrowserJob(message.job);
+      const jobKind = String(message.job?.kind || "").trim();
+      if (jobKind) {
+        const origin = typeof result?.data?.origin === "string"
+          ? result.data.origin
+          : (typeof message.job?.payload?.url === "string" ? message.job.payload.url : "");
+        lastAgentAction = {
+          kind: jobKind,
+          ok: Boolean(result?.ok),
+          origin,
+          at: Date.now(),
+        };
+      }
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
           type: "complete",
@@ -331,5 +362,5 @@ function writeToFocusedControl(value, expiresAt, submit = false) {
   }
 }
 
-importScripts("qr-decoder.js", "form-reader.js", "provider.js", "capture.js", "agent-actions.js");
+importScripts("form-reader.js", "provider.js", "capture.js", "agent-actions.js");
 requestConnect();

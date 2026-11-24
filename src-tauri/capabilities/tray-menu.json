@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "tray-menu",
+  "description": "Minimal capabilities for the OpenKeylet system tray popover menu.",
+  "windows": ["tray-menu"],
+  "permissions": ["core:default"]
+}

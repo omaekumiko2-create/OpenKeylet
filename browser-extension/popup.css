@@ -144,10 +144,9 @@ html {
 
 body {
   width: 380px;
-  max-width: 100vw;
-  min-height: 460px;
+  min-height: 0;
   max-height: 580px;
-  margin: 0;
+  margin: 0 auto;
   padding: 0;
   background: var(--chassis);
   color: var(--ink);
@@ -188,7 +187,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   display: flex;
   flex-direction: column;
   width: 100%;
-  min-height: 460px;
+  min-height: 0;
   max-height: 580px;
   background: var(--chassis);
 }
@@ -297,6 +296,35 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .lamp.warn {
   background: var(--warn);
   box-shadow: 0 0 0 2.5px var(--warn-soft);
+}
+
+.title-icon-btn {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: var(--header-well-size);
+  height: var(--header-well-size);
+  border-radius: var(--radius);
+  background: var(--surface-1);
+  box-shadow: var(--shadow-track);
+  color: var(--muted);
+  text-decoration: none;
+  transition: background-color 140ms ease, color 140ms ease, transform 90ms ease;
+}
+.title-icon-btn:hover {
+  color: var(--ink);
+  background: var(--surface-3);
+}
+.title-icon-btn:active {
+  transform: scale(0.96);
+}
+.title-icon-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.title-icon-btn svg {
+  width: 15px;
+  height: 15px;
 }
 
 /* Segmented Theme Switch (exact match to desktop .title-switch) */
@@ -417,13 +445,13 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 }
 
 /* ==========================================================================
-   Main 4-Tab Segmented Navigation (exact match to desktop .nav)
+   Main 2-Tab Segmented Navigation (Fill | Bridge)
    ========================================================================== */
 .nav {
   position: relative;
   isolation: isolate;
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   flex: 0 0 var(--control-height);
   height: var(--control-height);
   margin: var(--region-gap) var(--shell-inset) 0;
@@ -440,7 +468,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   top: var(--control-inset);
   bottom: var(--control-inset);
   left: var(--control-inset);
-  width: calc((100% - 2 * var(--control-inset)) / 4);
+  width: calc((100% - 2 * var(--control-inset)) / 2);
   border-radius: var(--radius-sm);
   background: var(--surface-thumb);
   box-shadow: var(--shadow-thumb);
@@ -448,9 +476,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   transform: translateX(0);
   transition: transform 180ms cubic-bezier(.22, .8, .28, 1);
 }
-.nav[data-active="vault"]::before { transform: translateX(100%); }
-.nav[data-active="generator"]::before { transform: translateX(200%); }
-.nav[data-active="settings"]::before { transform: translateX(300%); }
+.nav[data-active="settings"]::before { transform: translateX(100%); }
 
 .nav-item {
   position: relative;
@@ -492,7 +518,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
    Scrollable Main Region
    ========================================================================== */
 .main-scroll {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
@@ -918,7 +944,6 @@ select.input option {
 
 /* Page Hint Card (clean compact non-web-page banner) */
 .page-hint-card {
-  margin-bottom: var(--region-gap);
   padding: 12px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
@@ -1512,8 +1537,8 @@ select.input option {
   display: flex;
   align-items: center;
   gap: 5px;
-  padding-top: 6px;
-  border-top: 1px solid var(--border-subtle);
+  padding-top: 2px;
+  border-top: 0;
 }
 .vault-row-actions .button {
   flex: 1;
@@ -1672,11 +1697,15 @@ select.input option {
   letter-spacing: -0.01em;
 }
 
-.desktop-option {
+.desktop-option,
+.option-row {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 14px;
+}
+.option-row .switch {
+  flex: none;
 }
 .option-copy {
   flex: 1;
@@ -1690,10 +1719,10 @@ select.input option {
 }
 .option-copy small {
   display: block;
-  margin-top: 3px;
+  margin-top: 4px;
   color: var(--muted);
   font-size: 10.5px;
-  line-height: 1.45;
+  line-height: 1.5;
 }
 
 /* Status Strip (exact match to desktop .status-strip) */
@@ -1767,18 +1796,23 @@ select.input option {
   position: relative;
   isolation: isolate;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  --lang-count: 7;
+  --lang-index: 0;
+  grid-template-columns: repeat(var(--lang-count), minmax(0, 1fr));
   width: 100%;
   height: var(--control-height);
   padding: var(--control-inset);
   border-radius: var(--radius);
   background: var(--surface-1);
   box-shadow: var(--shadow-track);
-  --lang-index: 0;
 }
 .language-switch:has([data-lang-option="auto"].active) { --lang-index: 0; }
 .language-switch:has([data-lang-option="en"].active) { --lang-index: 1; }
 .language-switch:has([data-lang-option="zh"].active) { --lang-index: 2; }
+.language-switch:has([data-lang-option="zh-TW"].active) { --lang-index: 3; }
+.language-switch:has([data-lang-option="ja"].active) { --lang-index: 4; }
+.language-switch:has([data-lang-option="ko"].active) { --lang-index: 5; }
+.language-switch:has([data-lang-option="es"].active) { --lang-index: 6; }
 .language-switch::before {
   content: "";
   position: absolute;
@@ -1786,7 +1820,7 @@ select.input option {
   top: var(--control-inset);
   bottom: var(--control-inset);
   left: var(--control-inset);
-  width: calc((100% - 2 * var(--control-inset)) / 3);
+  width: calc((100% - 2 * var(--control-inset)) / var(--lang-count));
   border-radius: var(--radius-sm);
   background: var(--surface-thumb);
   box-shadow: var(--shadow-thumb);
@@ -1798,12 +1832,18 @@ select.input option {
   position: relative;
   z-index: 1;
   height: var(--control-cap-height);
+  min-width: 0;
+  padding: 0 2px;
   border: 0;
   border-radius: var(--radius-sm);
   color: var(--faint);
   background: transparent;
-  font-size: 10.5px;
+  font-size: 9.5px;
   font-weight: 600;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .language-switch button:hover { color: var(--ink); }
 .language-switch button.active { color: var(--state-active-ink); font-weight: 700; }
@@ -1849,8 +1889,8 @@ select.input option {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 10px 8px 6px;
-  border-bottom: 1px solid var(--border-subtle);
+  padding: 12px 12px 6px 8px;
+  border-bottom: 0;
   background: var(--surface-card);
 }
 .sheet-header strong {
@@ -1869,16 +1909,16 @@ select.input option {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 12px;
+  padding: 8px 12px 12px;
 }
 .sheet-footer {
   display: flex;
   align-items: center;
   justify-content: flex-end;
   gap: 6px;
-  padding: 9px 12px;
-  border-top: 1px solid var(--border-subtle);
-  background: var(--surface-1);
+  padding: 6px 12px 12px;
+  border-top: 0;
+  background: transparent;
 }
 .sheet-footer .button {
   min-width: 72px;
@@ -1949,8 +1989,8 @@ select.input option {
   overflow-wrap: anywhere;
 }
 .totp-attach-box {
-  padding-top: 8px;
-  border-top: 1px solid var(--border-subtle);
+  padding-top: 6px;
+  border-top: 0;
 }
 
 .field-grid-2 {
@@ -2094,10 +2134,9 @@ html[data-theme="light"] .confirm-dialog::backdrop {
    ========================================================================== */
 .toast {
   margin: 0 var(--shell-inset) var(--shell-inset);
-  padding: 8px 11px;
+  padding: 9px 12px;
   border: 1px solid var(--border-default);
-  border-left: 3px solid var(--accent);
-  border-radius: var(--radius);
+  border-radius: var(--radius-lg);
   background: var(--surface-2);
   box-shadow: var(--shadow-card);
   color: var(--ink);
@@ -2108,34 +2147,51 @@ html[data-theme="light"] .confirm-dialog::backdrop {
   flex: 0 0 auto;
 }
 .toast[data-tone="success"] {
-  border-left-color: var(--success);
+  border-color: color-mix(in srgb, var(--success) 38%, var(--border-default));
+  background: color-mix(in srgb, var(--success) 8%, var(--surface-2));
 }
 .toast[data-tone="error"] {
-  border-color: color-mix(in srgb, var(--danger) 30%, var(--border-default));
-  border-left-color: var(--danger);
-  background: var(--danger-soft);
+  border-color: color-mix(in srgb, var(--danger) 40%, var(--border-default));
+  background: color-mix(in srgb, var(--danger) 9%, var(--surface-2));
   color: var(--danger);
+}
+html[data-theme="light"] .toast[data-tone="error"] {
+  background: color-mix(in srgb, var(--danger) 6%, var(--surface-2));
+  color: color-mix(in srgb, var(--danger) 85%, var(--ink));
 }
 .toast:empty { display: none; }
 
 /* ==========================================================================
    Standalone Windows: Capture Review, Quick Save & Passkey Request
    ========================================================================== */
+html:has(body.capture-page, body.quick-page, body.request-page) {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
 body.capture-page,
 body.quick-page,
 body.request-page {
   width: 100%;
   min-width: 320px;
   max-width: 480px;
+  height: 100vh;
   min-height: 100vh;
-  max-height: none;
-  overflow: auto;
+  max-height: 100vh;
+  margin: 0 auto;
+  overflow: hidden;
 }
 body.capture-page .app-frame,
 body.quick-page .app-frame,
 body.request-page .app-frame {
-  min-height: 100vh;
-  max-height: none;
+  height: 100%;
+  min-height: 100%;
+  max-height: 100%;
+}
+body.capture-page .main-scroll,
+body.quick-page .main-scroll,
+body.request-page .main-scroll {
+  flex: 1 1 auto;
 }
 body.capture-page .nav,
 body.quick-page .nav,
@@ -2186,8 +2242,11 @@ body.quick-page #tab-settings {
   font-size: 11.5px;
   overflow-wrap: anywhere;
 }
+#request-form #credential:not([hidden]) + #pin-panel {
+  margin-top: 10px;
+}
 .request-note {
-  margin: 0;
+  margin: 8px 0 0;
   color: var(--faint);
   font-size: 10.5px;
   line-height: 1.5;
@@ -2196,14 +2255,126 @@ body.quick-page #tab-settings {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  margin-top: 4px;
+  margin-top: 12px;
+}
+
+/* ==========================================================================
+   Agent Browser Channel Card & Desktop Handoff
+   ========================================================================== */
+.agent-channel-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--surface-card);
+  box-shadow: var(--shadow-card);
+}
+.agent-channel-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.agent-channel-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--success);
+  box-shadow: 0 0 0 3px var(--success-soft);
+}
+.agent-channel-head strong {
+  flex: 1;
+  min-width: 0;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.agent-channel-state {
+  flex: none;
+  padding: 2px 6px;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-1);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.agent-channel-state.active {
+  border-color: color-mix(in srgb, var(--success) 32%, transparent);
+  background: var(--success-soft);
+  color: var(--success);
+}
+.agent-channel-desc {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+.agent-caps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.agent-cap {
+  padding: 2px 7px;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-1);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 600;
+}
+.agent-last-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-subtle);
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--faint);
+}
+.agent-last-label {
+  flex: none;
+  color: var(--muted);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.agent-last-value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-last-row.is-error .agent-last-value {
+  color: var(--danger);
+}
+.desktop-handoff {
+  margin: 4px 2px 0;
+  color: var(--faint);
+  font-size: 10px;
+  line-height: 1.45;
+  text-align: center;
+}
+
+/* Adapt only in real narrow tabs/windows (>= 300px), never during Chrome's 25px popup auto-resize probe. */
+@media (min-width: 300px) and (max-width: 379px) {
+  body:not(.capture-page):not(.request-page) {
+    width: 100%;
+  }
 }
 
 @media (max-width: 360px) {
   .titlebar { gap: 6px; }
   .status-pill { padding: 0 7px; font-size: 9px; }
   .owner-lock-button { padding: 0 7px; }
-  .vault-new-group select { width: 64px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

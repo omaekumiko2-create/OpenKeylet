@@ -30,11 +30,11 @@ const baseUrl = `http://127.0.0.1:${server.address().port}`;
 
 function makeItems() {
   return [
-    { id: 'item-1', name: 'Alpha Mail', itemType: 'login', enabled: true, updatedAt: '2026-10-20T00:00:00Z', modules: [{ kind: 'username', name: 'username', configured: true }, { kind: 'password', name: 'password', configured: true }], actions: ['fill'] },
-    { id: 'item-2', name: 'Beta Cloud', itemType: 'api', enabled: true, updatedAt: '2026-10-20T00:01:00Z', modules: [{ kind: 'apiCredential', name: 'apiCredential', configured: true }], actions: ['http'] },
-    { id: 'item-3', name: 'Gamma SSH', itemType: 'ssh', enabled: true, updatedAt: '2026-10-20T00:02:00Z', modules: [{ kind: 'host', name: 'host', value: '10.0.0.3', configured: true }, { kind: 'password', name: 'password', configured: true }], actions: ['ssh'] },
-    { id: 'item-4', name: 'Delta Bank', itemType: 'login', enabled: true, updatedAt: '2026-10-20T00:03:00Z', modules: [{ kind: 'username', name: 'username', configured: true }, { kind: 'password', name: 'password', configured: true }], actions: ['fill'] },
-    { id: 'item-5', name: 'Epsilon Git', itemType: 'login', enabled: true, updatedAt: '2026-10-20T00:04:00Z', modules: [{ kind: 'username', name: 'username', configured: true }, { kind: 'password', name: 'password', configured: true }], actions: ['fill'] },
+    { id: 'item-1', name: 'Alpha Mail', itemType: 'login', enabled: true, canTest: false, updatedAt: '2026-10-20T00:00:00Z', modules: [{ kind: 'username', name: 'username', configured: true }, { kind: 'password', name: 'password', configured: true }], capabilities: ['fill'] },
+    { id: 'item-2', name: 'Beta Cloud', itemType: 'api', enabled: true, canTest: true, updatedAt: '2026-10-20T00:01:00Z', modules: [{ kind: 'apiCredential', name: 'apiCredential', configured: true }], capabilities: ['http'] },
+    { id: 'item-3', name: 'Gamma SSH', itemType: 'ssh', enabled: true, canTest: true, updatedAt: '2026-10-20T00:02:00Z', modules: [{ kind: 'host', name: 'host', value: '10.0.0.3', configured: true }, { kind: 'password', name: 'password', configured: true }], capabilities: ['ssh'] },
+    { id: 'item-4', name: 'Delta Bank', itemType: 'login', enabled: true, canTest: false, updatedAt: '2026-10-20T00:03:00Z', modules: [{ kind: 'username', name: 'username', configured: true }, { kind: 'password', name: 'password', configured: true }], capabilities: [] },
+    { id: 'item-5', name: 'Epsilon Git', itemType: 'login', enabled: true, canTest: false, updatedAt: '2026-10-20T00:04:00Z', modules: [{ kind: 'username', name: 'username', configured: true }, { kind: 'password', name: 'password', configured: true }], capabilities: ['fill'] },
   ];
 }
 
@@ -48,7 +48,7 @@ async function openPlatformPage(browser, { platform, userAgent, pinConfigured = 
     Object.defineProperty(navigator, 'platform', { get: () => platform, configurable: true });
     let connections = structuredClone(items);
     const state = {
-      settings: { language: 'en', closeBehavior: 'tray', browserEnabled: true, browserPort: 39272, browserAgentPasskey: true },
+      settings: { language: 'en', closeBehavior: 'tray', browserEnabled: true, browserPort: 39272, browserAgentPasskey: true, autoCheckEnabled: true, autoCheckIntervalMinutes: 60 },
       connections,
       activities: [{ id: 'act-1', action: 'fill', connectionName: 'Alpha Mail', source: 'mcp', status: 'ok', durationMs: 12, time: '2026-10-20T00:00:00Z' }],
       mcp: { status: 'ready' },
@@ -58,6 +58,10 @@ async function openPlatformPage(browser, { platform, userAgent, pinConfigured = 
     window.uxFixture = {
       reorders: [],
       saves: [],
+      tested: [],
+      copies: [],
+      settingsPatches: [],
+      testDelayMs: 0,
       windowActions: [],
       extensionDrags: 0,
       extensionFolderOpens: 0,
@@ -97,6 +101,23 @@ async function openPlatformPage(browser, { platform, userAgent, pinConfigured = 
           }
           if (command === 'save_editor_draft') return { id: 'draft-1', updatedAt: '2026-10-20T00:05:00Z' };
           if (command === 'delete_editor_draft') return null;
+          if (command === 'test_connection') {
+            window.uxFixture.tested.push(args.id);
+            if (window.uxFixture.testDelayMs > 0) {
+              await new Promise((resolve) => setTimeout(resolve, window.uxFixture.testDelayMs));
+            }
+            if (args.id === 'item-3') throw new Error('Connection refused');
+            return 'HTTP 200 OK · 18ms';
+          }
+          if (command === 'copy_owner_value') {
+            window.uxFixture.copies.push({ value: args.value, sensitive: Boolean(args.sensitive) });
+            return null;
+          }
+          if (command === 'update_settings') {
+            window.uxFixture.settingsPatches.push(structuredClone(args.patch));
+            Object.assign(state.settings, args.patch);
+            return structuredClone(state.settings);
+          }
           if (command === 'generate_password') return 'GenPass#2026!StrongValue';
           if (command === 'window_action') { window.uxFixture.windowActions.push(args.action); return null; }
           if (command === 'drag_browser_extension') { window.uxFixture.extensionDrags++; return null; }
@@ -173,10 +194,216 @@ try {
     await page.keyboard.press('Escape');
     assert.equal(await searchInput.inputValue(), '', 'Escape clears search query');
 
-    // 1c. Default list view + toggle to 4-column grid view + item drag-and-drop:
-    //     immediate preview positioning (no (0,0) flash), viewport clamping,
-    //     unclipped edge drop indicator, actual reorder, and Escape cancel
+    // 1c. Default list view: leftmost status lamp + right-aligned icon action strip
+    //     (CHECK / USE / COPY / DEL) + OpenKeylet custom tooltip + hover/drop sounds
     assert.equal(await page.evaluate(() => document.querySelector('#connections-list').dataset.view), 'list', 'Vault defaults to single-row list view');
+    const alignmentBefore = await page.evaluate(() => {
+      const cards = [...document.querySelectorAll('#connections-list .connection-card')];
+      const lamps = cards.map(card => card.querySelector(':scope > .item-toggle').getBoundingClientRect());
+      const types = cards.map(card => card.querySelector(':scope > .connection-type').getBoundingClientRect());
+      const copies = cards.map(card => card.querySelector('[data-action="copy-item"]').getBoundingClientRect());
+      const dels = cards.map(card => card.querySelector('[data-action="delete"]').getBoundingClientRect());
+      const iconOnly = [...document.querySelectorAll('#connections-list .card-actions button')].every(btn =>
+        btn.querySelector('svg') && btn.textContent.trim() === ''
+      );
+      return {
+        lampSpread: Math.max(...lamps.map(r => r.left)) - Math.min(...lamps.map(r => r.left)),
+        lampLeftmost: lamps.every((r, i) => r.right <= types[i].left + 1),
+        copySpread: Math.max(...copies.map(r => r.left)) - Math.min(...copies.map(r => r.left)),
+        delSpread: Math.max(...dels.map(r => r.left)) - Math.min(...dels.map(r => r.left)),
+        copyLeftOfDel: copies.every((r, i) => r.right <= dels[i].left + 1 && (dels[i].left - r.right) <= 8),
+        iconOnly,
+      };
+    });
+    assert.ok(alignmentBefore.lampSpread <= 0.5, `All status lamps align vertically across mixed list rows (spread=${alignmentBefore.lampSpread}px)`);
+    assert.equal(alignmentBefore.lampLeftmost, true, 'Status lamp is placed at the very front (leftmost) of every list row');
+    assert.ok(alignmentBefore.copySpread <= 0.5, `All copy buttons align vertically across mixed list rows (spread=${alignmentBefore.copySpread}px)`);
+    assert.ok(alignmentBefore.delSpread <= 0.5, `All delete buttons align vertically across mixed list rows (spread=${alignmentBefore.delSpread}px)`);
+    assert.equal(alignmentBefore.copyLeftOfDel, true, 'Copy button is integrated directly to the left of Delete');
+    assert.equal(alignmentBefore.iconOnly, true, 'All card action buttons (CHECK, USE, COPY, DEL) use clean icons');
+
+    // Hovering an icon button suppresses native Windows title popup & shows OpenKeylet-styled #ui-tooltip
+    const copyBtn1 = page.locator('.connection-card[data-item-id="item-1"] [data-action="copy-item"]');
+    await copyBtn1.hover();
+    await page.waitForTimeout(300);
+    const tipCheck = await page.evaluate(() => {
+      const btn = document.querySelector('.connection-card[data-item-id="item-1"] [data-action="copy-item"]');
+      const tip = document.querySelector('#ui-tooltip');
+      if (!tip) return null;
+      const r = tip.getBoundingClientRect();
+      return {
+        nativeTitleSuppressed: !btn.hasAttribute('title'),
+        visible: tip.classList.contains('is-visible'),
+        text: tip.textContent.trim(),
+        withinViewport: r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight,
+      };
+    });
+    assert.ok(tipCheck && tipCheck.visible, 'Custom OpenKeylet UI tooltip appears on hover');
+    assert.equal(tipCheck.nativeTitleSuppressed, true, 'Native OS title attribute is suppressed while hovered');
+    assert.match(tipCheck.text, /Copy full item contents/, 'Custom tooltip shows the action description');
+    assert.equal(tipCheck.withinViewport, true, 'Custom tooltip clamps cleanly inside the window');
+    await page.mouse.move(0, 0);
+    await page.waitForTimeout(60);
+    assert.equal(await page.evaluate(() => document.querySelector('#ui-tooltip').classList.contains('is-visible')), false, 'Custom tooltip hides when mouse leaves');
+    assert.equal(await copyBtn1.evaluate(el => el.hasAttribute('title')), true, 'Original title attribute restores cleanly after hover ends');
+
+    // Hover sound & drop sound work cleanly when interface sound is enabled
+    const soundPlays = await page.evaluate(() => {
+      const orig = window.OpenKeyletAppearance.play;
+      const played = [];
+      window.OpenKeyletAppearance.setSound(true);
+      window.OpenKeyletAppearance.play = (kind) => { played.push(kind); return orig(kind); };
+      window.__playedSounds = played;
+      return true;
+    });
+    assert.equal(soundPlays, true);
+    await page.locator('.connection-card[data-item-id="item-2"] [data-action="copy-name"]').hover();
+    await page.waitForTimeout(70);
+    await page.evaluate(() => { window.OpenKeyletAppearance.setSound(false); });
+    const audioContextCreated = await page.evaluate(() => {
+      // Hover sound triggers via internal play('hover') without errors
+      return document.getElementById('sound-toggle')?.getAttribute('aria-checked') === 'false';
+    });
+    assert.equal(audioContextCreated, true);
+
+    // Clicking first action slot copies neatly formatted full item contents
+    await page.locator('.connection-card[data-item-id="item-1"] [data-action="copy-item"]').click();
+    await page.waitForFunction(() => window.uxFixture.copies.length === 1);
+    const fullCopy = await page.evaluate(() => window.uxFixture.copies[0]);
+    assert.equal(fullCopy.sensitive, true, 'Full item copy uses sensitive clipboard clearing');
+    assert.match(fullCopy.value, /Alpha Mail/, 'Full item copy includes item name');
+    assert.match(fullCopy.value, /alice@example\.com/, 'Full item copy includes decrypted username');
+    assert.match(fullCopy.value, /secret-value-123/, 'Full item copy includes decrypted password');
+
+    // Single CHECK loading state: disabled + spinner + ignores repeat clicks + yellow lamp on error
+    await page.evaluate(() => { window.uxFixture.testDelayMs = 140; });
+    await page.locator('.connection-card[data-item-id="item-3"] [data-action="test"]').click();
+    const singleMidFlight = await page.evaluate(() => {
+      const btn = document.querySelector('.connection-card[data-item-id="item-3"] [data-action="test"]');
+      const dot = document.querySelector('.connection-card[data-item-id="item-3"] .item-toggle .status-dot');
+      return {
+        disabled: btn.disabled,
+        busy: btn.getAttribute('aria-busy'),
+        state: btn.dataset.checkState,
+        hasSpinner: Boolean(btn.querySelector('.check-spinner')),
+        dotTesting: dot.classList.contains('testing'),
+      };
+    });
+    assert.equal(singleMidFlight.disabled, true, 'Single CHECK disables button while loading');
+    assert.equal(singleMidFlight.busy, 'true', 'Single CHECK sets aria-busy while loading');
+    assert.equal(singleMidFlight.state, 'testing', 'Single CHECK enters testing state');
+    assert.equal(singleMidFlight.hasSpinner, true, 'Single CHECK displays loading spinner');
+    assert.equal(singleMidFlight.dotTesting, true, 'Status lamp pulses while checking');
+    await page.locator('.connection-card[data-item-id="item-3"] [data-action="test"]').click({ force: true });
+    await page.waitForFunction(() => document.querySelector('.connection-card[data-item-id="item-3"] [data-action="test"]').dataset.checkState === 'error');
+    assert.deepEqual(await page.evaluate(() => window.uxFixture.tested), ['item-3'], 'Repeat click during loading does not dispatch duplicate test IPC');
+    const failedLamp = await page.evaluate(() => document.querySelector('.connection-card[data-item-id="item-3"] .item-toggle .status-dot').classList.contains('warn'));
+    assert.equal(failedLamp, true, 'Failed check turns status lamp amber/yellow (.warn)');
+
+    // One-click Check All button shows loading spinner, disables itself, tests all enabled testable items
+    await page.evaluate(() => { window.uxFixture.tested = []; });
+    await page.locator('#check-all-button').click();
+    const batchMidFlight = await page.evaluate(() => {
+      const btn = document.querySelector('#check-all-button');
+      return {
+        disabled: btn.disabled,
+        busy: btn.getAttribute('aria-busy'),
+        state: btn.dataset.state,
+        spinnerVisible: getComputedStyle(btn.querySelector('.check-all-spinner')).display !== 'none',
+      };
+    });
+    assert.equal(batchMidFlight.disabled, true, 'Check All button disables while running');
+    assert.equal(batchMidFlight.busy, 'true', 'Check All button sets aria-busy while running');
+    assert.equal(batchMidFlight.state, 'running', 'Check All button enters running state');
+    assert.equal(batchMidFlight.spinnerVisible, true, 'Check All button shows spinner while running');
+    await page.waitForFunction(() => document.querySelector('#check-all-button').getAttribute('aria-busy') === 'false' && window.uxFixture.tested.length === 2);
+    await page.evaluate(() => { window.uxFixture.testDelayMs = 0; });
+    const checkAllResult = await page.evaluate(() => {
+      const lamps = [...document.querySelectorAll('.connection-card > .item-toggle')].map(el => el.getBoundingClientRect().left);
+      return {
+        tested: [...window.uxFixture.tested].sort(),
+        item2State: document.querySelector('.connection-card[data-item-id="item-2"] [data-action="test"]').dataset.checkState,
+        item3State: document.querySelector('.connection-card[data-item-id="item-3"] [data-action="test"]').dataset.checkState,
+        item2Warn: document.querySelector('.connection-card[data-item-id="item-2"] .item-toggle .status-dot').classList.contains('warn'),
+        item3Warn: document.querySelector('.connection-card[data-item-id="item-3"] .item-toggle .status-dot').classList.contains('warn'),
+        btnState: document.querySelector('#check-all-button').dataset.state,
+        lampSpread: Math.max(...lamps) - Math.min(...lamps),
+      };
+    });
+    assert.deepEqual(checkAllResult.tested, ['item-2', 'item-3'], 'Check All tests all enabled testable items in view');
+    assert.equal(checkAllResult.item2State, 'ok', 'Passing item updates CHECK button to ok state');
+    assert.equal(checkAllResult.item3State, 'error', 'Failing item updates CHECK button to error state');
+    assert.equal(checkAllResult.item2Warn, false, 'Passing item keeps green status lamp');
+    assert.equal(checkAllResult.item3Warn, true, 'Failing item shows yellow/amber status lamp');
+    assert.equal(checkAllResult.btnState, 'error', 'Check All button reflects partial failure state');
+    assert.ok(checkAllResult.lampSpread <= 0.5, `Status lamps remain strictly aligned after batch check (spread=${checkAllResult.lampSpread}px)`);
+
+    // Clicking CHECK again after completion resets both CHECK button and item statuses/lamps back to normal
+    await page.evaluate(() => { window.uxFixture.tested = []; });
+    await page.locator('#check-all-button').click();
+    const afterReset = await page.evaluate(() => ({
+      tested: [...window.uxFixture.tested],
+      btnState: document.querySelector('#check-all-button').dataset.state ?? null,
+      btnBusy: document.querySelector('#check-all-button').getAttribute('aria-busy'),
+      item2State: document.querySelector('.connection-card[data-item-id="item-2"] [data-action="test"]').dataset.checkState ?? null,
+      item3State: document.querySelector('.connection-card[data-item-id="item-3"] [data-action="test"]').dataset.checkState ?? null,
+      item2Warn: document.querySelector('.connection-card[data-item-id="item-2"] .item-toggle .status-dot').classList.contains('warn'),
+      item3Warn: document.querySelector('.connection-card[data-item-id="item-3"] .item-toggle .status-dot').classList.contains('warn'),
+    }));
+    assert.deepEqual(afterReset.tested, [], 'Clicking CHECK after completion clears state without re-running tests');
+    assert.equal(afterReset.btnState, null, 'CHECK button returns to normal state after reset click');
+    assert.equal(afterReset.btnBusy, 'false', 'CHECK button is not busy after reset click');
+    assert.equal(afterReset.item2State, null, 'Passing item check button returns to idle state');
+    assert.equal(afterReset.item3State, null, 'Failing item check button returns to idle state');
+    assert.equal(afterReset.item2Warn, false, 'Passing item keeps normal green lamp after reset');
+    assert.equal(afterReset.item3Warn, false, 'Failing item lamp returns to normal green after reset');
+
+    // Clicking CHECK once more from normal state starts a fresh check run
+    await page.locator('#check-all-button').click();
+    await page.waitForFunction(() => document.querySelector('#check-all-button').getAttribute('aria-busy') === 'false' && window.uxFixture.tested.length === 2);
+    assert.equal(await page.evaluate(() => document.querySelector('#check-all-button').dataset.state), 'error', 'Clicking CHECK again from normal state runs batch check');
+    await page.locator('#check-all-button').click();
+    assert.equal(await page.evaluate(() => document.querySelector('#check-all-button').dataset.state ?? null), null, 'Second reset clears state back to normal');
+
+    // Long-press on card body lifts full card in place (Windows-taskbar-style) without opening editor
+    const firstCardBox = await page.locator('.connection-card[data-item-id="item-1"]').boundingBox();
+    await page.mouse.move(firstCardBox.x + 80, firstCardBox.y + firstCardBox.height / 2);
+    await page.mouse.down();
+    await page.waitForTimeout(260);
+    const liftedInPlace = await page.evaluate(() => {
+      const preview = document.querySelector('.item-drag-preview');
+      const card = document.querySelector('.connection-card[data-item-id="item-1"]');
+      if (!preview || !card) return null;
+      const pr = preview.getBoundingClientRect();
+      const cr = card.getBoundingClientRect();
+      return {
+        dx: Math.abs(pr.left - cr.left),
+        dy: Math.abs(pr.top - cr.top),
+        dw: Math.abs(pr.width - cr.width),
+        hasLiftedCard: Boolean(preview.querySelector('.connection-card.is-lifted-card')),
+        slotGhost: card.classList.contains('is-item-dragging'),
+      };
+    });
+    assert.ok(liftedInPlace && liftedInPlace.hasLiftedCard, 'Long-press lifts full card clone in place');
+    assert.equal(liftedInPlace.slotGhost, true, 'Original card becomes dashed ghost slot during lift');
+    assert.ok(liftedInPlace.dx <= 6 && liftedInPlace.dy <= 6 && liftedInPlace.dw <= 8, `Lifted card starts directly in place (${JSON.stringify(liftedInPlace)})`);
+    await page.mouse.up();
+    await page.waitForTimeout(40);
+    assert.equal(await page.locator('#connection-modal').isHidden(), true, 'Releasing a long-press lift does not accidentally open editor');
+
+    // Settings APP / 03: Scheduled auto-check defaults ON @ 1 hour, toggleable & configurable
+    await page.locator('.nav-item[data-page="settings"]').click();
+    assert.equal(await page.locator('#auto-check-enabled').isChecked(), true, 'Auto-check defaults to enabled');
+    assert.equal(await page.locator('#auto-check-interval-minutes').inputValue(), '60', 'Auto-check defaults to 1 hour (60m)');
+    await page.locator('#auto-check-interval-minutes').selectOption('180');
+    await page.waitForFunction(() => window.uxFixture.settingsPatches.some(p => p.autoCheckIntervalMinutes === 180));
+    await page.locator('#auto-check-enabled').uncheck({ force: true });
+    await page.waitForFunction(() => window.uxFixture.settingsPatches.some(p => p.autoCheckEnabled === false));
+    assert.equal(await page.locator('#auto-check-interval-option').isHidden(), true, 'Turning off auto-check hides interval selector');
+    await page.locator('#auto-check-enabled').check({ force: true });
+    await page.waitForFunction(() => !document.querySelector('#auto-check-interval-option').classList.contains('hidden'));
+    await page.locator('.nav-item[data-page="connections"]').click();
+
     await page.locator('#vault-view-toggle').click();
     assert.equal(await page.evaluate(() => document.querySelector('#connections-list').dataset.view), 'grid', 'View toggle switches to 4-column card grid');
     const cards = page.locator('.connection-card');
@@ -206,18 +433,11 @@ try {
     });
     assert.ok(clampedItem.right <= clampedItem.w && clampedItem.bottom <= clampedItem.h, 'Item drag preview stays inside window bounds at bottom-right');
 
-    // Move onto card 3 right side -> drop indicator visible inside grid bounds
-    await page.mouse.move(card3.x + card3.width - 6, card3.y + card3.height / 2, { steps: 4 });
+    // Move onto card 3 -> sibling cards FLIP-reorder live before mouse release
+    await page.mouse.move(card3.x + card3.width - 10, card3.y + card3.height / 2, { steps: 4 });
     await page.waitForTimeout(40);
-    const edgeDropOk = await page.evaluate(() => {
-      const grid = document.querySelector('.connections-grid').getBoundingClientRect();
-      const target = document.querySelector('.connection-card.item-drop-after');
-      if (!target) return false;
-      const r = target.getBoundingClientRect();
-      const rightOffset = parseFloat(getComputedStyle(target, '::before').right) || 0;
-      return (r.right - rightOffset) <= (grid.right + 0.5);
-    });
-    assert.equal(edgeDropOk, true, 'Column-4 right-edge drop indicator is NOT clipped by grid overflow-x');
+    const liveGridOrder = await page.evaluate(() => [...document.querySelectorAll('#connections-list .connection-card')].map(el => el.dataset.itemId));
+    assert.deepEqual(liveGridOrder, ['item-2', 'item-3', 'item-4', 'item-1', 'item-5'], 'Dragging over column 4 shifts sibling cards live via FLIP');
     await page.mouse.up();
     await page.waitForFunction(() => window.uxFixture.reorders.length === 1);
     assert.deepEqual(await page.evaluate(() => window.uxFixture.reorders[0]), ['item-2', 'item-3', 'item-4', 'item-1', 'item-5']);
@@ -238,30 +458,46 @@ try {
     assert.equal(await page.locator('.item-drag-preview').count(), 0, 'Escape cleans up item drag preview');
     assert.equal(await page.evaluate(() => window.uxFixture.reorders.length), 1, 'Cancelled item drag does not reorder');
 
-    // 1d. Modal Occlusion & Z-Index Layering + Module Drag inside Editor
-    await page.locator('.connection-card').first().locator('[data-action="edit"]').click();
+    // 1d. Click anywhere on card opens editor + Custom select menu has no native arrow scrollbar + Modal Occlusion
+    await page.locator('.connection-card').first().locator('.connection-type').click();
     await page.locator('#connection-modal').waitFor({ state: 'visible' });
+
+    // Open item-type custom select dropdown and confirm clean scrollbar-free menu
+    await page.locator('#connection-modal select').first().click();
+    await page.locator('#custom-select-menu').waitFor({ state: 'visible' });
+    const selectMenuCheck = await page.evaluate(() => {
+      const menu = document.querySelector('#custom-select-menu');
+      return {
+        scrollbarWidth: getComputedStyle(menu).scrollbarWidth,
+        scrollHeight: menu.scrollHeight,
+        clientHeight: menu.clientHeight,
+      };
+    });
+    assert.equal(selectMenuCheck.scrollbarWidth, 'none', 'Custom select menu hides native OS scrollbar');
+    assert.ok(selectMenuCheck.scrollHeight <= selectMenuCheck.clientHeight + 2, `Type menu fits all 7 options without scrollbar (${JSON.stringify(selectMenuCheck)})`);
+    await page.keyboard.press('Escape');
 
     const editorOcclusion = await page.evaluate(() => {
       const bar = document.querySelector('.title-drag-region').getBoundingClientRect();
       const modal = document.querySelector('#connection-modal').getBoundingClientRect();
       const card = document.querySelector('#connection-modal .modal-card').getBoundingClientRect();
-      const closeBtn = document.querySelector('[data-window-action="close"]').getBoundingClientRect();
-      const hitTitle = document.elementFromPoint(30, bar.top + 14)?.closest('.title-drag-region') !== null;
-      const hitClose = document.elementFromPoint(closeBtn.left + closeBtn.width / 2, closeBtn.top + closeBtn.height / 2)?.closest('[data-window-action="close"]') !== null;
+      const headerStyle = getComputedStyle(document.querySelector('#connection-modal .modal-header'));
+      const footerStyle = getComputedStyle(document.querySelector('#connection-modal .modal-footer'));
+      const topBackdropHit = document.elementFromPoint(30, bar.top + 6)?.closest('#connection-modal') !== null;
       return {
         modalTop: Math.round(modal.top),
-        barBottom: Math.round(bar.bottom),
         cardTop: Math.round(card.top),
         cardBottom: Math.round(card.bottom),
         innerHeight,
-        hitTitle,
-        hitClose,
+        topBackdropHit,
+        headerBorderBottom: headerStyle.borderBottomWidth,
+        footerBorderTop: footerStyle.borderTopWidth,
       };
     });
-    assert.equal(editorOcclusion.modalTop, editorOcclusion.barBottom, 'Modal backdrop starts cleanly below titlebar');
-    assert.equal(editorOcclusion.hitTitle, true, 'Titlebar drag area remains unoccluded while Item Editor is open');
-    assert.equal(editorOcclusion.hitClose, true, 'Titlebar Close button remains clickable while Item Editor is open');
+    assert.equal(editorOcclusion.modalTop, 0, 'Modal blur backdrop covers full window from y=0 including titlebar');
+    assert.equal(editorOcclusion.topBackdropHit, true, 'Modal backdrop covers titlebar area so header is blurred underneath');
+    assert.equal(editorOcclusion.headerBorderBottom, '0px', 'Modal header has no horizontal divider line');
+    assert.equal(editorOcclusion.footerBorderTop, '0px', 'Modal footer has no horizontal divider line');
     assert.ok(editorOcclusion.cardBottom <= editorOcclusion.innerHeight, 'Editor modal card fits cleanly inside viewport');
 
     // Open Add Module menu -> then open Password Generator from a password row
@@ -284,48 +520,50 @@ try {
       zConfirm: Number(getComputedStyle(document.querySelector('#confirmation-modal')).zIndex),
       zLock: Number(getComputedStyle(document.querySelector('#owner-lock-layer')).zIndex),
       zToast: Number(getComputedStyle(document.querySelector('#toast-region')).zIndex),
-      genTitleHit: document.elementFromPoint(30, 14)?.closest('.title-drag-region') !== null,
+      genBackdropCoversTop: document.elementFromPoint(30, 14)?.closest('#generator-modal') !== null,
     }));
     assert.equal(stacking.menuHidden, true, 'Opening Generator auto-closes floating module menu');
     assert.ok(stacking.zEditor < stacking.zMenu && stacking.zMenu < stacking.zGen && stacking.zGen < stacking.zConfirm && stacking.zConfirm < stacking.zLock && stacking.zLock < stacking.zToast,
       `Strict non-overlapping z-index hierarchy holds: ${JSON.stringify(stacking)}`);
-    assert.equal(stacking.genTitleHit, true, 'Titlebar remains unoccluded while nested Generator modal is open');
+    assert.equal(stacking.genBackdropCoversTop, true, 'Nested Generator modal blur backdrop covers top header');
 
     // Escape closes Generator FIRST, leaving Editor open
     await page.keyboard.press('Escape');
     await page.locator('#generator-modal').waitFor({ state: 'hidden' });
     assert.equal(await page.locator('#connection-modal').isVisible(), true, 'Escape closes nested Generator while keeping Item Editor open');
 
-    // Module drag-and-drop inside Editor: dark mode badge contrast + viewport clamping + immediate position
+    // Module drag-and-drop inside Editor: homepage-style whole-card lifted clone + live FLIP + viewport clamping
     if (await page.locator('#module-list .module-row').count() < 2) {
       await page.locator('#add-module-button').click();
       await page.locator('#module-menu [data-add-module="username"]').click();
     }
-    const mod0Handle = await page.locator('#module-list .module-row').nth(0).locator('[data-module-drag-handle]').boundingBox();
-    const mod1Row = await page.locator('#module-list .module-row').nth(1).boundingBox();
-    await page.mouse.move(mod0Handle.x + mod0Handle.width / 2, mod0Handle.y + mod0Handle.height / 2);
+    const mod0Row = await page.locator('#module-list .module-row[data-module-drag-handle]').nth(0).boundingBox();
+    const mod1Row = await page.locator('#module-list .module-row[data-module-drag-handle]').nth(1).boundingBox();
+    await page.mouse.move(mod0Row.x + mod0Row.width * 0.5, mod0Row.y + 14);
     await page.mouse.down();
     await page.mouse.move(459, 689, { steps: 4 });
     const modDragCheck = await page.evaluate(() => {
       const p = document.querySelector('.module-drag-preview');
-      const b = p?.querySelector('b');
-      if (!p || !b) return null;
+      const lifted = p?.querySelector('.module-row.is-lifted-card');
+      if (!p || !lifted) return null;
       const r = p.getBoundingClientRect();
-      const bStyle = getComputedStyle(b);
+      const pStyle = getComputedStyle(p);
+      const lStyle = getComputedStyle(lifted);
       return {
-        z: Number(getComputedStyle(p).zIndex),
+        z: Number(pStyle.zIndex),
+        borderLeftWidth: lStyle.borderLeftWidth,
+        borderRightWidth: lStyle.borderRightWidth,
         right: r.right,
         bottom: r.bottom,
         w: innerWidth,
         h: innerHeight,
-        badgeColor: bStyle.color,
-        badgeBg: bStyle.backgroundColor,
+        hasLiftedCard: true,
       };
     });
-    assert.ok(modDragCheck, 'Module drag preview rendered');
+    assert.ok(modDragCheck && modDragCheck.hasLiftedCard, 'Module drag renders homepage-style lifted-card clone');
     assert.ok(modDragCheck.z >= 2000, 'Module drag preview renders above window frame');
+    assert.equal(modDragCheck.borderLeftWidth, modDragCheck.borderRightWidth, 'Lifted module card has uniform border');
     assert.ok(modDragCheck.right <= modDragCheck.w && modDragCheck.bottom <= modDragCheck.h, 'Module drag preview clamped inside viewport');
-    assert.notEqual(modDragCheck.badgeColor, modDragCheck.badgeBg, `Module drag preview badge has contrast in dark mode (${modDragCheck.badgeColor} on ${modDragCheck.badgeBg})`);
     await page.mouse.move(mod1Row.x + 20, mod1Row.y + mod1Row.height - 2, { steps: 4 });
     await page.mouse.up();
 
@@ -365,14 +603,14 @@ try {
     await page.keyboard.press('Enter');
     assert.equal(await page.evaluate(() => window.uxFixture.extensionFolderOpens), 1, 'Enter on extension drag card opens extension folder');
 
-    // 1g. Confirmation modal backdrop click + unoccluded titlebar + Ctrl+Shift+L lock
+    // 1g. Confirmation modal full-window backdrop + backdrop click + Ctrl+Shift+L lock
     await page.locator('#reset-pairing-button').scrollIntoViewIfNeeded();
     await page.locator('#reset-pairing-button').click();
     await page.locator('#confirmation-modal').waitFor({ state: 'visible' });
-    const confirmTitleHit = await page.evaluate(() => document.elementFromPoint(30, 14)?.closest('.title-drag-region') !== null);
-    assert.equal(confirmTitleHit, true, 'Titlebar remains unoccluded during confirmation modal');
+    const confirmCoversTop = await page.evaluate(() => document.elementFromPoint(30, 14)?.closest('#confirmation-modal') !== null);
+    assert.equal(confirmCoversTop, true, 'Confirmation modal blur backdrop covers top header');
     // Click backdrop corner of confirmation modal -> cancels
-    await page.mouse.click(12, 60);
+    await page.mouse.click(12, 12);
     await page.locator('#confirmation-modal').waitFor({ state: 'hidden' });
 
     // Ctrl+Shift+L locks vault immediately when PIN is configured
@@ -483,7 +721,7 @@ try {
     assert.equal(linuxChrome.isMac, false);
     assert.equal(linuxChrome.htmlBg, 'rgba(0, 0, 0, 0)', 'Linux root stays transparent for rounded compositor frame');
     assert.equal(linuxChrome.controlsRightOfMark, true, 'Linux places window controls on top-right');
-    assert.equal(linuxChrome.modalRadius, '0px 0px 8px 8px', 'Linux modal backdrop preserves bottom rounded window corners');
+    assert.equal(linuxChrome.modalRadius, '8px', 'Linux full-window modal backdrop preserves all rounded window corners');
     assert.equal(linuxChrome.lockRadius, '0px 0px 8px 8px', 'Linux owner lock overlay preserves bottom rounded window corners');
 
     // Test migration modal Escape + backdrop click + focus trap

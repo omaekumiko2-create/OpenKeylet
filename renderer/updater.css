@@ -185,16 +185,24 @@
 .update-banner-dismiss {
   display: inline-grid;
   place-items: center;
-  width: 22px;
-  height: 22px;
+  width: 24px;
+  height: 24px;
   padding: 0;
   border: 0;
   border-radius: var(--radius-xs);
   background: transparent;
   color: var(--muted);
-  font-size: 14px;
-  line-height: 1;
   cursor: pointer;
+}
+.update-banner-dismiss svg {
+  display: block;
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .update-banner-dismiss:hover {
@@ -318,19 +326,20 @@
 }
 
 .update-modal-card {
-  width: min(424px, calc(100vw - 24px));
-  max-height: calc(100vh - var(--titlebar-height) - 24px);
+  width: min(444px, 100%);
+  max-height: calc(100vh - 16px);
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .update-modal-body {
-  padding: 14px 16px;
+  padding: 4px var(--shell-inset) var(--region-gap);
   overflow-y: auto;
   min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--region-gap);
 }
 
 .update-version-row {
@@ -395,9 +404,9 @@
   align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
-  gap: 8px;
-  padding: 10px 16px;
-  border-top: 1px solid var(--border-subtle);
+  gap: var(--region-gap);
+  padding: var(--region-gap) var(--shell-inset) var(--shell-inset);
+  border-top: 0;
 }
 
 .update-modal-footer-left,

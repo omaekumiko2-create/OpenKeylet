@@ -106,6 +106,7 @@ const mime = {
   ".png": "image/png",
   ".ico": "image/x-icon",
   ".json": "application/json",
+  ".woff2": "font/woff2",
 };
 
 const clients = new Set();
@@ -190,13 +191,62 @@ let building = false;
 let pendingRebuild = false;
 let shuttingDown = false;
 
+function cleanupOldBinaries() {
+  const debugDir = path.dirname(binaryPath);
+  const depsDir = path.join(debugDir, "deps");
+  const baseName = path.basename(binaryPath);
+  const pdbName = baseName.replace(/\.exe$/i, ".pdb");
+  for (const dir of [debugDir, depsDir]) {
+    try {
+      for (const entry of fs.readdirSync(dir)) {
+        if (entry.startsWith(`${baseName}.old.`) || entry.startsWith(`${pdbName}.old.`)) {
+          try {
+            fs.unlinkSync(path.join(dir, entry));
+          } catch {}
+        }
+      }
+    } catch {}
+  }
+}
+
+function releaseLockedBinary() {
+  cleanupOldBinaries();
+  if (process.platform !== "win32") return;
+  const debugDir = path.dirname(binaryPath);
+  const depsDir = path.join(debugDir, "deps");
+  const baseName = path.basename(binaryPath);
+  const pdbName = baseName.replace(/\.exe$/i, ".pdb");
+  const candidates = [
+    binaryPath,
+    path.join(debugDir, pdbName),
+    path.join(depsDir, baseName),
+    path.join(depsDir, pdbName),
+  ];
+  for (const candidate of candidates) {
+    if (!fs.existsSync(candidate)) continue;
+    try {
+      const fd = fs.openSync(candidate, "r+");
+      fs.closeSync(fd);
+    } catch {
+      const aside = `${candidate}.old.${Date.now()}`;
+      try {
+        fs.renameSync(candidate, aside);
+        console.log(`[dev-hot] Moved locked ${path.relative(debugDir, candidate)} aside so live MCP/tray keeps running`);
+      } catch (err) {
+        console.warn(`[dev-hot] Warning: ${path.relative(debugDir, candidate)} is still locked (${err?.code || err?.message})`);
+      }
+    }
+  }
+}
+
 function stopApp() {
-  if (!appProc) return;
+  if (!appProc) return false;
   const proc = appProc;
   appProc = null;
   try {
     proc.kill();
   } catch {}
+  return true;
 }
 
 function launchApp() {
@@ -216,15 +266,8 @@ function launchApp() {
   });
 }
 
-function buildAndLaunch(reason) {
-  if (building) {
-    pendingRebuild = true;
-    return;
-  }
-  building = true;
-  pendingRebuild = false;
-  console.log(`[dev-hot] Building Rust backend (${reason})...`);
-  stopApp();
+function startCargoBuild() {
+  releaseLockedBinary();
   const build = spawn("cargo", ["build", "--manifest-path", path.join(rustRoot, "Cargo.toml")], {
     cwd: repoRoot,
     stdio: "inherit",
@@ -243,6 +286,22 @@ function buildAndLaunch(reason) {
       console.error(`[dev-hot] Rust build failed (exit ${code}). Fix errors and save to retry.`);
     }
   });
+}
+
+function buildAndLaunch(reason) {
+  if (building) {
+    pendingRebuild = true;
+    return;
+  }
+  building = true;
+  pendingRebuild = false;
+  console.log(`[dev-hot] Building Rust backend (${reason})...`);
+  const stopped = stopApp();
+  if (stopped) {
+    setTimeout(startCargoBuild, 200);
+  } else {
+    startCargoBuild();
+  }
 }
 
 // Frontend hot-reload polling (SMB-safe)

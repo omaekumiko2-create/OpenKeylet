@@ -288,16 +288,19 @@ async fn browser_management_is_locked_and_deleted_passkeys_cannot_sign() {
     .unwrap();
     let first=vault.save_browser_login(&json!({"origin":"https://example.com","name":"Browser login","username":"alice","password":"browser-old"})).unwrap();
     vault.save_browser_login(&json!({"id":first["id"],"expectedUpdatedAt":first["updatedAt"],"origin":"https://example.com","username":"alice","password":"browser-new"})).unwrap();
-    let history = handle(
-        &vault,
-        &mut session,
-        &throttle,
-        "vault.history",
-        &json!({"id":first["id"]}),
-    )
-    .await
-    .unwrap();
-    assert_eq!(history["entries"][0]["password"], "browser-old");
+    let first_id = uuid::Uuid::parse_str(first["id"].as_str().unwrap()).unwrap();
+    assert_eq!(vault.password_history(first_id).unwrap()[0].password, "browser-old");
+    // Least-privilege browser bridge rejects full-vault history/CRUD RPCs even after PIN unlock.
+    assert!(
+        handle(&vault, &mut session, &throttle, "vault.history", &json!({"id": first["id"]}))
+            .await
+            .is_err()
+    );
+    assert!(
+        handle(&vault, &mut session, &throttle, "vault.list", &json!({}))
+            .await
+            .is_err()
+    );
     let options = json!({"challenge":B64.encode([4;32]),"rp":{"id":"example.com"},"user":{"id":B64.encode([3;16]),"name":"alice"},"pubKeyCredParams":[{"type":"public-key","alg":-7}],"authenticatorSelection":{"residentKey":"required"}});
     let (key, _) = crate::passkey::create("https://example.com", &options, true).unwrap();
     let credential_id = key.credential_id.clone();

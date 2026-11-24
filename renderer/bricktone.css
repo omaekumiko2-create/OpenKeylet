@@ -494,8 +494,8 @@ svg { stroke-linecap: round; stroke-linejoin: round; }
 .confirm-card h2 { font-size: 20px; }
 .confirm-card p { font-size: 12px; line-height: 1.6; }
 .confirm-actions .button { min-height: 34px; font-size: 10px; }
-.toast { color: var(--ink); background: #3d444a; border-left: 4px solid var(--accent); border-radius: var(--radius); font-size: 11px; box-shadow: var(--shadow-float); }
-.toast.error { border-left-color: var(--danger); }
+.toast { color: var(--ink); background: #3d444a; border: 1px solid var(--ui-panel-edge-dark); border-radius: var(--radius); font-size: 11px; box-shadow: var(--shadow-float); }
+.toast.error { border-color: var(--danger); }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }

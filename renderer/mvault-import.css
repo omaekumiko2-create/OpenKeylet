@@ -2,18 +2,16 @@
 
 .global-mvault-drop-overlay {
   position: fixed;
-  top: var(--titlebar-height, 38px);
-  right: 0;
-  bottom: 0;
-  left: 0;
+  inset: 0;
   z-index: 210;
   display: grid;
   place-items: center;
   padding: 16px;
   background: color-mix(in srgb, var(--chassis, #070708) 84%, transparent);
   backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   pointer-events: none;
-  border-radius: 0 0 var(--window-radius, 12px) var(--window-radius, 12px);
+  border-radius: var(--window-radius, 8px);
 }
 .global-mvault-drop-overlay.hidden {
   display: none;
@@ -88,9 +86,9 @@
   z-index: 140;
 }
 .mvault-modal-card {
-  width: min(432px, calc(100vw - 16px));
-  max-width: 432px;
-  max-height: calc(100vh - 24px);
+  width: min(444px, 100%);
+  max-width: 444px;
+  max-height: calc(100vh - 16px);
   height: auto;
   display: flex;
   flex-direction: column;
@@ -98,7 +96,9 @@
 }
 .mvault-modal-header {
   flex: 0 0 auto;
-  gap: 10px;
+  align-items: flex-start;
+  gap: var(--region-gap);
+  padding: var(--region-gap) var(--shell-inset) 6px;
 }
 .mvault-header-copy {
   display: flex;
@@ -106,10 +106,12 @@
   gap: 4px;
   min-width: 0;
   flex: 1 1 auto;
+  pointer-events: none;
+  -webkit-user-drag: none;
 }
 .mvault-header-copy h2 {
   margin: 0;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
   color: var(--ink);
   line-height: 1.25;
@@ -124,14 +126,15 @@
 .mvault-file-pill {
   display: inline-flex;
   align-items: center;
+  height: 20px;
   max-width: 240px;
-  padding: 2px 7px;
+  padding: 0 6px;
   border-radius: var(--radius-xs, 4px);
   background: var(--surface-1);
   border: 1px solid var(--border-default);
   color: var(--ink);
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: 9.5px;
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -140,8 +143,9 @@
 .mvault-format-pill {
   display: inline-flex;
   align-items: center;
-  padding: 2px 6px;
-  border-radius: 999px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: var(--radius-xs, 4px);
   background: var(--surface-3);
   border: 1px solid var(--border-subtle);
   color: var(--muted);
@@ -158,8 +162,8 @@
 .mvault-unlock-panel {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 16px;
+  gap: var(--region-gap);
+  padding: 4px var(--shell-inset) var(--shell-inset);
   background: var(--surface-2);
 }
 .mvault-unlock-panel.hidden {
@@ -168,14 +172,14 @@
 .mvault-unlock-help {
   margin: 0;
   color: var(--muted);
-  font-size: 12px;
-  line-height: 1.55;
+  font-size: 11px;
+  line-height: 1.45;
   overflow-wrap: anywhere;
 }
 .mvault-password-row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--region-gap);
   min-width: 0;
 }
 .mvault-password-row .input {
@@ -184,14 +188,14 @@
 }
 .mvault-password-row .button {
   flex: 0 0 auto;
-  height: 34px;
-  min-height: 34px;
+  height: var(--compact-control-height, 28px);
+  min-height: var(--compact-control-height, 28px);
   padding: 0 10px;
   font-size: 10.5px;
 }
 .mvault-error {
   margin: 0;
-  padding: 8px 10px;
+  padding: var(--region-gap) 10px;
   border-radius: var(--radius-sm, 6px);
   border: 1px solid var(--danger);
   background: var(--danger-soft);
@@ -206,7 +210,7 @@
 .mvault-unlock-actions {
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
+  gap: var(--region-gap);
   padding-top: 4px;
 }
 
@@ -216,10 +220,10 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  padding: 28px 16px;
+  gap: var(--region-gap);
+  padding: 24px var(--shell-inset);
   color: var(--muted);
-  font-size: 12px;
+  font-size: 11.5px;
   text-align: center;
 }
 .mvault-loading-panel.hidden {
@@ -241,9 +245,9 @@
 .mvault-select-top {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 12px 14px 10px;
-  border-bottom: 1px solid var(--border-subtle);
+  gap: var(--region-gap);
+  padding: 4px var(--shell-inset) var(--region-gap);
+  border-bottom: 0;
   flex: 0 0 auto;
 }
 
@@ -251,15 +255,15 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
 }
 .mvault-stat-pill {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  height: 21px;
-  padding: 0 7px;
-  border-radius: 999px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: var(--radius-xs, 4px);
   background: var(--surface-1);
   border: 1px solid var(--border-subtle);
   color: var(--muted);
@@ -304,11 +308,11 @@
 }
 .mvault-search-input {
   width: 100%;
-  height: 30px !important;
-  min-height: 30px !important;
+  height: var(--control-height, 32px) !important;
+  min-height: var(--control-height, 32px) !important;
   padding: 0 10px !important;
   font-size: 11.5px !important;
-  line-height: 28px !important;
+  line-height: 30px !important;
 }
 
 .mvault-type-pills {
@@ -423,8 +427,8 @@
 .mvault-item-list {
   display: flex;
   flex-direction: column;
-  gap: 5px;
-  padding: 10px 14px;
+  gap: 4px;
+  padding: 4px var(--shell-inset) var(--region-gap);
   overflow-y: auto;
   min-height: 120px;
   max-height: 310px;
@@ -434,9 +438,9 @@
 .mvault-item-row {
   display: flex;
   align-items: flex-start;
-  gap: 9px;
-  padding: 8px 10px;
-  border: 1px solid var(--border-default);
+  gap: var(--region-gap);
+  padding: var(--region-gap) 10px;
+  border: 1px solid var(--border-subtle);
   border-radius: var(--radius, 8px);
   background: var(--surface-1);
   cursor: pointer;
@@ -588,9 +592,9 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  padding: 10px 14px 12px;
-  border-top: 1px solid var(--border-subtle);
+  gap: var(--region-gap, 8px);
+  padding: var(--region-gap, 8px) var(--shell-inset, 12px) var(--shell-inset, 12px);
+  border-top: 0;
   background: var(--surface-2);
   flex: 0 0 auto;
 }
@@ -604,18 +608,18 @@
 .mvault-footer-actions {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--region-gap, 8px);
   flex: 0 0 auto;
 }
 .mvault-footer-actions .button {
-  min-height: 32px;
-  height: 32px;
-  padding: 0 12px;
+  min-height: var(--control-height, 32px);
+  height: var(--control-height, 32px);
+  padding: 0 var(--shell-inset, 12px);
   font-size: 11.5px;
   white-space: nowrap;
 }
 .mvault-select-error {
-  margin: 0 14px 8px;
+  margin: 0 var(--shell-inset, 12px) var(--region-gap, 8px);
 }
 
 @media (forced-colors: active) {

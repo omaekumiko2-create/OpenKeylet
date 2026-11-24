@@ -84,12 +84,81 @@ function captureSubmittedForm(event) {
 }
 document.addEventListener("submit", captureSubmittedForm, true);
 
+const NOTICE_STRINGS = {
+  en: {
+    title: "OpenKeylet · Save login",
+    desc: "Submitted login detected. Review and confirm before saving locally.",
+    review: "Review & save",
+    dismiss: "Dismiss",
+  },
+  zh: {
+    title: "OpenKeylet · 保存登录信息",
+    desc: "检测到已提交的账号信息。预览确认后才会写入本地密码库。",
+    review: "预览并保存",
+    dismiss: "忽略",
+  },
+  "zh-TW": {
+    title: "OpenKeylet · 儲存登入資訊",
+    desc: "偵測到已提交的帳號資訊。預覽確認後才會寫入本機密碼庫。",
+    review: "預覽並儲存",
+    dismiss: "忽略",
+  },
+  ja: {
+    title: "OpenKeylet · ログインを保存",
+    desc: "送信されたログイン情報を検出しました。確認後にローカルへ保存されます。",
+    review: "確認して保存",
+    dismiss: "閉じる",
+  },
+  ko: {
+    title: "OpenKeylet · 로그인 저장",
+    desc: "제출된 로그인 정보가 감지되었습니다. 확인 후 로컬 보관함에 저장됩니다.",
+    review: "검토 및 저장",
+    dismiss: "무시",
+  },
+  es: {
+    title: "OpenKeylet · Guardar acceso",
+    desc: "Inicio de sesión detectado. Revisa y confirma antes de guardar localmente.",
+    review: "Revisar y guardar",
+    dismiss: "Descartar",
+  },
+};
+
+function resolveNoticeLang(storedSetting) {
+  const normalize = (raw) => {
+    const lower = String(raw || "").trim().toLowerCase();
+    if (!lower || lower === "auto" || lower === "system") return null;
+    if (["zh-tw", "zh_tw", "zh-hk", "zh_hk", "zh-hant", "zh_hant"].some(p => lower === p || lower.startsWith(`${p}-`))) return "zh-TW";
+    if (lower === "zh" || lower.startsWith("zh-") || lower.startsWith("zh_")) return "zh";
+    if (lower === "ja" || lower.startsWith("ja-") || lower.startsWith("ja_")) return "ja";
+    if (lower === "ko" || lower.startsWith("ko-") || lower.startsWith("ko_")) return "ko";
+    if (lower === "es" || lower.startsWith("es-") || lower.startsWith("es_")) return "es";
+    if (lower === "en" || lower.startsWith("en-") || lower.startsWith("en_")) return "en";
+    return null;
+  };
+  const explicit = normalize(storedSetting);
+  if (explicit) return explicit;
+  const list = Array.isArray(navigator.languages) && navigator.languages.length
+    ? navigator.languages
+    : [navigator.language || "en"];
+  for (const raw of list) {
+    const detected = normalize(raw);
+    if (detected) return detected;
+  }
+  return "en";
+}
+
 let saveNotice;
-function showSaveNotice(available) {
+async function showSaveNotice(available) {
   if (window !== window.top) return;
   if (!available) { saveNotice?.remove(); saveNotice = null; return; }
   if (saveNotice?.isConnected || !document.documentElement) return;
-  const isZh = String(navigator.language || "").toLowerCase().startsWith("zh");
+  let storedLang = "auto";
+  try {
+    const stored = await chrome.storage?.local?.get?.(["uiLang"]);
+    if (stored?.uiLang) storedLang = stored.uiLang;
+  } catch { /* ignore */ }
+  if (saveNotice?.isConnected || !document.documentElement) return;
+  const copy = NOTICE_STRINGS[resolveNoticeLang(storedLang)] || NOTICE_STRINGS.en;
   saveNotice = document.createElement("div");
   saveNotice.setAttribute("data-openkeylet-save-notice", "");
   saveNotice.style.cssText = "all:initial!important;position:fixed!important;right:16px!important;bottom:16px!important;z-index:2147483647!important;";
@@ -157,20 +226,18 @@ function showSaveNotice(available) {
   head.className = "head";
   head.innerHTML = '<svg class="mark" viewBox="0 0 400 400" aria-hidden="true"><path class="ring" fill-rule="evenodd" d="M24 8H276A16 16 0 0 1 292 24V276A16 16 0 0 1 276 292H24A16 16 0 0 1 8 276V24A16 16 0 0 1 24 8ZM124 108H176A16 16 0 0 1 192 124V176A16 16 0 0 1 176 192H124A16 16 0 0 1 108 176V124A16 16 0 0 1 124 108Z"/><path class="bit" d="M324 208H376A16 16 0 0 1 392 224V376A16 16 0 0 1 376 392H224A16 16 0 0 1 208 376V324A16 16 0 0 1 224 308H292A16 16 0 0 0 308 292V224A16 16 0 0 1 324 208Z"/></svg>';
   const title = document.createElement("strong");
-  title.textContent = isZh ? "OpenKeylet · 保存登录信息" : "OpenKeylet · Save login";
+  title.textContent = copy.title;
   head.append(title);
   const description = document.createElement("p");
-  description.textContent = isZh
-    ? "检测到已提交的账号信息。预览确认后才会写入本地密码库。"
-    : "Submitted login detected. Review and confirm before saving locally.";
+  description.textContent = copy.desc;
   const actions = document.createElement("div");
   actions.className = "actions";
   const review = document.createElement("button");
   review.type = "button";
-  review.textContent = isZh ? "预览并保存" : "Review & save";
+  review.textContent = copy.review;
   const dismiss = document.createElement("button");
   dismiss.type = "button";
-  dismiss.textContent = isZh ? "忽略" : "Dismiss";
+  dismiss.textContent = copy.dismiss;
   review.addEventListener("click", event => {
     if (event.isTrusted) chrome.runtime.sendMessage({ type: "openkeylet-capture-review" }).then(reply => {
       if (reply?.result?.available === false) showSaveNotice(false);

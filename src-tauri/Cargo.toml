@@ -18,6 +18,9 @@ gui = [
     "dep:glib",
     "desktop-fill",
     "dep:jsonc-parser",
+    "dep:objc2",
+    "dep:objc2-app-kit",
+    "dep:objc2-foundation",
     "dep:tauri",
     "dep:tauri-build",
     "dep:tauri-plugin-clipboard-manager",
@@ -89,6 +92,9 @@ enigo = { version = "0.6.1", optional = true }
 windows = { version = "0.62", optional = true, features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_System_Com", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6", optional = true }
+objc2-app-kit = { version = "0.3", optional = true, features = ["NSButton", "NSControl", "NSResponder", "NSStatusBarButton", "NSStatusItem", "NSView", "NSWindow"] }
+objc2-foundation = { version = "0.3", optional = true }
 security-framework = "3.7"
 
 [target.'cfg(target_os = "linux")'.dependencies]

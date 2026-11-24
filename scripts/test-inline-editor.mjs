@@ -85,6 +85,18 @@ try {
         state.connections[index] = saved; return saved;
       }
       if (command === 'delete_connection') { state.connections = state.connections.filter(i => i.id !== args.id); return; }
+      if (command === 'delete_activity') {
+        const before = state.activities.length;
+        state.activities = state.activities.filter(a => a.id !== args.id);
+        return state.activities.length !== before;
+      }
+      if (command === 'delete_activities') {
+        const ids = new Set(args.ids || []);
+        const before = state.activities.length;
+        state.activities = state.activities.filter(a => !ids.has(a.id));
+        return before - state.activities.length;
+      }
+      if (command === 'clear_activities') { state.activities = []; return; }
       if (command === 'reorder_connections') {
         fixture.orderRequests += 1;
         if (fixture.failOrder) throw Error('Synthetic reorder failure');
@@ -99,7 +111,8 @@ try {
   await page.goto(`http://127.0.0.1:${server.address().port}`);
   await page.locator('.connection-card').first().waitFor();
   const row = id => page.locator(`.connection-card[data-item-id="${id}"]`);
-  const toggle = id => row(id).locator('.item-disclosure');
+  const editCard = id => row(id).locator('.connection-name');
+  const copyBtn = id => row(id).locator('[data-action="copy-item"]');
   const editor = page.locator('#connection-modal');
   const search = page.locator('#title-search-input');
   const fillSearch = async value => {
@@ -191,7 +204,7 @@ try {
       geometryMeasurements.push(await auditControlGeometry(page));
     }
     await display.send('Emulation.setDeviceMetricsOverride', { width: 460, height: 690, deviceScaleFactor: 1.5, mobile: false });
-    await hover(toggle('alpha'));
+    await hover(copyBtn('alpha'));
     await hover(row('alpha').locator('.connection-name'));
     await hover(row('alpha').locator('.connection-type'));
     const selectedInk = await page.locator('.nav-item.active').evaluate(el => getComputedStyle(el).color);
@@ -266,14 +279,15 @@ try {
   assert.equal(await page.locator('html').getAttribute('data-theme'), 'dark');
   await dragSwitch('.nav', 0, 3, { count: 4 });
   assert.equal(await page.locator('.page.active').getAttribute('id'), 'page-settings');
-  await dragSwitch('#sound-toggle', 0, 1);
   assert.equal(await page.locator('#sound-toggle').getAttribute('aria-checked'), 'true');
-  assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem('openkeylet.appearance.v1'))), { theme: 'dark', sound: true });
+  await dragSwitch('#sound-toggle', 1, 0);
+  assert.equal(await page.locator('#sound-toggle').getAttribute('aria-checked'), 'false');
+  assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem('openkeylet.appearance.v1'))), { theme: 'dark', sound: false });
   await page.reload(); await page.locator('.connection-card').first().waitFor();
   assert.equal(await page.locator('html').getAttribute('data-theme'), 'dark');
   await dragSwitch('.nav', 0, 3, { count: 4 });
-  assert.equal(await page.locator('#sound-toggle').getAttribute('aria-checked'), 'true');
-  await dragSwitch('#sound-toggle', 1, 0);
+  assert.equal(await page.locator('#sound-toggle').getAttribute('aria-checked'), 'false');
+  await dragSwitch('#sound-toggle', 0, 1);
   await dragSwitch('#theme-toggle', 0, 1);
   await dragSwitch('#language-switch', 1, 2, { count: 7 });
   assert.equal(await page.locator('html').getAttribute('lang'), 'zh-CN');
@@ -333,7 +347,7 @@ try {
   await page.evaluate(async () => { fixture.drafts = []; await refreshDrafts(); document.querySelectorAll('.toast').forEach(el => el.remove()); });
   await dragSwitch('.nav', 1, 0, { count: 4 });
   assert.equal(await page.locator('.connection-address, .connection-description, .module-strip').count(), 0);
-  assert.equal(await page.locator('.card-actions [data-action="edit"]').count(), 3);
+  assert.equal(await page.locator('.card-actions [data-action="copy-item"]').count(), 3);
   assert.deepEqual(await page.locator('.connection-type').evaluateAll(elements => elements.map(el => el.dataset.itemType)), ['api', 'ssh', 'login']);
   assert.equal(await page.locator('.connection-type svg').count(), 3);
   assert.deepEqual((await page.locator('.connection-type').allTextContents()).map(text => text.toUpperCase()), ['API', 'SSH', 'PASSWORD']);
@@ -344,8 +358,12 @@ try {
   await page.waitForFunction(() => document.querySelector('.connection-card[data-item-id="alpha"] .item-toggle').getAttribute('aria-pressed') === 'true');
   await row('alpha').locator('[data-action="test"]').click();
   await row('alpha').locator('[data-action="copy-name"]').click();
+  await copyBtn('alpha').click();
+  await page.waitForFunction(() => fixture.copied.length === 2);
   assert.deepEqual(await page.evaluate(() => fixture.tested), ['alpha']);
-  assert.deepEqual(await page.evaluate(() => fixture.copied), ['use Synthetic service with a very long name in OpenKeylet MCP']);
+  assert.equal(await page.evaluate(() => fixture.copied[0]), 'use Synthetic service with a very long name in OpenKeylet MCP');
+  assert.match(await page.evaluate(() => fixture.copied[1]), /Synthetic service with a very long name/);
+  assert.match(await page.evaluate(() => fixture.copied[1]), /synthetic-password/);
   await row('alpha').locator('[data-action="history"]').click();
   await page.locator('#vault-management-modal').waitFor({ state: 'visible' });
   assert.deepEqual(await page.evaluate(() => fixture.histories), ['alpha']);
@@ -383,6 +401,14 @@ try {
   assert.equal(await page.locator('.activity-item').count(), 2);
   geometryMeasurements.push(await auditControlGeometry(page));
   await page.screenshot({ path: path.join(artifacts, 'activity-filter-strip.png') });
+  // Individual log deletion and Clear Log flow
+  assert.equal(await page.locator('#clear-activity-button').isDisabled(), false);
+  await page.locator('.activity-item .activity-delete-btn').first().click();
+  assert.equal(await page.locator('.activity-item').count(), 1);
+  await page.locator('#clear-activity-button').click();
+  await page.locator('#confirmation-accept').click();
+  assert.equal(await page.locator('.activity-item').count(), 0);
+  assert.equal(await page.locator('#clear-activity-button').isDisabled(), true);
   await page.locator('[data-page="settings"]').click();
   assert.equal(await search.getAttribute('data-page-search'), 'settings');
   assert.equal(await page.locator('#page-settings .page-search').count(), 0);
@@ -401,7 +427,7 @@ try {
   await page.locator('[data-settings-filter="all"]').click();
   await page.screenshot({ path: path.join(artifacts, 'settings-filter-strip.png') });
   await page.locator('[data-page="connections"]').click();
-  const order = () => page.locator('.connection-card').evaluateAll(rows => rows.map(row => row.dataset.itemId));
+  const order = () => page.locator('#connections-list .connection-card').evaluateAll(rows => rows.map(row => row.dataset.itemId));
   const dragItem = async (from, target, after, release = true) => {
     const handle = row(from).locator('.connection-name');
     await handle.scrollIntoViewIfNeeded();
@@ -422,8 +448,8 @@ try {
     window.requestAnimationFrame = callback => window.originalItemFrame.call(window, time => { window.itemFrameCount++; callback(time); });
   });
   await dragItem('alpha', 'gamma', true, false);
-  assert.equal(await page.locator('.item-drag-preview').count(), 1);
-  await page.locator('.item-drop-after').waitFor();
+  assert.equal(await page.locator('.item-drag-preview .is-lifted-card').count(), 1);
+  assert.deepEqual(await order(), ['beta', 'gamma', 'alpha'], 'In-place FLIP drag shifts sibling cards live');
   await page.waitForTimeout(100);
   const idleFrames = await page.evaluate(() => window.itemFrameCount);
   await page.waitForTimeout(150);
@@ -439,6 +465,7 @@ try {
   await dragItem('alpha', 'gamma', true, false); await page.keyboard.press('Escape'); await page.mouse.up();
   assert.equal(await page.evaluate(() => fixture.orders.length), 2);
   assert.equal(await page.locator('.item-drag-preview').count(), 0);
+  assert.deepEqual(await order(), ['alpha', 'beta', 'gamma'], 'Escape restores original card order');
   await page.evaluate(() => fixture.failOrder = true);
   await dragItem('alpha', 'gamma', true);
   await page.waitForFunction(() => fixture.orderRequests === 3 && !document.querySelector('#connections-list').hasAttribute('aria-busy'));
@@ -490,7 +517,8 @@ try {
   await page.mouse.move(scrollHandle.x + 20, scrollList.y + scrollList.height - 5, { steps: 8 });
   await page.waitForFunction(() => document.querySelector('#connections-list').scrollTop > 100);
   await page.mouse.move(scrollList.x - 5, scrollList.y + 50);
-  assert.equal(await page.locator('.item-drop-before, .item-drop-after').count(), 0);
+  await page.waitForTimeout(40);
+  assert.ok(await page.locator('.item-drag-preview').evaluate(el => Number(getComputedStyle(el).opacity) <= 0.5), 'Dragging outside the list dims the lifted card preview');
   await page.mouse.up();
   assert.equal(await page.evaluate(() => fixture.orderRequests), beforeScrollDrag, 'Dropping outside the list cancels the reorder');
   assert.equal(await page.locator('.item-drag-preview').count(), 0);
@@ -517,13 +545,13 @@ try {
   await page.locator('[data-language="en"]').click();
   await page.locator('[data-page="connections"]').click();
   const cardBounds = await row('alpha').boundingBox();
-  await toggle('alpha').click();
+  await row('alpha').locator('.connection-type').click();
   await page.waitForFunction(() => document.activeElement.id === 'connection-name');
   assert.equal(await editor.getAttribute('role'), 'dialog');
   assert.equal(await editor.getAttribute('aria-modal'), 'true');
   assert.equal(await editor.evaluate(el => Boolean(el.closest('.connection-card'))), false, 'The editor is an independent dialog');
   assert.deepEqual(await row('alpha').boundingBox(), cardBounds, 'Opening the editor does not reflow the cards');
-  assert.equal(await toggle('alpha').getAttribute('aria-haspopup'), 'dialog');
+  assert.equal(await editCard('alpha').getAttribute('aria-haspopup'), 'dialog');
   const moduleSwitch = '#connection-modal [data-kind="password"] .module-agent-toggle';
   await dragSwitch(moduleSwitch, 0, 1);
   assert.equal(await editor.locator('[data-kind="password"] [data-module-visibility]').innerText(), 'AGENT VISIBLE');
@@ -549,8 +577,8 @@ try {
   await page.locator('#connection-modal .modal-header [data-close-modal]').click();
   await editor.waitFor({ state: 'hidden' });
   assert.equal(await page.evaluate(() => fixture.drafts[0].input.name), 'Edited synthetic service');
-  assert.equal(await page.evaluate(() => document.activeElement.dataset.id), 'alpha', 'Closing restores focus even after a list refresh');
-  await toggle('alpha').click();
+  assert.equal(await page.evaluate(() => document.activeElement.dataset.itemReorder), 'alpha', 'Closing restores focus even after a list refresh');
+  await editCard('alpha').click();
   assert.equal(await page.locator('#connection-name').inputValue(), 'Edited synthetic service');
   await page.locator('#connection-folder').fill('Unsaved folder');
   const itemSwitch = '.switch:has(#connection-enabled)';
@@ -580,16 +608,16 @@ try {
   assert.equal(await page.evaluate(() => fixture.saved[0].enabled), false);
   assert.equal(await page.evaluate(() => fixture.saved[0].favorite), true, 'Saving preserves existing favorite metadata');
   await page.emulateMedia({ reducedMotion: 'reduce' });
-  await toggle('alpha').click(); await page.waitForFunction(() => document.activeElement.id === 'connection-name');
+  await editCard('alpha').click(); await page.waitForFunction(() => document.activeElement.id === 'connection-name');
   assert.equal(await editor.locator('.modal-card').evaluate(el => el.getAnimations().length), 0);
   await page.locator('#connection-name').fill('Draft across dialog close');
   await page.locator('#connection-name').press('Escape'); await editor.waitFor({ state: 'hidden' });
   await page.emulateMedia({ reducedMotion: 'no-preference' });
-  await toggle('alpha').click();
+  await editCard('alpha').click();
   assert.equal(await page.locator('#connection-name').inputValue(), 'Draft across dialog close');
   await editor.click({ position: { x: 2, y: 100 } }); await editor.waitFor({ state: 'hidden' });
   assert.equal(await page.evaluate(() => fixture.drafts.find(d => d.input.id === 'alpha').input.name), 'Draft across dialog close');
-  await toggle('alpha').click();
+  await editCard('alpha').click();
   await page.evaluate(async () => { fixture.state.connections = fixture.state.connections.filter(item => item.id !== 'alpha'); await refresh(); });
   await row('alpha').waitFor({ state: 'detached' });
   assert.equal(await editor.count(), 1, 'Removing an edited item preserves the dialog DOM');

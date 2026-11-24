@@ -1,5 +1,6 @@
 /* Modern minimalist 4-column portrait item cards (3 complete rows fit in viewport). */
 .connections-grid {
+  position: relative;
   --item-gap: 8px;
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -17,8 +18,8 @@
 .connection-card {
   position: relative;
   display: grid;
-  grid-template-areas: "name toggle" "type type" "actions actions";
-  grid-template-columns: minmax(0, 1fr) 20px;
+  grid-template-areas: "toggle name" "type type" "actions actions";
+  grid-template-columns: 18px minmax(0, 1fr);
   grid-template-rows: 22px minmax(36px, 1fr) 54px;
   align-items: stretch;
   gap: 4px;
@@ -30,6 +31,7 @@
   border-radius: var(--radius-lg);
   background: var(--surface-2);
   box-shadow: var(--shadow-card);
+  cursor: pointer;
   transition: border-color 150ms ease, box-shadow 150ms ease, opacity 150ms ease;
 }
 .connection-card::after { content: none; }
@@ -37,28 +39,19 @@
   border-color: var(--border-strong);
 }
 
-.connection-card.is-item-dragging { opacity: 0.3; }
-.item-pointer-dragging, .item-pointer-dragging * { cursor: grabbing !important; user-select: none !important; }
-
-.connections-grid.is-reordering > .connection-card:is(.item-drop-before, .item-drop-after)::before {
-  position: absolute;
-  z-index: 3;
-  top: 6px;
-  bottom: 6px;
-  left: 0;
-  width: 2.5px;
-  height: auto;
-  right: auto;
-  border: 0;
-  border-radius: 2px;
-  background: var(--accent);
-  box-shadow: 0 0 6px var(--accent-ring);
-  content: "";
-  pointer-events: none;
+.connection-card.is-item-dragging {
+  opacity: 0.14;
+  border-style: dashed;
+  border-color: var(--border-strong);
+  background: var(--surface-1);
+  box-shadow: none;
 }
-.connections-grid.is-reordering > .connection-card.item-drop-after::before {
-  left: auto;
-  right: 0;
+.connection-card.is-item-dragging > * {
+  visibility: hidden;
+}
+.item-pointer-dragging, .item-pointer-dragging * { cursor: grabbing !important; user-select: none !important; }
+.connections-grid.is-reordering > .connection-card:not(.is-item-dragging) {
+  will-change: transform;
 }
 
 .connection-name {
@@ -81,8 +74,8 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  cursor: grab;
-  touch-action: none;
+  cursor: pointer;
+  touch-action: manipulation;
   user-select: none;
 }
 .connection-name > .lettering-ink {
@@ -92,14 +85,13 @@
   text-overflow: ellipsis;
 }
 .connection-name:hover { color: var(--state-active-ink); }
-.connection-name:active { cursor: grabbing; }
 .connections-grid[aria-busy="true"] .connection-name { cursor: progress; }
 
 .connection-card > .item-toggle {
   grid-area: toggle;
   display: grid;
   place-items: center;
-  width: 20px;
+  width: 18px;
   height: 22px;
   min-height: 22px;
   padding: 0;
@@ -117,7 +109,16 @@
   border-radius: 50%;
   background: var(--success);
   box-shadow: 0 0 0 2.5px var(--success-soft);
-  transition: background-color 140ms ease, box-shadow 140ms ease;
+  transition: background-color 140ms ease, box-shadow 140ms ease, opacity 140ms ease;
+}
+.connection-card:not(.disabled) > .item-toggle .status-dot.warn {
+  background: var(--warn);
+  box-shadow: 0 0 0 2.5px var(--warn-soft);
+}
+.connection-card:not(.disabled) > .item-toggle .status-dot.testing {
+  background: var(--warn);
+  box-shadow: 0 0 0 2.5px var(--warn-soft);
+  animation: check-all-pulse 1s ease-in-out infinite;
 }
 .connection-card.disabled > .item-toggle .status-dot,
 .connection-card > .item-toggle .status-dot.off {
@@ -177,55 +178,30 @@
   width: 100%;
   height: 54px;
   margin: 0;
-  padding: 4px 0 0;
+  padding: 2px 0 0;
   border: 0;
-  border-top: 1px solid var(--border-subtle);
   border-radius: 0;
   background: transparent;
   box-shadow: none;
 }
-
-.card-actions .item-disclosure-well,
-.card-actions .item-disclosure {
-  width: 100%;
-  height: 100%;
-}
-.card-actions .item-disclosure-well { grid-area: auto; }
-.card-actions .item-disclosure {
-  display: grid;
-  place-items: center;
-  padding: 0;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-xs);
-  color: var(--muted);
-  background: var(--surface-3);
-  box-shadow: none;
-}
-.card-actions .item-disclosure:hover {
-  color: var(--state-active-ink);
-  background: var(--accent-soft);
-  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
-}
-.card-actions .item-disclosure svg {
-  width: 12px;
-  height: 12px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.9;
-  transition: transform 200ms cubic-bezier(.2, .8, .2, 1);
+.card-actions:has(> :nth-child(5)) {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .card-actions .small-button,
 .card-actions .small-button[data-action="history"] {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex: 1 1 0;
   width: auto;
   min-width: 0;
   height: 100%;
   min-height: 0;
-  padding: 0 2px;
+  padding: 0;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-xs);
-  color: var(--ink);
+  color: var(--muted);
   background: var(--surface-3);
   box-shadow: none;
   font-family: var(--mono);
@@ -233,6 +209,17 @@
   font-weight: 600;
   letter-spacing: 0.02em;
   line-height: 1;
+  transition: color 130ms ease, background-color 130ms ease, border-color 130ms ease;
+}
+.card-actions .small-button svg {
+  width: 13px;
+  height: 13px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.85;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 .card-actions .small-button:hover:not(:disabled) {
   color: var(--state-active-ink);
@@ -249,7 +236,122 @@
   background: var(--danger-solid);
   border-color: transparent;
 }
-.card-actions > :last-child:nth-child(odd) { grid-column: 1 / -1; }
+.card-actions .small-button.is-copied,
+.card-actions .item-disclosure.is-copied {
+  color: var(--success);
+  background: var(--success-soft);
+  border-color: color-mix(in srgb, var(--success) 38%, transparent);
+}
+.card-actions .small-button[data-action="test"][data-check-state="testing"],
+.card-actions .small-button[data-action="test"][data-check-state="testing"]:disabled {
+  color: var(--warn);
+  background: var(--warn-soft);
+  border-color: color-mix(in srgb, var(--warn) 38%, transparent);
+  opacity: 1;
+  cursor: wait;
+}
+.card-actions .small-button[data-action="test"][data-check-state="ok"] {
+  color: var(--success);
+  background: var(--success-soft);
+  border-color: color-mix(in srgb, var(--success) 38%, transparent);
+}
+.card-actions .small-button[data-action="test"][data-check-state="error"] {
+  color: var(--warn);
+  background: var(--warn-soft);
+  border-color: color-mix(in srgb, var(--warn) 42%, transparent);
+}
+.check-spinner {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 1.6px solid color-mix(in srgb, currentColor 28%, transparent);
+  border-top-color: currentColor;
+  animation: check-spin 680ms linear infinite;
+  flex: none;
+}
+@keyframes check-spin {
+  to { transform: rotate(360deg); }
+}
+.card-actions:not(:has(> :nth-child(4))) > :last-child:nth-child(3) { grid-column: 1 / -1; }
+
+/* One-click Check All button in connections header */
+.check-all-button {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: var(--control-height, 32px);
+  padding: 0 9px;
+  border: 0;
+  border-radius: var(--radius);
+  background: var(--surface-1);
+  box-shadow: var(--shadow-track);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 140ms ease, background-color 140ms ease, box-shadow 140ms ease, opacity 140ms ease;
+}
+.check-all-button:hover:not(:disabled) {
+  color: var(--ink);
+  background: var(--surface-thumb);
+  box-shadow: var(--shadow-track), var(--shadow-thumb);
+}
+.check-all-button:active:not(:disabled) {
+  transform: scale(0.98);
+}
+.check-all-button:disabled {
+  color: var(--state-disabled-ink);
+  opacity: 0.52;
+  cursor: not-allowed;
+}
+.check-all-button svg {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.85;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.check-all-button .check-all-spinner {
+  display: none;
+}
+.check-all-button[data-state="running"],
+.check-all-button[data-state="running"]:disabled {
+  color: var(--warn);
+  background: var(--warn-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warn) 38%, transparent);
+  opacity: 1;
+  cursor: wait;
+}
+.check-all-button[data-state="running"] .check-all-icon {
+  display: none;
+}
+.check-all-button[data-state="running"] .check-all-spinner {
+  display: inline-block;
+}
+.check-all-button[data-state="ok"] {
+  color: var(--success);
+  background: var(--success-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--success) 38%, transparent);
+}
+.check-all-button[data-state="error"] {
+  color: var(--warn);
+  background: var(--warn-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warn) 42%, transparent);
+}
+@keyframes check-all-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.45; transform: scale(0.85); }
+}
 
 /* View mode toggle (List / Grid) in connections header */
 .view-mode-toggle {
@@ -298,16 +400,16 @@
 .connections-grid[data-view="list"] > .connection-card {
   display: grid;
   grid-template-areas:
-    "type name toggle actions"
-    "type meta toggle actions";
-  grid-template-columns: 36px minmax(0, 1fr) 18px auto;
+    "toggle type name actions"
+    "toggle type meta actions";
+  grid-template-columns: 16px 36px minmax(0, 1fr) auto;
   grid-template-rows: 20px 18px;
   align-items: center;
-  column-gap: 9px;
+  column-gap: 8px;
   row-gap: 1px;
   height: auto;
   min-height: 56px;
-  padding: 8px 9px;
+  padding: 8px 9px 8px 7px;
   border-radius: var(--radius-lg);
 }
 
@@ -357,7 +459,7 @@
 .connections-grid[data-view="list"] .connection-badge {
   flex: none;
   padding: 0 4px;
-  border-radius: 3px;
+  border-radius: var(--radius-xs);
   border: 1px solid var(--border-subtle);
   background: var(--surface-3);
   color: var(--muted);
@@ -367,10 +469,14 @@
   line-height: 14px;
   text-transform: uppercase;
 }
+.connections-grid[data-view="list"] .connection-badge.is-note {
+  border-color: var(--border-default);
+  color: var(--ink);
+}
 
 .connections-grid[data-view="list"] > .connection-card > .item-toggle {
   grid-area: toggle;
-  width: 18px;
+  width: 16px;
   height: 28px;
   min-height: 28px;
 }
@@ -380,49 +486,61 @@
   display: flex;
   flex-direction: row;
   align-items: center;
+  justify-content: flex-end;
   gap: 4px;
   width: auto;
   height: 28px;
   padding: 0;
   border-top: 0;
 }
-.connections-grid[data-view="list"] .card-actions .item-disclosure-well {
-  width: 26px;
-  height: 26px;
-  flex: none;
-}
-.connections-grid[data-view="list"] .card-actions .item-disclosure {
-  width: 26px;
-  height: 26px;
-}
 .connections-grid[data-view="list"] .card-actions .small-button,
-.connections-grid[data-view="list"] .card-actions .small-button[data-action="history"] {
+.connections-grid[data-view="list"] .card-actions .small-button[data-action="history"],
+.connections-grid[data-view="list"] .card-actions .small-button[data-action="test"],
+.connections-grid[data-view="list"] .card-actions .item-disclosure {
   flex: none;
+  width: 26px;
+  min-width: 26px;
   height: 26px;
-  padding: 0 6px;
-  font-size: 9px;
+  padding: 0;
 }
-.connections-grid[data-view="list"] .card-actions .small-button[data-action="test"]:disabled {
+.connections-grid[data-view="list"] .card-actions .small-button[data-action="test"]:disabled:not([data-check-state="testing"]) {
   display: none;
 }
-.connections-grid[data-view="list"] .card-actions > :last-child:nth-child(odd) {
+.connections-grid[data-view="list"] .card-actions > :last-child:nth-child(3) {
   grid-column: auto;
 }
 
-/* Horizontal drop indicator for single-row list drag reorder */
-.connections-grid[data-view="list"].is-reordering > .connection-card:is(.item-drop-before, .item-drop-after)::before {
+/* In-place lifted card drag shadow & subtle lift scale */
+.item-drag-preview.connections-grid {
+  position: fixed;
   top: 0;
-  bottom: auto;
-  left: 6px;
-  right: 6px;
-  width: auto;
-  height: 2.5px;
+  left: 0;
+  z-index: 2000;
+  pointer-events: none;
+  will-change: transform;
+  display: block;
+  padding: 0;
+  gap: 0;
+  overflow: visible;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
 }
-.connections-grid[data-view="list"].is-reordering > .connection-card.item-drop-after::before {
-  top: auto;
-  bottom: 0;
-  left: 6px;
-  right: 6px;
+.item-drag-preview > .connection-card.is-lifted-card {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  border-color: var(--accent);
+  box-shadow: var(--shadow-float), 0 0 0 1px var(--accent-ring);
+  transform: scale(1.018);
+  transition: transform 130ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 130ms ease, opacity 120ms ease;
+}
+.item-drag-preview.is-settling {
+  transition: transform 140ms cubic-bezier(0.22, 1, 0.36, 1), opacity 140ms ease;
+}
+.item-drag-preview.is-settling > .connection-card.is-lifted-card {
+  transform: scale(1);
+  box-shadow: var(--shadow-card);
 }
 
 /* Subtle modal entrance animation */

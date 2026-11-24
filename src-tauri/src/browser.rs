@@ -627,6 +627,88 @@ impl ExtensionPool {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeAppearance {
+    #[serde(default = "default_bridge_theme")]
+    pub theme: String,
+    #[serde(default = "default_bridge_language")]
+    pub language: String,
+}
+
+fn default_bridge_theme() -> String {
+    "dark".to_owned()
+}
+
+fn default_bridge_language() -> String {
+    "auto".to_owned()
+}
+
+impl Default for BridgeAppearance {
+    fn default() -> Self {
+        Self {
+            theme: default_bridge_theme(),
+            language: default_bridge_language(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AppearancePatch {
+    #[serde(default)]
+    theme: Option<String>,
+    #[serde(default)]
+    language: Option<String>,
+}
+
+fn normalize_bridge_theme(raw: &str) -> String {
+    if raw.trim().eq_ignore_ascii_case("light") {
+        "light".to_owned()
+    } else {
+        "dark".to_owned()
+    }
+}
+
+fn normalize_bridge_language(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return "auto".to_owned();
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if lower == "auto" || lower == "system" {
+        return "auto".to_owned();
+    }
+    if matches!(
+        lower.as_str(),
+        "zh-tw" | "zh_tw" | "zh-hk" | "zh_hk" | "zh-hant" | "zh_hant"
+    ) || lower.starts_with("zh-tw")
+        || lower.starts_with("zh_tw")
+        || lower.starts_with("zh-hk")
+        || lower.starts_with("zh_hk")
+        || lower.starts_with("zh-hant")
+        || lower.starts_with("zh_hant")
+    {
+        return "zh-TW".to_owned();
+    }
+    if lower == "zh" || lower.starts_with("zh-") || lower.starts_with("zh_") {
+        return "zh".to_owned();
+    }
+    if lower == "ja" || lower.starts_with("ja-") || lower.starts_with("ja_") {
+        return "ja".to_owned();
+    }
+    if lower == "ko" || lower.starts_with("ko-") || lower.starts_with("ko_") {
+        return "ko".to_owned();
+    }
+    if lower == "es" || lower.starts_with("es-") || lower.starts_with("es_") {
+        return "es".to_owned();
+    }
+    if lower == "en" || lower.starts_with("en-") || lower.starts_with("en_") {
+        return "en".to_owned();
+    }
+    "auto".to_owned()
+}
+
 #[derive(Clone)]
 struct BridgeServerState {
     pin_throttle: Arc<Mutex<std::time::Instant>>,
@@ -638,6 +720,7 @@ struct BridgeServerState {
     pairing: Arc<Mutex<Option<PairingWindow>>>,
     extensions: Arc<Mutex<ExtensionPool>>,
     pending: Arc<Mutex<HashMap<Uuid, oneshot::Sender<BrowserFillResult>>>>,
+    appearance: Arc<Mutex<BridgeAppearance>>,
     cancellation: CancellationToken,
     on_change: Option<Arc<dyn Fn() + Send + Sync>>,
 }
@@ -674,6 +757,7 @@ impl Default for Runtime {
 pub struct BrowserBridge {
     vault: Vault,
     runtime: Arc<Mutex<Runtime>>,
+    appearance: Arc<Mutex<BridgeAppearance>>,
     client: reqwest::Client,
     network_override: Option<BridgeNetworkConfig>,
     on_change: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -697,9 +781,17 @@ impl BrowserBridge {
         network_override: Option<BridgeNetworkConfig>,
         on_change: Option<Arc<dyn Fn() + Send + Sync>>,
     ) -> Self {
+        let initial_language = vault
+            .settings()
+            .map(|s| normalize_bridge_language(&s.language))
+            .unwrap_or_else(|_| default_bridge_language());
         Self {
             vault,
             runtime: Arc::new(Mutex::new(Runtime::default())),
+            appearance: Arc::new(Mutex::new(BridgeAppearance {
+                theme: default_bridge_theme(),
+                language: initial_language,
+            })),
             client: reqwest::Client::builder()
                 .timeout(HTTP_REQUEST_TIMEOUT)
                 .connect_timeout(Duration::from_secs(2))
@@ -902,6 +994,46 @@ impl BrowserBridge {
             connected_count: usize::from(ready),
             ..InternalBridgeStatus::default()
         }
+    }
+
+    pub async fn sync_appearance(&self, theme: Option<String>, language: Option<String>) {
+        let snapshot = {
+            let mut guard = self.appearance.lock().await;
+            if let Some(next_theme) = theme {
+                guard.theme = normalize_bridge_theme(&next_theme);
+            }
+            if let Some(next_lang) = language {
+                guard.language = normalize_bridge_language(&next_lang);
+            }
+            guard.clone()
+        };
+        let Ok(settings) = self.vault.settings() else {
+            return;
+        };
+        if !settings.browser_enabled {
+            return;
+        }
+        let active = {
+            let runtime = self.runtime.lock().await;
+            matches!(runtime.status.as_str(), "listening" | "delegated")
+        };
+        if !active {
+            return;
+        }
+        let Ok(config) = self.network_config() else {
+            return;
+        };
+        let Ok(token) = self.internal_token() else {
+            return;
+        };
+        let _ = self
+            .client
+            .post(self.bridge_http_url(&config, settings.browser_port, "/internal/appearance"))
+            .bearer_auth(token)
+            .timeout(HEALTH_REQUEST_TIMEOUT)
+            .json(&snapshot)
+            .send()
+            .await;
     }
 
     pub async fn reload_extensions(&self) -> Result<usize> {
@@ -1125,6 +1257,7 @@ impl BrowserBridge {
                     pairing: Arc::new(Mutex::new(None)),
                     extensions: Arc::new(Mutex::new(ExtensionPool::default())),
                     pending: Arc::new(Mutex::new(HashMap::new())),
+                    appearance: Arc::clone(&self.appearance),
                     cancellation: cancellation.clone(),
                     on_change: self.on_change.clone(),
                 };
@@ -1138,6 +1271,7 @@ impl BrowserBridge {
                     .route("/internal/quick-pair", post(create_quick_pair))
                     .route("/internal/jobs", post(submit_job))
                     .route("/internal/reload-extensions", post(reload_extensions_route))
+                    .route("/internal/appearance", post(sync_appearance_route))
                     .route("/internal/reset", post(reset_pairing))
                     .layer(
                         CorsLayer::new()
@@ -1350,6 +1484,40 @@ async fn reload_extensions_route(
         }
     }
     Ok(Json(serde_json::json!({ "reloaded": reloaded })))
+}
+
+async fn sync_appearance_route(
+    State(state): State<BridgeServerState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(patch): Json<AppearancePatch>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    require_internal_peer(&state.config, peer.ip(), "/internal/appearance")?;
+    require_bearer(&headers, &state.internal_token)?;
+    let snapshot = {
+        let mut guard = state.appearance.lock().await;
+        if let Some(theme) = patch.theme {
+            guard.theme = normalize_bridge_theme(&theme);
+        }
+        if let Some(language) = patch.language {
+            guard.language = normalize_bridge_language(&language);
+        }
+        guard.clone()
+    };
+    let senders = state.extensions.lock().await.control_senders();
+    let payload = serde_json::json!({
+        "type": "appearance",
+        "theme": snapshot.theme,
+        "language": snapshot.language,
+    })
+    .to_string();
+    let mut notified = 0usize;
+    for tx in senders {
+        if tx.try_send(payload.clone()).is_ok() {
+            notified += 1;
+        }
+    }
+    Ok(Json(serde_json::json!({ "notified": notified })))
 }
 
 async fn create_quick_pair(
@@ -1600,11 +1768,14 @@ async fn extension_socket(socket: WebSocket, state: BridgeServerState, peer_ip: 
         .map(str::trim)
         .filter(|v| !v.is_empty() && v.len() <= 32)
         .map(str::to_owned);
+    let appearance = state.appearance.lock().await.clone();
     let _ = sender
         .send(Message::Text(
             serde_json::json!({
                 "type": "ready",
                 "appVersion": env!("CARGO_PKG_VERSION"),
+                "theme": appearance.theme,
+                "language": appearance.language,
             })
             .to_string()
             .into(),
@@ -1909,6 +2080,7 @@ mod tests {
             pairing: Arc::new(Mutex::new(None)),
             extensions: Arc::new(Mutex::new(ExtensionPool::default())),
             pending: Arc::new(Mutex::new(HashMap::new())),
+            appearance: Arc::new(Mutex::new(BridgeAppearance::default())),
             cancellation: CancellationToken::new(),
             on_change: None,
         }
@@ -2390,6 +2562,22 @@ mod tests {
         let reload_json: serde_json::Value = serde_json::from_str(&reload_text).unwrap();
         assert_eq!(reload_json["type"], "reload");
         assert_eq!(reload_json["appVersion"], env!("CARGO_PKG_VERSION"));
+
+        // Verify live desktop appearance (theme & language) sync broadcasts cleanly.
+        bridge
+            .sync_appearance(Some("light".to_owned()), Some("zh".to_owned()))
+            .await;
+        let appearance_text = timeout(Duration::from_secs(2), ws.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()
+            .into_text()
+            .unwrap();
+        let appearance_json: serde_json::Value = serde_json::from_str(&appearance_text).unwrap();
+        assert_eq!(appearance_json["type"], "appearance");
+        assert_eq!(appearance_json["theme"], "light");
+        assert_eq!(appearance_json["language"], "zh");
 
         bridge.stop().await;
     }
