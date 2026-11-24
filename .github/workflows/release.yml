@@ -24,6 +24,18 @@ jobs:
           cache: npm
       - run: npm ci
       - run: node scripts/check-version.mjs
+      - name: Export embedded update public key
+        shell: pwsh
+        env:
+          OPENKEYLET_UPDATE_SIGNING_KEY: ${{ secrets.OPENKEYLET_UPDATE_SIGNING_KEY }}
+        run: |
+          if ($env:OPENKEYLET_UPDATE_SIGNING_KEY) {
+            $pub = node scripts/sign-release-manifest.mjs pubkey
+            "OPENKEYLET_UPDATE_PUBLIC_KEY=$pub" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            Write-Host "Embedded OpenKeylet update public key configured."
+          } else {
+            Write-Host "::warning::OPENKEYLET_UPDATE_SIGNING_KEY secret is not set; auto-update signing key will not be embedded."
+          }
       - run: cargo test --locked --manifest-path src-tauri/Cargo.toml
       - run: npm run build
       - run: npm run portable
@@ -136,6 +148,17 @@ jobs:
             openssl base64 -d -A -out "$api_key_path"
           test -s "$api_key_path"
           echo "APPLE_API_KEY_PATH=$api_key_path" >> "$GITHUB_ENV"
+      - name: Export embedded update public key
+        env:
+          OPENKEYLET_UPDATE_SIGNING_KEY: ${{ secrets.OPENKEYLET_UPDATE_SIGNING_KEY }}
+        run: |
+          if [[ -n "${OPENKEYLET_UPDATE_SIGNING_KEY:-}" ]]; then
+            pubkey="$(node scripts/sign-release-manifest.mjs pubkey)"
+            echo "OPENKEYLET_UPDATE_PUBLIC_KEY=$pubkey" >> "$GITHUB_ENV"
+            echo "Embedded OpenKeylet update public key configured."
+          else
+            echo "::warning::OPENKEYLET_UPDATE_SIGNING_KEY secret is not set; auto-update signing key will not be embedded."
+          fi
       - name: Build and sign macOS application
         run: npm run build:mac
       - name: Notarize and staple macOS application
@@ -202,6 +225,17 @@ jobs:
       - run: node scripts/check-version.mjs
       - run: cargo test --locked --manifest-path src-tauri/Cargo.toml
       - run: rm -rf src-tauri/target/release/bundle/appimage
+      - name: Export embedded update public key
+        env:
+          OPENKEYLET_UPDATE_SIGNING_KEY: ${{ secrets.OPENKEYLET_UPDATE_SIGNING_KEY }}
+        run: |
+          if [[ -n "${OPENKEYLET_UPDATE_SIGNING_KEY:-}" ]]; then
+            pubkey="$(node scripts/sign-release-manifest.mjs pubkey)"
+            echo "OPENKEYLET_UPDATE_PUBLIC_KEY=$pubkey" >> "$GITHUB_ENV"
+            echo "Embedded OpenKeylet update public key configured."
+          else
+            echo "::warning::OPENKEYLET_UPDATE_SIGNING_KEY secret is not set; auto-update signing key will not be embedded."
+          fi
       - run: npm run build:linux
       - name: Smoke AppImage CLI and MCP
         run: |
@@ -238,6 +272,17 @@ jobs:
       - run: npm ci
       - run: node scripts/check-version.mjs
       - run: cargo test --locked --manifest-path src-tauri/Cargo.toml --no-default-features
+      - name: Export embedded update public key
+        env:
+          OPENKEYLET_UPDATE_SIGNING_KEY: ${{ secrets.OPENKEYLET_UPDATE_SIGNING_KEY }}
+        run: |
+          if [[ -n "${OPENKEYLET_UPDATE_SIGNING_KEY:-}" ]]; then
+            pubkey="$(node scripts/sign-release-manifest.mjs pubkey)"
+            echo "OPENKEYLET_UPDATE_PUBLIC_KEY=$pubkey" >> "$GITHUB_ENV"
+            echo "Embedded OpenKeylet update public key configured."
+          else
+            echo "::warning::OPENKEYLET_UPDATE_SIGNING_KEY secret is not set; auto-update signing key will not be embedded."
+          fi
       - run: npm run build:headless
       - run: node scripts/smoke-cli.mjs src-tauri/target/release/openkeylet
       - run: npm run portable:headless
@@ -259,6 +304,10 @@ jobs:
     needs: [windows, macos, linux-gui, linux-headless]
     runs-on: ubuntu-22.04
     steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - uses: actions/download-artifact@v4
         with:
           path: release-assets
@@ -276,6 +325,29 @@ jobs:
           fi
           LC_ALL=C sha256sum "${archives[@]}" > SHA256SUMS.txt
           sha256sum -c SHA256SUMS.txt
+      - name: Generate signed latest.json update manifest
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OPENKEYLET_UPDATE_SIGNING_KEY: ${{ secrets.OPENKEYLET_UPDATE_SIGNING_KEY }}
+        run: |
+          if [[ -z "${OPENKEYLET_UPDATE_SIGNING_KEY:-}" ]]; then
+            echo "::warning::OPENKEYLET_UPDATE_SIGNING_KEY secret is not configured; skipping latest.json manifest generation."
+            exit 0
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
+            -f tag_name="$GITHUB_REF_NAME" \
+            --jq '.body' > release-notes.md || printf 'OpenKeylet %s\n' "$GITHUB_REF_NAME" > release-notes.md
+          node scripts/sign-release-manifest.mjs generate \
+            --tag "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --assets-dir release-assets \
+            --notes-file release-notes.md \
+            --out release-assets/latest.json
+          pubkey="$(node scripts/sign-release-manifest.mjs pubkey)"
+          node scripts/sign-release-manifest.mjs verify \
+            --manifest release-assets/latest.json \
+            --pubkey "$pubkey"
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

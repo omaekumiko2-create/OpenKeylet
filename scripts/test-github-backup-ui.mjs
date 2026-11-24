@@ -32,7 +32,7 @@ try{
       if(command==="github_backup_connect"){
         if(fixture.failConnect)throw Error("GITHUB_PRIVATE_REQUIRED");
         fixture.connects.push(structuredClone(args.input));
-        fixture.status={connected:true,provider:args.input.provider||"github",serverUrl:args.input.serverUrl||"",repository:args.input.repository,branch:"main",autoSync:Boolean(args.input.autoSync),hasRemoteBackup:args.input.mode==="existing",needsRestore:args.input.mode==="existing"};
+        fixture.status={connected:true,strongMode:true,provider:args.input.provider||"github",serverUrl:args.input.serverUrl||"",repository:args.input.repository,branch:"main",autoSync:Boolean(args.input.autoSync),hasRemoteBackup:args.input.mode==="existing",needsRestore:args.input.mode==="existing"};
         return structuredClone(fixture.status);
       }
       if(command==="github_backup_upload"){
@@ -64,6 +64,8 @@ try{
   assert.equal(await page.locator("#github-token").isVisible(),false);
   await page.screenshot({path:path.join(artifacts,"account.png")});
   await page.locator("#github-create-repository").check();
+  await page.locator("#github-master-passphrase").fill("Fixture-Strong-Passphrase-2026!");
+  await page.locator("#github-master-passphrase-confirm").fill("Fixture-Strong-Passphrase-2026!");
   await page.locator("#github-generate-key").click();
   await page.waitForFunction(()=>document.querySelector("#github-recovery-key").value.startsWith("okv1_"));
   await page.locator("#github-submit").click();
@@ -77,6 +79,7 @@ try{
   assert.equal(await page.evaluate(()=>fixture.connects[0].createRepository),true);
   assert.equal(await page.locator("#github-recovery-key").inputValue(),"");
   await page.screenshot({path:path.join(artifacts,"uploaded.png")});
+  await page.locator("#github-advanced > summary").click();
   await page.locator("#github-reconfigure").click();
   assert.equal(await page.locator("#github-mode").inputValue(),"existing");
   assert.equal(await page.locator("#github-first-upload-field").isVisible(),false);
@@ -99,6 +102,8 @@ try{
   await page.locator("#github-connect").waitFor({state:"visible"});
   await page.locator("#github-connect").click();
   await page.locator("#github-repository").fill("fixture-user/another-vault");
+  await page.locator("#github-master-passphrase").fill("Fixture-Strong-Passphrase-2026!");
+  await page.locator("#github-master-passphrase-confirm").fill("Fixture-Strong-Passphrase-2026!");
   await page.locator("#github-generate-key").click();
   await page.waitForFunction(()=>document.querySelector("#github-recovery-key").value.startsWith("okv1_"));
   await page.locator("#github-key-saved").check();
@@ -112,6 +117,7 @@ try{
   await page.locator("#github-error").waitFor({state:"visible"});
   assert.equal(await page.evaluate(()=>fixture.status.connected),true,"Upload failure must retain the connection");
   await page.evaluate(()=>fixture.failUpload=false);
+  if (!await page.locator("#github-advanced").evaluate(el => el.open)) await page.locator("#github-advanced > summary").click();
   await page.locator("#github-upload").click();await page.locator("#confirmation-accept").click();
   await page.waitForFunction(()=>fixture.uploads===2);
   await page.locator("#github-sync").click();
@@ -122,6 +128,11 @@ try{
   await page.locator("#github-provider").selectOption("gitea");
   assert.equal(await page.locator("#github-server-url").isVisible(),true);
   assert.equal(await page.locator("#github-token").isVisible(),true);
+  assert.equal(await page.locator("#github-check-account").isVisible(),true,"Gitea must expose server & account pre-check");
+  await page.locator("#github-server-url").fill("https://git.example.com");
+  await page.locator("#github-token").fill("gitea-tok");
+  await page.locator("#github-check-account").click();
+  await page.waitForFunction(()=>document.querySelector("#github-account-status").textContent.includes("fixture-user"));
   await page.locator("#github-provider").selectOption("github");
   await page.locator("#github-auth-source").selectOption("token");
   await page.locator("#github-token").fill("synthetic-private-value");

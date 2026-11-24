@@ -29,10 +29,19 @@ window.addEventListener('focus', () => document.documentElement.classList.remove
 // Keep the first paint deterministic. The persisted setting from the vault is
 // applied by refresh(); browser storage can survive an app reinstall and must
 // not override the English default while the native state is loading.
-let language = 'en';
+let languagePreference = 'auto';
+let language = window.OpenKeyletI18n ? window.OpenKeyletI18n.detectSystemLanguage() : 'en';
+
+function normalizeLanguageSetting(raw) {
+  return window.OpenKeyletI18n ? window.OpenKeyletI18n.normalizeSetting(raw) : (raw === 'en' ? 'en' : 'zh');
+}
+
+function resolveLanguage(setting) {
+  return window.OpenKeyletI18n ? window.OpenKeyletI18n.resolveLanguage(setting) : (setting === 'en' ? 'en' : 'zh');
+}
 
 function localized(zh, en) {
-  return language === 'en' ? en : zh;
+  return window.OpenKeyletI18n ? window.OpenKeyletI18n.translate(language, zh, en) : (language === 'en' ? en : zh);
 }
 
 const staticCopy = [
@@ -68,15 +77,19 @@ const staticCopy = [
   ['[data-module="MCP / 02"] .settings-heading h2', 'text', 'Agent 接入', 'AGENT SETUP'],
   ['[data-module="MCP / 02"] .settings-heading p', 'text', '注册本地 stdio MCP；支持的 Agent 同时安装“认证任务优先使用 OpenKeylet”规则。', 'Register the local stdio MCP and install the OpenKeylet-first authentication rule where supported.'],
   ['[data-module="APP / 03"] .settings-heading h2', 'text', '窗口与偏好', 'WINDOW & PREFERENCES'],
-  ['[data-module="APP / 03"] .settings-heading p', 'text', '控制界面语言、音效、关闭按钮与本地 PIN 锁。', 'Control language, sounds, close behavior and local PIN lock.'],
+  ['[data-module="APP / 03"] .settings-heading p', 'text', '控制音效、关闭按钮与本地 PIN 锁。', 'Control sounds, close behavior and local PIN lock.'],
   ['#language-option strong', 'text', '界面语言', 'INTERFACE LANGUAGE'],
-  ['#language-option small', 'text', '在中文与英文界面之间切换', 'Switch between English and Simplified Chinese.'],
+  ['#language-option small', 'text', '选择桌面端界面显示语言（默认跟随系统语言）。', 'Choose your preferred display language across the desktop app.'],
+  ['#language-switch [data-language="auto"]', 'text', '自动', 'AUTO'],
   ['#sound-option strong', 'text', '界面音效', 'INTERFACE SOUNDS'],
   ['#sound-option small', 'text', '点击按钮与切换开关时播放轻提示音', 'Subtle click feedback for toggles and buttons.'],
   ['label[for="close-behavior"] strong', 'text', '关闭按钮', 'CLOSE BUTTON'],
   ['label[for="close-behavior"] small', 'text', '最小化可保留托盘菜单', 'Minimizing keeps tray controls available.'],
   ['#close-behavior option[value="tray"]', 'text', '最小化到托盘', 'MINIMIZE TO TRAY'],
   ['#close-behavior option[value="exit"]', 'text', '退出 OpenKeylet', 'QUIT OpenKeylet'],
+  ['#edge-dock-option strong', 'text', '贴边自动收起抽屉', 'EDGE-DOCK DRAWER'],
+  ['#edge-dock-option small', 'text', '将窗口拖至屏幕左、右或顶部边缘时自动收起，鼠标移至边缘自动拉出', 'Snap to the left, right, or top screen edge to auto-hide; hover the edge to slide back out.'],
+  ['#edge-dock-enabled', 'aria-label', '贴边自动收起抽屉', 'Edge-dock drawer'],
   ['.pin-option strong', 'text', 'PIN 锁', 'PIN LOCK'],
   ['.pin-option small', 'text', '防他人在本机查看明文或管理条目；关闭将移除当前 PIN', 'Locks desktop viewing and management against others on this device. Turning off removes the PIN.'],
   ['#owner-auto-lock-option strong', 'text', '空闲自动锁定', 'AUTO-LOCK'],
@@ -98,25 +111,39 @@ const staticCopy = [
   ['#save-browser-settings-button', 'text', '保存', 'SAVE'],
   ['#browser-agent-passkey-option strong', 'text', '允许 Agent 使用 Passkey', 'AGENT PASSKEY SIGNING'],
   ['#browser-agent-passkey-option small', 'text', '允许本地 AI Agent 为已启用项目自动完成网页 WebAuthn Passkey 登录与注册', 'Allow local AI agents to complete WebAuthn Passkey sign-in and registration for enabled items.'],
-  ['#browser-install-heading', 'text', '安装插件 · 只需两步', 'INSTALL IN TWO STEPS'],
-  ['#browser-step-open-title', 'text', '打开扩展页', 'Open the extensions page'],
-  ['#browser-step-open-description', 'text', '打开 Chrome / Edge 并复制扩展页地址，粘贴后开启右上角的“开发者模式”。', 'Open Chrome or Edge and copy the extensions page address. Paste it into the address bar, then turn on Developer mode.'],
-  ['#browser-open-help', 'text', '地址已复制。请粘贴到浏览器地址栏并按回车，然后开启“开发者模式”。', "Address copied. Paste it into your browser's address bar and press Enter, then turn on Developer mode."],
+  ['#browser-install-heading', 'text', '安装插件 · 只需三步', 'INSTALL IN THREE STEPS'],
+  ['#browser-step-open-title', 'text', '打开 Chrome', 'Open Chrome'],
+  ['#browser-step-open-description', 'text', '启动 Chrome 并自动开启 5 分钟配对窗口（支持多个 Chrome 账号同时连接）。', 'Launch Chrome and open a 5-minute auto-pairing window (supports multiple Chrome profiles at once).'],
+  ['#chrome-profile-label', 'text', 'Chrome 账号 / 配置文件', 'CHROME PROFILE'],
+  ['#browser-open-help', 'text', '地址已复制。请粘贴到 Chrome 地址栏并按回车，然后开启“开发者模式”。', "Address copied. Paste it into Chrome's address bar and press Enter, then turn on Developer mode."],
+  ['#browser-step-copy-title', 'text', '进入扩展设置页', 'Open the extensions page'],
+  ['#browser-step-copy-description', 'text', '复制下方地址并粘贴到 Chrome 地址栏按回车，然后开启右上角的“开发者模式”。', "Copy the address below, paste it into Chrome's address bar and press Enter, then turn on Developer mode."],
+  ['#browser-extensions-url', 'aria-label', '扩展设置页地址', 'Extensions page address'],
+  ['#copy-extensions-url-button', 'text', '复制', 'COPY'],
   ['#browser-step-drag-title', 'text', '拖入插件', 'Drag in the extension'],
   ['#browser-step-drag-description', 'text', '按住下方标识，拖到扩展页的空白区域，松开即可安装。', 'Hold the icon below, drag it onto an empty area of the extensions page, and release to install.'],
-  ['#browser-install-complete', 'text', '安装后会自动连接，请保持 OpenKeylet 运行。', 'Once installed, the extension connects automatically. Keep OpenKeylet running.'],
+  ['#browser-install-complete', 'text', '拖入后会自动连接，请保持 OpenKeylet 运行；如需绑定多个 Chrome 账号，切换账号重复上述步骤即可。', 'Connects automatically after installation. To add another Chrome profile, switch profiles and repeat.'],
   ['#browser-fallback-title', 'text', '拖拽无法安装？', "Can't install by dragging?"],
   ['#browser-fallback-description', 'text', '打开下方扩展目录，然后在扩展页点击“加载已解压的扩展程序”，选择该目录。', 'Open the extension folder below. On the extensions page, click Load unpacked and select that folder.'],
   ['#drag-extension-label', 'text', '按住此处，拖入扩展页', 'Hold and drag to the extensions page'],
   ['#drag-extension-button', 'aria-label', '拖动插件到 Chrome 扩展页；也可按回车打开扩展目录', 'Drag the extension to Chrome Extensions, or press Enter to open its folder'],
-  ['#quick-pairing-button', 'text', '打开浏览器并复制地址', 'OPEN BROWSER & COPY ADDRESS'],
+  ['#quick-pairing-button', 'text', '打开 Chrome 并复制地址', 'OPEN CHROME & COPY ADDRESS'],
   ['#open-extension-button', 'text', '扩展目录', 'EXTENSION FOLDER'],
   ['#start-pairing-button', 'text', '开启配对', 'START PAIRING'],
   ['#test-browser-bridge-button', 'text', '测试连接', 'TEST BRIDGE'],
   ['#reset-pairing-button', 'text', '重置', 'RESET'],
-  ['[data-module="SAFE / 06"] .settings-heading h2', 'text', '本地数据', 'LOCAL DATA'],
-  ['#migration-open', 'text', '迁入密码库', 'IMPORT VAULT'],
-  ['[data-module="SAFE / 06"] .settings-heading p', 'text', '用独立备份密码加密导出全部项目与 Passkey，也可恢复旧版备份。', 'Export all items and passkeys encrypted with a separate backup password, or restore an existing backup.'],
+  ['[data-module="SAFE / 06"] .settings-heading h2', 'text', '本地数据与离线包', 'LOCAL DATA & ARCHIVES'],
+  ['#safe-export-backup-button', 'text', '导出 .mvault 包', 'EXPORT .MVAULT'],
+  ['#safe-import-backup-button', 'text', '恢复 .mvault 包', 'RESTORE .MVAULT'],
+  ['#migration-open', 'text', '迁入 Bitwarden / CSV', 'IMPORT BITWARDEN / CSV'],
+  ['#smart-paste-button', 'aria-label', '智能粘贴存入（API / cURL / SSH / .env / URI / 2FA）', 'Smart paste from clipboard (API, cURL, SSH, .env, URI, 2FA)'],
+  ['#smart-paste-button', 'title', '智能粘贴存入（API / cURL / SSH / .env / URI / 2FA）', 'Smart paste from clipboard (API, cURL, SSH, .env, URI, 2FA)'],
+  ['#editor-smart-paste-title', 'text', '从剪贴板智能识别粘贴', 'Smart paste from clipboard'],
+  ['#editor-smart-paste-help', 'text', '纯本地自动识别 API 密钥、cURL、SSH、.env、数据库连接串与 2FA', 'Auto-detect API keys, cURL, SSH, .env, DB URIs & 2FA (local only)'],
+  ['#smart-totp-attach-label', 'text', '或直接附加 2FA 到已有项目', 'Or attach 2FA directly to an existing item'],
+  ['#smart-totp-attach-button', 'text', '附加 2FA', 'ATTACH 2FA'],
+  ['#migration-scan-ssh', 'text', '一键扫描 ~/.ssh/config', 'SCAN LOCAL ~/.ssh/config'],
+  ['[data-module="SAFE / 06"] .settings-heading p', 'text', '用自定义密码导出 .mvault 离线包，先预览再恢复新旧版备份（v3–v8），或从 Bitwarden / Chrome 迁入。', 'Export password-protected .mvault archives, preview before restoring current or legacy backups (v3–v8), or migrate from Bitwarden / Chrome.'],
   ['#open-data-button', 'text', '打开数据目录', 'OPEN DATA FOLDER'],
   ['#owner-lock-description', 'text', 'PIN 保护明文查看、浏览器密码库访问和 Passkey 验证；模块值默认对 Agent 隐藏。', 'The PIN protects plaintext viewing, browser vault access and passkey verification. Module values are hidden from agents by default.'],
   ['#owner-pin', 'label', '六位数字 PIN', 'SIX-DIGIT PIN'],
@@ -161,16 +188,28 @@ const staticCopy = [
 ];
 
 function applyLanguage() {
-  document.documentElement.lang = language === 'en' ? 'en' : 'zh-CN';
+  language = resolveLanguage(languagePreference);
+  document.documentElement.lang = window.OpenKeyletI18n ? window.OpenKeyletI18n.htmlLangFor(language) : (language === 'en' ? 'en' : 'zh-CN');
   window.OpenKeyletAppearance.setLanguage(localized);
-  $$('.language-switch button').forEach((button) => button.classList.toggle('active', button.dataset.language === language));
+  const langButtons = $$('.language-switch button');
+  let activeIndex = 0;
+  langButtons.forEach((button, index) => {
+    const isActive = button.dataset.language === languagePreference;
+    button.classList.toggle('active', isActive);
+    if (isActive) activeIndex = index;
+  });
+  const langSwitch = $('#language-switch');
+  if (langSwitch) {
+    langSwitch.style.setProperty('--language-count', String(Math.max(1, langButtons.length)));
+    langSwitch.style.setProperty('--language-index', String(activeIndex));
+  }
   for (const [selector, target, zh, en] of staticCopy) {
     const element = $(selector);
     if (!element) continue;
     const copy = localized(zh, en);
     if (target === 'text') element.textContent = copy;
     else if (target === 'html') element.innerHTML = copy;
-    else if (target === 'aria-label' || target === 'placeholder') element.setAttribute(target, copy);
+    else if (target === 'aria-label' || target === 'placeholder' || target === 'title') element.setAttribute(target, copy);
     else if (target === 'label' || target === 'label-html') {
       const label = element.closest('label')?.querySelector(':scope > span') || element.closest('.field')?.querySelector(':scope > span');
       if (label) target === 'label-html' ? label.innerHTML = copy : label.textContent = copy;
@@ -182,6 +221,10 @@ function applyLanguage() {
       'Control whether OpenKeylet launches at login.',
     );
   }
+  if (languagePreference === 'auto' && $('#language-option small')) {
+    const systemName = window.OpenKeyletI18n ? window.OpenKeyletI18n.languageDisplayName(language) : language;
+    $('#language-option small').textContent = localized(`跟随系统语言（${systemName}）`, `Following system (${systemName})`);
+  }
   syncItemTypeFilter();
   syncActivityFilterControl();
   syncSettingsFilterControl();
@@ -190,7 +233,7 @@ function applyLanguage() {
 
 function publicMessage(value, fallback = localized('操作失败', 'Operation failed')) {
   const raw = String(value || '').replace(/^Error:\s*/, '');
-  if (language !== 'en' || !HAN_TEXT.test(raw)) return raw || fallback;
+  if (language === 'zh' || !HAN_TEXT.test(raw)) return raw || fallback;
   return fallback;
 }
 
@@ -236,14 +279,24 @@ const api = {
   repairAgent: (clientId) => invoke('agent_mcp_repair', { clientId }),
   removeAgent: (clientId) => invoke('agent_mcp_remove', { clientId }),
   chooseKey: () => invoke('choose_private_key'),
+  chromeProfiles: () => invoke('list_chrome_profiles'),
   quickPair: (port) => invoke('quick_pair_browser', { port }),
-  openChrome: () => invoke('open_chrome_browser'),
+  openChrome: (profileDirectory = null) => invoke('open_chrome_browser', profileDirectory ? { profileDirectory } : {}),
   testBrowserBridge: () => invoke('test_browser_bridge'),
   resetPair: () => invoke('reset_browser_pairing'),
   extensionFolder: () => invoke('open_browser_extension_folder'),
   exportBackup: (password) => invoke('export_backup', { password }),
   importBackup: (password) => invoke('import_backup', { password }),
+  pickBackupImportFile: () => invoke('pick_backup_import_file'),
+  prepareBackupImport: (password) => invoke('prepare_backup_import', { password }),
+  commitBackupImport: (id) => invoke('commit_backup_import', { id }),
+  cancelBackupImport: () => invoke('cancel_backup_import'),
   prepareImport: (format) => invoke('prepare_import', { format }),
+  prepareSshConfigImport: (useDefault) => invoke('prepare_ssh_config_import', { useDefault }),
+  smartParseText: (text, filename = null, url = null) => invoke('smart_parse_text', { text, filename, url }),
+  readOwnerClipboard: () => invoke('read_owner_clipboard'),
+  clearClipboardIfMatches: (text) => invoke('clear_clipboard_if_matches', { text }),
+  attachTotpToItem: (id, totp, expectedUpdatedAt) => invoke('attach_totp_to_item', { id, totp, expectedUpdatedAt }),
   commitImport: (id) => invoke('commit_import', { id }),
   cancelImport: () => invoke('cancel_import'),
   dataFolder: () => invoke('open_data_folder'),
@@ -257,7 +310,10 @@ let currentActivityFilter = 'all';
 const pageSearch = { connections: '', activity: '', settings: '' };
 const itemTypeFilterOrder = ['all', 'ssh', 'login', 'api', 'passkey', 'card', 'identity', 'secureNote', 'custom'];
 let currentItemTypeFilter = 'all';
-const settingsFilterOrder = ['all', 'SYSTEM', 'MCP', 'APP', 'WEB', 'CLOUD', 'SAFE'];
+let vaultViewMode = (() => {
+  try { return localStorage.getItem('openkeylet.vaultView') === 'grid' ? 'grid' : 'list'; } catch (_) { return 'list'; }
+})();
+const settingsFilterOrder = ['all', 'SYSTEM', 'MCP', 'APP', 'WEB', 'CLOUD', 'SAFE', 'UPDATE'];
 let currentSettingsFilter = 'all';
 let titleSearchOpen = false;
 let creationMode = 'add';
@@ -273,6 +329,9 @@ let editorReturnFocus = null;
 let editorItemId = null;
 let editorOpening = false;
 let editorClosing = null;
+let editorSmartClipboardSource = '';
+let editorSmartTotpUri = '';
+let pendingTotpQrModuleIndex = -1;
 let switchPointerDrag = null;
 let switchSelectionPending = false;
 let suppressSwitchClick = null;
@@ -280,6 +339,7 @@ let itemPointerDrag = null;
 let itemOrderSaving = false;
 let suppressItemClick = false;
 let agentClients = [];
+let chromeProfiles = [];
 let agentRestartRequired = false;
 let renderedConnectionsSignature = '';
 const ACTIVITY_PAGE_SIZE = 50;
@@ -296,7 +356,17 @@ const githubBackup = window.OpenKeyletGithubBackup.create({
   invoke, localized, toast,
   isUnlocked: () => ownerLockState.unlocked,
   confirmAction: confirmDestructiveAction,
-  onRestore: () => refresh(),
+  onRestore: async () => {
+    await refreshOwnerLock(false);
+    await refresh(false);
+  },
+});
+const appUpdater = window.OpenKeyletUpdater.create({
+  invoke, localized, toast,
+  isUnlocked: () => ownerLockState.unlocked,
+  onSettingsUpdated: (settings) => {
+    if (state && settings) state.settings = settings;
+  },
 });
 
 function escapeHtml(value = '') {
@@ -312,6 +382,7 @@ function normalizeSearch(value = '') {
 }
 
 function toast(message, type = '') {
+  if (type === 'error') window.OpenKeyletAppearance?.play?.('danger');
   const item = document.createElement('div');
   item.className = `toast ${type}`;
   item.textContent = message;
@@ -358,6 +429,7 @@ function clearOwnerPlaintext() {
   void finishSwitchDrag(false);
   finishItemPointerDrag(false);
   githubBackup.clearSecrets();
+  appUpdater.closeModal();
   finishConfirmation(false, false);
   closeEditor();
   currentModules.forEach((module) => { module.secretValue = ''; });
@@ -382,22 +454,71 @@ function focusPin(id) {
 }
 
 function renderOwnerLock() {
-  const configured = ownerLockState.pinConfigured;
-  const unlocked = ownerLockState.unlocked;
-  const setupRequested = ownerPinSetupRequested && !configured;
+  const strongMode = Boolean(ownerLockState.strongMode || ownerLockState.mode === 'strong');
+  const configured = Boolean(ownerLockState.pinConfigured || strongMode);
+  const unlocked = Boolean(ownerLockState.unlocked);
+  const setupRequested = ownerPinSetupRequested && !configured && !strongMode;
   const locked = configured && !unlocked;
   const layerVisible = setupRequested || locked;
   $('#owner-lock-layer').classList.toggle('hidden', !layerVisible);
   $('#owner-lock-button').classList.toggle('hidden', !configured || !unlocked);
-  $('#owner-pin-confirm-field').classList.toggle('hidden', configured);
+
+  $('#owner-pin-field')?.classList.toggle('hidden', strongMode);
+  $('#owner-pin-confirm-field').classList.toggle('hidden', configured || strongMode);
+  $('#owner-strong-field')?.classList.toggle('hidden', !strongMode);
   $('#owner-pin-cancel').classList.toggle('hidden', !setupRequested);
-  pinInputs('owner-pin-confirm').forEach((input) => { input.required = !configured; });
-  $('#owner-lock-mode').textContent = configured ? 'OWNER VERIFY' : 'SET LOCAL PIN';
-  $('#owner-lock-title').textContent = configured
-    ? localized('输入六位 PIN', 'ENTER SIX-DIGIT PIN')
-    : localized('设置六位 PIN', 'SET SIX-DIGIT PIN');
-  $('#owner-lock-code').textContent = configured ? 'LOCK' : 'INIT';
-  $('#owner-unlock-action').textContent = configured ? 'UNLOCK' : 'SET PIN';
+
+  pinInputs('owner-pin').forEach((input) => { input.required = !strongMode; });
+  pinInputs('owner-pin-confirm').forEach((input) => { input.required = !configured && !strongMode; });
+  const strongInput = $('#owner-strong-secret');
+  if (strongInput) {
+    strongInput.required = strongMode;
+    strongInput.value = '';
+    strongInput.type = 'password';
+    strongInput.placeholder = localized('输入强主密码或 okv1_ 恢复密钥', 'Enter master passphrase or okv1_ recovery key');
+  }
+  if ($('#owner-strong-reveal')) $('#owner-strong-reveal').textContent = localized('显示', 'SHOW');
+  if ($('#owner-strong-label')) {
+    $('#owner-strong-label').textContent = localized('强主密码或 okv1_ 恢复密钥', 'MASTER PASSPHRASE OR okv1_ RECOVERY KEY');
+  }
+
+  if (strongMode) {
+    if ($('#owner-lock-badge')) $('#owner-lock-badge').textContent = 'STRONG CLOUD VAULT';
+    if ($('#owner-lock-sub')) $('#owner-lock-sub').textContent = localized('本地零落盘密钥 · MCP 已暂停', 'ZERO KEY ON DISK · MCP PAUSED');
+    $('#owner-lock-mode').textContent = 'STRONG VAULT UNLOCK';
+    $('#owner-lock-title').textContent = localized('解锁强加密密码库', 'UNLOCK STRONG VAULT');
+    $('#owner-lock-description').textContent = localized(
+      '高安全强加密模式已开启：本机硬盘不保存 master.key，请输入强主密码（或 okv1_ 恢复密钥）在内存中解锁。',
+      'Strong Cloud Vault active: no master key exists on disk. Enter your master passphrase (or okv1_ recovery key) to unlock in RAM.',
+    );
+    if ($('#owner-lock-note')) {
+      $('#owner-lock-note').textContent = localized(
+        '解锁密钥仅驻留内存，点击锁定、空闲超时或退出后立即清零，AI Agent 的 MCP 也会同步暂停。',
+        'Decryption key lives only in RAM and wipes immediately on lock, idle timeout, or quit (MCP pauses until unlocked).',
+      );
+    }
+    $('#owner-lock-code').textContent = 'SEALED';
+    $('#owner-unlock-action').textContent = localized('解锁密码库', 'UNLOCK VAULT');
+  } else {
+    if ($('#owner-lock-badge')) $('#owner-lock-badge').textContent = 'OWNER ACCESS';
+    if ($('#owner-lock-sub')) $('#owner-lock-sub').textContent = 'LOCAL GUI / MCP REMAINS READY';
+    $('#owner-lock-mode').textContent = configured ? 'OWNER VERIFY' : 'SET LOCAL PIN';
+    $('#owner-lock-title').textContent = configured
+      ? localized('输入六位 PIN', 'ENTER SIX-DIGIT PIN')
+      : localized('设置六位 PIN', 'SET SIX-DIGIT PIN');
+    $('#owner-lock-description').textContent = localized(
+      'PIN 保护明文查看、浏览器密码库访问和 Passkey 验证；模块值默认对 Agent 隐藏。',
+      'The PIN protects plaintext viewing, browser vault access and passkey verification. Module values are hidden from agents by default.',
+    );
+    if ($('#owner-lock-note')) {
+      $('#owner-lock-note').textContent = localized(
+        'PIN 用于防止他人在本机查看明文或修改密码库；请配合系统锁屏与加密备份保护离线安全。',
+        'PIN locks desktop viewing and editing against others on this computer; pair with OS screen lock and encrypted backups for offline security.',
+      );
+    }
+    $('#owner-lock-code').textContent = configured ? 'LOCK' : 'INIT';
+    $('#owner-unlock-action').textContent = configured ? 'UNLOCK' : 'SET PIN';
+  }
   if (locked) {
     if (!$('#vault-management-modal').classList.contains('hidden')) closeVaultManagement();
     if (!$('#migration-modal').classList.contains('hidden')) closeMigration();
@@ -409,7 +530,7 @@ function renderOwnerLock() {
   }
   clearPin('owner-pin');
   clearPin('owner-pin-confirm');
-  if (layerVisible) setTimeout(() => focusPin('owner-pin'), 0);
+  if (layerVisible) setTimeout(() => (strongMode ? strongInput?.focus() : focusPin('owner-pin')), 0);
 }
 
 async function refreshOwnerLock(showError = true) {
@@ -426,6 +547,7 @@ async function refreshOwnerLock(showError = true) {
 }
 
 async function lockOwner() {
+  window.OpenKeyletAppearance?.play?.('lock');
   try { ownerLockState = await api.ownerLock(); } catch (_) { ownerLockState.unlocked = false; }
   renderOwnerLock();
   await refresh(false);
@@ -439,8 +561,10 @@ async function refresh(showError = true) {
     } catch (_) {
       systemIntegrationState = { desktopShortcut: false, launchAtLogin: false };
     }
-    language = state.settings.language === 'en' ? 'en' : 'zh';
+    languagePreference = normalizeLanguageSetting(state.settings.language);
+    language = resolveLanguage(languagePreference);
     await githubBackup.refresh();
+    await appUpdater.refresh();
     applyLanguage();
     render();
   } catch (error) {
@@ -572,6 +696,12 @@ function renderMetrics() {
     </div>`;
 }
 
+function compactTargetUrl(raw) {
+  const value = String(raw || '').trim();
+  if (!value) return '';
+  return value.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+}
+
 function itemDetail(item) {
   if (['card', 'identity', 'secureNote'].includes(item.itemType)) {
     return [itemTypeLabel(item.itemType), item.folder, localized('字段已加密', 'ENCRYPTED FIELDS')].filter(Boolean).join(' · ');
@@ -580,8 +710,11 @@ function itemDetail(item) {
   const capabilities = itemCapabilities(item);
   const targets = [];
   if (capabilities.includes('ssh') && item.host) targets.push(`${item.host}:${item.port || 22}`);
-  if (capabilities.includes('http') && item.baseUrl) targets.push(item.baseUrl);
-  if (targets.length) return targets.join(' · ');
+  const urlFromModules = (item.modules || []).find((m) => m.kind === 'url' && m.value)?.value;
+  const loginUri = Array.isArray(item.loginUris) ? item.loginUris.find((entry) => entry?.uri)?.uri : '';
+  const primaryUrl = compactTargetUrl(item.baseUrl || urlFromModules || loginUri);
+  if (primaryUrl && !targets.includes(primaryUrl)) targets.push(primaryUrl);
+  if (targets.length) return [targets.join(' · '), item.folder].filter(Boolean).join(' · ');
   const count = (item.modules || []).filter((module) => module.secret).length || item.secret?.fields?.length || 0;
   return capabilities.includes('fill')
     ? `${count} ENCRYPTED FIELD${count === 1 ? '' : 'S'}`
@@ -630,6 +763,7 @@ function itemTypeIcon(kind) {
     WEB: '<circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><path d="M3 12h18"/>',
     CLOUD: '<path d="M7 18a5 5 0 1 1 0-10 6 6 0 0 1 11-1 5.5 5.5 0 0 1 0 11Z"/>',
     SAFE: '<path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6Z"/><path d="m8 12 3 3 5-6"/>',
+    UPDATE: '<path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/>',
   };
   return `<svg class="item-type-icon" viewBox="0 0 24 24" aria-hidden="true">${paths[kind] || paths.custom}</svg>`;
 }
@@ -657,7 +791,7 @@ function syncItemTypeFilter() {
 }
 
 function syncSettingsFilterControl() {
-  const labels = { all: ['全部设置', 'All settings'], SYSTEM: ['系统入口', 'System access'], MCP: ['Agent 接入', 'Agent setup'], APP: ['窗口与偏好', 'Window & preferences'], WEB: ['浏览器', 'Browser'], CLOUD: ['云端备份', 'Cloud backup'], SAFE: ['本地数据', 'Local data'] };
+  const labels = { all: ['全部设置', 'All settings'], SYSTEM: ['系统入口', 'System access'], MCP: ['Agent 接入', 'Agent setup'], APP: ['窗口与偏好', 'Window & preferences'], WEB: ['浏览器', 'Browser'], CLOUD: ['云端备份', 'Cloud backup'], SAFE: ['本地数据', 'Local data'], UPDATE: ['软件更新', 'Updates'] };
   $('#settings-filter-switch').setAttribute('aria-label', localized('设置分组筛选', 'Settings section filter'));
   syncFilterStrip('#settings-filter-switch', settingsFilterOrder, currentSettingsFilter, 'data-settings-filter', kind => localized(...labels[kind]));
 }
@@ -803,7 +937,10 @@ async function finishSwitchDrag(commit) {
     try {
       if (titleSearchOpen) setTitleSearchOpen(false, false);
       await drag.commit(drag.index);
-      if (drag.read() === drag.index && drag.strip.id !== 'sound-toggle') window.OpenKeyletAppearance.feedback();
+      if (drag.read() === drag.index && drag.strip.id !== 'sound-toggle' && drag.strip.id !== 'theme-toggle') {
+        const isBinary = drag.strip.matches('.switch, .module-agent-toggle');
+        window.OpenKeyletAppearance.feedback(isBinary ? (drag.index ? 'toggleOn' : 'toggleOff') : 'select');
+      }
     } catch (error) { toast(cleanError(error), 'error'); }
     finally {
       switchSelectionPending = false;
@@ -892,8 +1029,46 @@ function syncActivityFilterControl() {
   syncFilterStrip('#activity-filter-switch', activityFilterOrder, currentActivityFilter, 'data-activity-filter', kind => localized(...labels[kind]), true);
 }
 
+function syncVaultViewMode() {
+  const list = $('#connections-list');
+  if (list) {
+    list.dataset.view = vaultViewMode;
+    if (typeof updateItemGridRowHeight === 'function' && itemList) updateItemGridRowHeight();
+  }
+  const button = $('#vault-view-toggle');
+  if (!button) return;
+  button.dataset.view = vaultViewMode;
+  const label = vaultViewMode === 'list'
+    ? localized('切换为卡片网格视图', 'Switch to card grid view')
+    : localized('切换为列表视图', 'Switch to list view');
+  button.setAttribute('aria-label', label);
+  button.title = label;
+}
+
+function setVaultViewMode(nextMode) {
+  vaultViewMode = nextMode === 'grid' ? 'grid' : 'list';
+  try { localStorage.setItem('openkeylet.vaultView', vaultViewMode); } catch (_) {}
+  syncVaultViewMode();
+}
+
+function itemSubtitle(item) {
+  const detail = itemDetail(item);
+  if (detail) return detail;
+  return [item.folder, item.description, itemDisplayType(item)].filter(Boolean).join(' · ');
+}
+
+function itemMetaBadges(item) {
+  const badges = [];
+  if (item.passkeys?.length) badges.push('PASSKEY');
+  const hasTotp = Boolean(item.hasTotp || (item.modules || []).some((m) => m.kind === 'totp' && m.configured !== false));
+  if (hasTotp) badges.push('2FA');
+  if (item.folder && !itemSubtitle(item).includes(item.folder)) badges.push(item.folder);
+  return badges.slice(0, 2);
+}
+
 function renderConnections() {
   if (itemPointerDrag || itemOrderSaving) return;
+  syncVaultViewMode();
   const query = normalizeSearch(pageSearch.connections);
   const signature = JSON.stringify([state.connections, query, language, editorItemId, currentItemTypeFilter]);
   if (signature === renderedConnectionsSignature) return;
@@ -916,12 +1091,15 @@ function renderConnections() {
     const type = itemDisplayType(item);
     const canTest = item.enabled && item.canTest;
     const agentActions = itemCapabilities(item).length > 0;
+    const subtitle = itemSubtitle(item);
+    const badges = itemMetaBadges(item);
     const reorderLabel = localized(`${item.name}：拖动排序，或按方向键`, `${item.name}: drag to reorder, or use the arrow keys`);
     const toggleLabel = item.enabled
       ? localized('停用此项目；Agent 将无法使用其中的秘密', 'Disable this item; agents will no longer be able to use its secrets')
       : localized('启用此项目；Agent 将可以使用其中的秘密', 'Enable this item so agents can use its secrets');
     return `<article class="connection-card ${itemCapabilities(item).includes('ssh') ? 'ssh' : itemCapabilities(item).includes('http') ? 'http' : 'fill'} ${item.enabled ? '' : 'disabled'}" data-item-id="${escapeHtml(item.id)}">
       <button class="connection-name" type="button" draggable="false" data-item-reorder="${escapeHtml(item.id)}" aria-label="${escapeHtml(reorderLabel)}" aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight Home End" title="${escapeHtml(reorderLabel)}"><span class="lettering-ink">${escapeHtml(item.name)}</span></button>
+      <span class="connection-meta"><span class="connection-sub">${escapeHtml(subtitle)}</span>${badges.map((badge) => `<span class="connection-badge">${escapeHtml(badge)}</span>`).join('')}</span>
       <button class="module-state item-toggle" type="button" data-action="toggle-enabled" data-id="${item.id}" aria-pressed="${item.enabled}" title="${toggleLabel}" aria-label="${toggleLabel}"><i class="status-dot ${item.enabled ? '' : 'off'}" aria-hidden="true"></i></button>
       <span class="connection-type" role="img" data-item-type="${itemDisplayKind(item)}" aria-label="${escapeHtml(type)}" title="${escapeHtml(type)}">${itemTypeIcon(itemDisplayKind(item))}<small aria-hidden="true">${escapeHtml(type)}</small></span>
       <div class="card-actions" role="group" aria-label="${escapeHtml(item.name)}">
@@ -1029,8 +1207,11 @@ function applySettingsSearch() {
   const query = normalizeSearch(pageSearch.settings);
   let visible = 0;
   for (const card of $$('.settings-card')) {
-    const matchesSection = currentSettingsFilter === 'all' || card.dataset.module?.startsWith(`${currentSettingsFilter} /`);
-    const matches = matchesSection && (!query || normalizeSearch(`${card.dataset.module || ''} ${card.textContent}`).includes(query));
+    const mod = card.dataset.module || '';
+    const matchesSection = currentSettingsFilter === 'all'
+      || mod.startsWith(`${currentSettingsFilter} /`)
+      || (currentSettingsFilter === 'APP' && mod.startsWith('LANG /'));
+    const matches = matchesSection && (!query || normalizeSearch(`${mod} ${card.textContent}`).includes(query));
     card.classList.toggle('search-hidden', !matches);
     if (matches) visible += 1;
   }
@@ -1039,6 +1220,7 @@ function applySettingsSearch() {
 
 function renderSettings() {
   githubBackup.render();
+  appUpdater.render();
   $('#mcp-endpoint').textContent = `${state.mcp.stdioCommand} mcp stdio`;
   const mcpFault = state.mcp.status === 'error';
   const mcpStrip = $('#mcp-status-strip');
@@ -1047,8 +1229,16 @@ function renderSettings() {
   $('#agent-restart-notice').classList.toggle('hidden', !agentRestartRequired);
   $('#desktop-shortcut-enabled').checked = Boolean(systemIntegrationState.desktopShortcut);
   $('#launch-at-login-enabled').checked = Boolean(systemIntegrationState.launchAtLogin);
-  $('#pin-enabled').checked = ownerLockState.pinConfigured || ownerPinSetupRequested;
-  $('#owner-auto-lock-option').classList.toggle('hidden', !ownerLockState.pinConfigured);
+  const strongMode = Boolean(ownerLockState.strongMode || ownerLockState.mode === 'strong');
+  $('#pin-enabled').checked = ownerLockState.pinConfigured || ownerPinSetupRequested || strongMode;
+  $('#pin-enabled').disabled = strongMode;
+  const pinHelp = $('.pin-option small');
+  if (pinHelp) {
+    pinHelp.textContent = strongMode
+      ? localized('已由「高安全强加密模式」强主密码接管（随 GitHub 私有仓库同步开启/关闭）', 'Managed by Strong Cloud Vault master passphrase (coupled with GitHub private repo binding).')
+      : localized('防他人在本机查看明文或管理条目；关闭将移除当前 PIN', 'Locks desktop viewing and management against others on this device. Turning off removes the PIN.');
+  }
+  $('#owner-auto-lock-option').classList.toggle('hidden', !ownerLockState.pinConfigured && !strongMode);
   const autoLockMinutes = Number(state.settings.ownerAutoLockMinutes || 0);
   $('#owner-auto-lock-minutes').value = [0, 5, 15, 30, 60].includes(autoLockMinutes) ? String(autoLockMinutes) : '0';
   $('#close-behavior').value = state.settings.closeBehavior === 'exit' ? 'exit' : 'tray';
@@ -1057,20 +1247,96 @@ function renderSettings() {
   $('#browser-agent-passkey-enabled').checked = state.settings.browserAgentPasskey !== false;
   const bridge = state.browserBridge;
   const online = ['listening', 'delegated'].includes(bridge.status);
+  const connectedCount = Number(bridge.connectedCount || (bridge.connected ? 1 : 0));
+  const pairingActive = Boolean(bridge.pairingActive);
   const strip = $('#browser-status-strip');
   strip.className = `status-strip ${bridge.status === 'error' ? 'error' : online ? '' : 'offline'}`;
-  strip.innerHTML = `<span class="status-dot"></span><span class="status-key">${bridge.status === 'error' ? 'FAULT' : online ? (bridge.connected ? 'CONNECTED' : bridge.paired ? 'WAITING' : 'READY') : 'OFF'}</span><span>${bridge.status === 'error' ? escapeHtml(publicMessage(bridge.error)) : online ? escapeHtml(bridge.endpoint) : localized('Browser Bridge 已关闭', 'Browser Bridge is off')}</span>`;
+  const statusKey = bridge.status === 'error'
+    ? 'FAULT'
+    : !online
+      ? 'OFF'
+      : bridge.connected
+        ? 'CONNECTED'
+        : pairingActive
+          ? 'PAIRING'
+          : bridge.paired
+            ? 'WAITING'
+            : 'READY';
+  const statusDetail = bridge.status === 'error'
+    ? publicMessage(bridge.error)
+    : !online
+      ? localized('Browser Bridge 已关闭', 'Browser Bridge is off')
+      : bridge.connected
+        ? connectedCount > 1
+          ? localized(
+              `已连接 ${connectedCount} 个 Chrome 账号 · ${bridge.endpoint}`,
+              `${connectedCount} Chrome profiles connected · ${bridge.endpoint}`,
+            )
+          : pairingActive
+            ? localized(
+                `已连接 · 自动配对窗口开启中（可继续添加账号）`,
+                `Connected · pairing window open (add more profiles)`,
+              )
+            : bridge.endpoint
+        : pairingActive
+          ? localized(
+              '自动配对窗口已开启（安装扩展后自动连接）',
+              'Auto-pairing window open (extensions connect automatically)',
+            )
+          : bridge.endpoint;
+  strip.innerHTML = `<span class="status-dot"></span><span class="status-key">${statusKey}</span><span>${escapeHtml(statusDetail)}</span>`;
   $('#test-browser-bridge-button').disabled = !bridge.connected;
   $('#reset-pairing-button').disabled = !bridge.paired;
+  renderChromeProfiles();
   renderAgents();
   applySettingsSearch();
 }
 
+function renderChromeProfiles() {
+  const row = $('#chrome-profile-row');
+  const select = $('#chrome-profile-select');
+  if (!row || !select) return;
+  if (!Array.isArray(chromeProfiles) || chromeProfiles.length < 2) {
+    row.classList.add('hidden');
+    select.replaceChildren();
+    return;
+  }
+  const previous = select.value;
+  select.replaceChildren(...chromeProfiles.map((profile) => {
+    const title = profile.name || profile.directory;
+    const sub = profile.account && profile.account !== title ? profile.account : '';
+    const label = sub ? `${title} (${sub})` : title;
+    const option = new Option(label, profile.directory);
+    option.dataset.title = title;
+    if (sub) option.dataset.sub = sub;
+    return option;
+  }));
+  if (previous && chromeProfiles.some((profile) => profile.directory === previous)) {
+    select.value = previous;
+  }
+  row.classList.remove('hidden');
+}
+
+async function loadChromeProfiles() {
+  try {
+    const profiles = await api.chromeProfiles();
+    chromeProfiles = Array.isArray(profiles) ? profiles : [];
+  } catch {
+    chromeProfiles = [];
+  }
+  renderChromeProfiles();
+}
+
 const agentLabels = { notDetected: 'NOT FOUND', available: 'READY', registered: 'CONNECTED', stale: 'NEEDS REPAIR', conflict: 'CONFLICT', error: 'ERROR' };
 function agentDetail(client) {
-  const details = language === 'en'
-    ? { notDetected: 'Not installed', available: 'Ready to connect', registered: 'Connected', stale: 'OpenKeylet setup needs repair', conflict: 'Config conflict', error: 'Detection failed' }
-    : { notDetected: '未安装或未发现', available: '可连接', registered: '已连接', stale: 'OpenKeylet 连接或全局规则需要修复', conflict: '配置冲突', error: '检测失败' };
+  const details = {
+    notDetected: localized('未安装或未发现', 'Not installed'),
+    available: localized('可连接', 'Ready to connect'),
+    registered: localized('已连接', 'Connected'),
+    stale: localized('OpenKeylet 连接或全局规则需要修复', 'OpenKeylet setup needs repair'),
+    conflict: localized('配置冲突', 'Config conflict'),
+    error: localized('检测失败', 'Detection failed'),
+  };
   return details[client.state] || publicMessage(client.message, localized('状态已更新', 'Status updated'));
 }
 function renderAgents() {
@@ -1204,7 +1470,7 @@ function renderModules() {
         : `<div class="secret-input-control module-secret-control"><input class="input" data-secret-value type="password" autocomplete="off" value="${escapeHtml(module.secretValue || '')}" placeholder="${placeholder}" /></div>`;
       actions = `${secretActionButton('reveal')}${secretActionButton('copy')}`;
       if (module.kind === 'password') control += `<button class="small-button" type="button" data-generate-password>${localized('生成密码', 'GENERATE')}</button>`;
-      if (module.kind === 'totp') control += `<button class="small-button" type="button" data-copy-totp-code>${localized('复制 2FA 验证码', 'COPY 2FA CODE')}</button>`;
+      if (module.kind === 'totp') control += `<div class="totp-inline-actions"><button class="small-button" type="button" data-copy-totp-code>${localized('复制 2FA 验证码', 'COPY 2FA CODE')}</button><button class="small-button" type="button" data-scan-totp-qr>${localized('扫描二维码图片', 'SCAN QR IMAGE')}</button></div>`;
     } else {
       const inputType = module.kind === 'port' ? 'number' : 'text';
       const placeholder = module.kind === 'url' ? 'api.example.com/v1/' : module.kind === 'host' ? 'host.example.com' : '22';
@@ -1373,8 +1639,17 @@ async function openEditor(item = null, draft = null) {
   } finally { editorOpening = false; }
 }
 
+function clearSmartParseBanner() {
+  editorSmartClipboardSource = '';
+  editorSmartTotpUri = '';
+  $('#smart-parse-banner')?.classList.add('hidden');
+  $('#smart-parse-warnings')?.classList.add('hidden');
+  $('#smart-totp-attach')?.classList.add('hidden');
+}
+
 function closeEditor() {
   finishModulePointerDrag(false);
+  clearSmartParseBanner();
   $('#connection-modal').classList.add('hidden');
   setModuleMenu(false);
   editorItemId = null;
@@ -1572,19 +1847,19 @@ async function savePinSettings() {
 }
 
 async function setLanguage(next) {
-  const selected = next === 'en' ? 'en' : 'zh';
-  if (selected === language) return;
-  language = selected;
+  const selected = normalizeLanguageSetting(next);
+  if (selected === languagePreference) return;
+  languagePreference = selected;
   applyLanguage();
   if (state) {
-    state.settings.language = language;
+    state.settings.language = languagePreference;
     renderOwnerLock();
     render();
     syncModuleDraft();
     if (!$('#connection-modal').classList.contains('hidden')) renderModules();
     if (!$('#connection-modal').classList.contains('hidden')) updateEditorTitle();
     try {
-      state.settings = await api.settings({ language });
+      state.settings = await api.settings({ language: languagePreference });
     } catch (error) {
       toast(cleanError(error), 'error');
     }
@@ -1592,6 +1867,7 @@ async function setLanguage(next) {
 }
 
 function toastImportSummary(summary) {
+  window.OpenKeyletAppearance?.play?.('success');
   toast(localized(`导入完成：新增 ${summary.added}，合并重复 ${summary.merged}`, `Import complete: ${summary.added} added, ${summary.merged} duplicates merged`));
 }
 
@@ -1601,7 +1877,10 @@ async function exportBackup(button) {
     const password = await askBackupPassword(true);
     if (password === null) return;
     const path = await api.exportBackup(password);
-    if (path) toast(localized('加密备份已导出；恢复时需要备份密码', 'Encrypted backup exported; keep its password for restoration'));
+    if (path) {
+      window.OpenKeyletAppearance?.play?.('success');
+      toast(localized('加密备份已导出；恢复时需要备份密码', 'Encrypted backup exported; keep its password for restoration'));
+    }
   } catch (error) {
     toast(cleanError(error), 'error');
   } finally {
@@ -1610,18 +1889,27 @@ async function exportBackup(button) {
 }
 
 async function importBackup(button) {
-  button.disabled = true;
+  await refreshOwnerLock();
+  if (!ownerLockState.unlocked) return;
+  if (button) button.disabled = true;
   try {
-    const password = await askBackupPassword(false);
-    if (password === null) return;
-    const result = await api.importBackup(password);
-    if (!result) return;
-    toastImportSummary(result);
-    await refresh();
+    const picked = await api.pickBackupImportFile();
+    // Graceful fallback if an older mock harness does not implement pick_backup_import_file.
+    if (picked === undefined || (picked && typeof picked === 'object' && !('requiresPassword' in picked))) {
+      const password = await askBackupPassword(false);
+      if (password === null) return;
+      const result = await api.importBackup(password);
+      if (!result) return;
+      toastImportSummary(result);
+      await refresh();
+      return;
+    }
+    if (picked === null) return;
+    await openMvaultPreviewFlow(picked);
   } catch (error) {
     toast(cleanError(error), 'error');
   } finally {
-    button.disabled = false;
+    if (button) button.disabled = false;
   }
 }
 
@@ -1701,6 +1989,7 @@ $('#login-uri-add').onclick = () => renderLoginUris([...$$('#login-uri-list .log
 $('#login-uri-list').onclick = event => event.target.closest('[data-remove-uri]')?.closest('.login-uri-row').remove();
 
 let migrationId = null;
+let migrationMode = 'migration';
 let migrationSequence = 0;
 const migrationWarnings = {
   nonWebUris: ['非网页地址已保留，设为“不匹配”。','Non-web addresses are preserved with matching disabled.'],
@@ -1712,14 +2001,38 @@ const migrationWarnings = {
   reprompt: ['原逐项主密码验证设置不生效；本地 PIN 锁仍适用。','Source per-item master-password reprompt settings are not applied; the local PIN lock still applies.'],
   attachments: ['JSON 不含附件文件内容；请从原密码库单独保留附件。','JSON does not contain attachment files. Keep them separately from the source vault.'],
   organization: ['组织项目将成为本地个人项目，不保留共享权限。','Organization items become local personal items without sharing permissions.'],
+  sshKeyNotFound: ['部分主机引用的本机私钥文件不存在或不可读，已仅导入主机与账号信息。','Some hosts referenced local key files that were missing or unreadable; host and user details were still imported.'],
 };
 function migrationHelp() {
-  $('#migration-help').textContent = $('#migration-format').value === 'bitwarden'
+  const format = $('#migration-format').value;
+  $('#migration-scan-ssh')?.classList.toggle('hidden', format !== 'ssh_config');
+  if (format === 'mvault') {
+    $('#migration-help').textContent = localized(
+      '选择 OpenKeylet .mvault 备份包（支持新版密码保护包及旧版 v3–v7 / CLI 自解锁包）。先预览条目与冲突重命名再确认合并。',
+      'Choose an OpenKeylet .mvault package (supports current password-protected and legacy v3–v7 / CLI backups). Preview items and conflict renames before merging.'
+    );
+    return;
+  }
+  if (format === 'ssh_config') {
+    $('#migration-help').textContent = localized(
+      '扫描本机 ~/.ssh/config 或选择自定义 SSH 配置文件，自动导入主机、端口、用户名及关联的私钥文件（先预览再确认）。',
+      'Scan your local ~/.ssh/config or choose an SSH config file to import hosts, ports, users, and linked private keys with a preview first.'
+    );
+    return;
+  }
+  if (format === 'env') {
+    $('#migration-help').textContent = localized(
+      '选择项目中的 .env 文件，把其中的 KEY=VALUE 加密存为一个安全项目（所有密钥默认对 Agent 隐藏，可通过 {{openkeylet:KEY}} 注入）。',
+      'Choose a .env file to store its KEY=VALUE secrets encrypted in one vault item (hidden from agents by default; injectable via {{openkeylet:KEY}}).'
+    );
+    return;
+  }
+  $('#migration-help').textContent = format === 'bitwarden'
     ? localized('在 Bitwarden 中导出未加密 JSON，然后选择文件预览。原文件不变；导入的秘密会加密存入本地库。', 'Export unencrypted JSON from Bitwarden, then choose the file to preview. The source is unchanged; imported secrets are encrypted locally.')
     : localized('选择 Chrome 或 Edge 导出的密码 CSV。支持带引号、逗号和多行备注的文件。', 'Choose a password CSV exported by Chrome or Edge. Quoted fields, commas and multiline notes are supported.');
 }
 function resetMigration() {
-  migrationSequence++; migrationId = null;
+  migrationSequence++; migrationId = null; migrationMode = 'migration';
   $('#migration-preview').replaceChildren(); $('#migration-preview').classList.add('hidden');
   $('#migration-confirm').classList.add('hidden');
   $('#migration-error').classList.add('hidden');
@@ -1727,21 +2040,91 @@ function resetMigration() {
 function closeMigration() {
   resetMigration(); $('#migration-modal').classList.add('hidden');
   api.cancelImport().catch(() => {});
+  api.cancelBackupImport().catch(() => {});
+}
+async function openMvaultPreviewFlow(picked) {
+  const password = picked.requiresPassword ? await askBackupPassword(false, picked.fileName) : '';
+  if (password === null) {
+    api.cancelBackupImport().catch(() => {});
+    return;
+  }
+  $('#migration-format').value = 'mvault';
+  resetMigration();
+  migrationHelp();
+  $('#migration-modal').classList.remove('hidden');
+  const sequence = migrationSequence;
+  $('#migration-select').disabled = true;
+  try {
+    const result = await api.prepareBackupImport(password);
+    if (!result || sequence !== migrationSequence) return;
+    migrationId = result.id;
+    migrationMode = 'mvault';
+    const p = result.preview;
+    const lines = [
+      `${picked.fileName} · ${p.formatLabel}`,
+      localized(
+        `共 ${p.totalItems} 项 · 将新增 ${p.newItems} 项 · 跳过相同 ${p.duplicateSkipped} 项 · 同名安全重命名 ${p.nameConflicts} 项`,
+        `${p.totalItems} items · ${p.newItems} to add · ${p.duplicateSkipped} identical skipped · ${p.nameConflicts} renamed on conflict`
+      ),
+      ...(p.passkeyCount || p.trashCount || p.historyEntries
+        ? [localized(
+            `含 Passkey ${p.passkeyCount} 个 · 密码历史 ${p.historyEntries} 条 · 回收站 ${p.trashCount} 项`,
+            `Includes ${p.passkeyCount} passkeys · ${p.historyEntries} history entries · ${p.trashCount} trashed items`
+          )]
+        : []),
+      ...(p.sampleNames?.length
+        ? [localized(`示例条目：${p.sampleNames.join('、')}`, `Sample items: ${p.sampleNames.join(', ')}`)]
+        : []),
+      ...(p.conflictRenames?.length
+        ? [localized(`同名冲突将自动另存（不覆盖）：${p.conflictRenames.join('；')}`, `Conflicts safely renamed (no overwrite): ${p.conflictRenames.join('; ')}`)]
+        : []),
+      ...(!p.protected
+        ? [localized('安全提示：此文件为旧版无密码自解锁 .mvault，文件内含解锁密钥。导入完成后建议删除旧文件并重新导出带密码保护的新备份。', 'Security note: This is a legacy self-unlocking .mvault containing its own unlock key. Delete the old file after importing and export a password-protected backup.')]
+        : []),
+    ];
+    const preview = $('#migration-preview');
+    preview.replaceChildren(...lines.map(line => { const el = document.createElement('p'); el.textContent = line; return el; }));
+    preview.classList.remove('hidden');
+    $('#migration-confirm').classList.toggle('hidden', p.totalItems === 0 && p.trashCount === 0);
+  } catch (error) {
+    if (sequence === migrationSequence) {
+      $('#migration-error').textContent = cleanError(error);
+      $('#migration-error').classList.remove('hidden');
+    }
+  } finally {
+    $('#migration-select').disabled = false;
+  }
 }
 $('#migration-open').onclick = async () => {
   await refreshOwnerLock();
   if (!ownerLockState.unlocked) return;
+  if ($('#migration-format').value === 'mvault') $('#migration-format').value = 'bitwarden';
   resetMigration(); migrationHelp(); $('#migration-modal').classList.remove('hidden');
 };
 $('#migration-close').onclick = closeMigration;
-$('#migration-format').onchange = () => { resetMigration(); api.cancelImport().catch(() => {}); migrationHelp(); };
+$('#migration-format').onchange = () => { resetMigration(); api.cancelImport().catch(() => {}); api.cancelBackupImport().catch(() => {}); migrationHelp(); };
 $('#migration-select').onclick = async () => {
+  if ($('#migration-format').value === 'mvault') {
+    $('#migration-select').disabled = true;
+    try {
+      const picked = await api.pickBackupImportFile();
+      if (!picked) return;
+      await openMvaultPreviewFlow(picked);
+    } catch (error) {
+      $('#migration-error').textContent = cleanError(error);
+      $('#migration-error').classList.remove('hidden');
+    } finally {
+      $('#migration-select').disabled = false;
+    }
+    return;
+  }
   resetMigration(); const sequence = migrationSequence;
   $('#migration-select').disabled = true;
   try {
     const result = await api.prepareImport($('#migration-format').value);
     if (!result || sequence !== migrationSequence) return;
     migrationId = result.id;
+    migrationMode = 'migration';
     const p = result.preview;
     const lines = [localized(`可导入 ${p.total} 项 · Passkey ${p.passkeys} 个`, `${p.total} items · ${p.passkeys} passkeys`),
       ...Object.entries(p.types).map(([type,count]) => `${itemTypeLabel(type)}: ${count}`),
@@ -1753,10 +2136,41 @@ $('#migration-select').onclick = async () => {
     if (sequence === migrationSequence) { $('#migration-error').textContent=cleanError(error); $('#migration-error').classList.remove('hidden'); }
   } finally { $('#migration-select').disabled = false; }
 };
+$('#migration-scan-ssh')?.addEventListener('click', async () => {
+  resetMigration(); const sequence = migrationSequence;
+  const btn = $('#migration-scan-ssh');
+  btn.disabled = true;
+  try {
+    const result = await api.prepareSshConfigImport(true);
+    if (!result || sequence !== migrationSequence) return;
+    migrationId = result.id;
+    migrationMode = 'migration';
+    const p = result.preview;
+    const lines = [
+      ...(result.sourcePath ? [result.sourcePath] : []),
+      localized(`可导入 ${p.total} 项 SSH 配置`, `${p.total} SSH host(s) ready to import`),
+      ...Object.entries(p.types).map(([type, count]) => `${itemTypeLabel(type)}: ${count}`),
+      ...p.warnings.map(key => migrationWarnings[key] ? localized(...migrationWarnings[key]) : key),
+    ];
+    const preview = $('#migration-preview');
+    preview.replaceChildren(...lines.map(line => { const el = document.createElement('p'); el.textContent = line; return el; }));
+    preview.classList.remove('hidden');
+    $('#migration-confirm').classList.toggle('hidden', p.total === 0);
+  } catch (error) {
+    if (sequence === migrationSequence) { $('#migration-error').textContent = cleanError(error); $('#migration-error').classList.remove('hidden'); }
+  } finally { btn.disabled = false; }
+});
 $('#migration-confirm').onclick = async () => {
   if (!migrationId) return;
   $('#migration-confirm').disabled = true;
-  try { const result = await api.commitImport(migrationId); closeMigration(); toastImportSummary(result); await refresh(); }
+  try {
+    const result = migrationMode === 'mvault'
+      ? await api.commitBackupImport(migrationId)
+      : await api.commitImport(migrationId);
+    closeMigration();
+    toastImportSummary(result);
+    await refresh();
+  }
   catch(error) { $('#migration-error').textContent=cleanError(error); $('#migration-error').classList.remove('hidden'); }
   finally { $('#migration-confirm').disabled = false; }
 };
@@ -2006,7 +2420,11 @@ function updateItemGridRowHeight() {
   const style = getComputedStyle(itemList);
   const gap = parseFloat(style.rowGap) || 0;
   const padding = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
-  itemList.style.setProperty('--item-row-height', `${Math.max(86, (itemList.clientHeight - padding - 2 * gap) / 3)}px`);
+  const threeRowHeight = (itemList.clientHeight - padding - 2 * gap) / 3;
+  const height = itemList.clientHeight > 540
+    ? Math.min(156, Math.max(86, threeRowHeight))
+    : Math.max(86, threeRowHeight);
+  itemList.style.setProperty('--item-row-height', `${height}px`);
 }
 new ResizeObserver(updateItemGridRowHeight).observe(itemList);
 
@@ -2058,7 +2476,8 @@ function updateItemDropSeam() {
       const dx = Math.max(rect.left - drag.x, 0, drag.x - rect.right);
       const dy = Math.max(rect.top - drag.y, 0, drag.y - rect.bottom);
       const centerX = rect.left + rect.width / 2, centerY = rect.top + rect.height / 2;
-      const candidate = { row, after: drag.x >= centerX, distance: dx * dx + dy * dy, centerDistance: (drag.x - centerX) ** 2 + (drag.y - centerY) ** 2 };
+      const isList = vaultViewMode === 'list';
+      const candidate = { row, after: isList ? drag.y >= centerY : drag.x >= centerX, distance: dx * dx + dy * dy, centerDistance: (drag.x - centerX) ** 2 + (drag.y - centerY) ** 2 };
       if (!target || candidate.distance < target.distance || (candidate.distance === target.distance && candidate.centerDistance < target.centerDistance)) target = candidate;
     }
   }
@@ -2168,7 +2587,9 @@ itemList.addEventListener('keydown', event => {
   if (!handle || itemPointerDrag || itemOrderSaving || confirmationResolver || !ownerLockState.unlocked || event.altKey || event.ctrlKey || event.metaKey || !['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
   event.preventDefault(); event.stopPropagation();
   const ids = visibleItemIds(), id = handle.dataset.itemReorder, from = ids.indexOf(id);
-  const step = { ArrowUp: -4, ArrowDown: 4, ArrowLeft: -1, ArrowRight: 1 }[event.key];
+  const step = vaultViewMode === 'list'
+    ? { ArrowUp: -1, ArrowDown: 1, ArrowLeft: -1, ArrowRight: 1 }[event.key]
+    : { ArrowUp: -4, ArrowDown: 4, ArrowLeft: -1, ArrowRight: 1 }[event.key];
   const to = event.key === 'Home' ? 0 : event.key === 'End' ? ids.length - 1 : Math.max(0, Math.min(ids.length - 1, from + step));
   if (to === from) return;
   ids.splice(from, 1); ids.splice(to, 0, id);
@@ -2533,36 +2954,74 @@ $('#connection-form').addEventListener('submit', async (event) => {
   button.disabled = true;
   try {
     const input = serializeItem();
+    const pastedClipboard = editorSmartClipboardSource;
     await api.save(input);
     if (currentDraftId) await api.deleteDraft(currentDraftId);
     currentDraftId = '';
     closeEditor();
-    toast(localized('项目已加密保存', 'Item saved and encrypted'));
+    let clearedClipboard = false;
+    if (pastedClipboard) {
+      clearedClipboard = await api.clearClipboardIfMatches(pastedClipboard).catch(() => false);
+    }
+    window.OpenKeyletAppearance?.play?.('success');
+    toast(clearedClipboard
+      ? localized('项目已加密保存，并已自动清理剪贴板', 'Item saved and clipboard cleared')
+      : localized('项目已加密保存', 'Item saved and encrypted'));
     await refresh();
     await refreshDrafts();
   } catch (error) { toast(cleanError(error), 'error'); } finally { button.disabled = false; }
 });
+$('#owner-strong-reveal')?.addEventListener('click', () => {
+  const input = $('#owner-strong-secret');
+  const btn = $('#owner-strong-reveal');
+  if (!input || !btn) return;
+  const showing = input.type === 'text';
+  input.type = showing ? 'password' : 'text';
+  btn.textContent = showing ? localized('显示', 'SHOW') : localized('隐藏', 'HIDE');
+  input.focus();
+});
 $('#owner-lock-form').addEventListener('submit', async (event) => {
   event.preventDefault();
-  const pin = readPin('owner-pin');
-  if (!/^\d{6}$/.test(pin)) return toast(localized('PIN 必须是六位数字', 'PIN must contain six digits'), 'error');
-  if (!ownerLockState.pinConfigured && pin !== readPin('owner-pin-confirm')) return toast(localized('两次 PIN 不一致', 'PIN entries do not match'), 'error');
+  const strongMode = Boolean(ownerLockState.strongMode || ownerLockState.mode === 'strong');
   const button = $('#owner-unlock-action');
   const cancelButton = $('#owner-pin-cancel');
+  let credential = '';
+  if (strongMode) {
+    credential = $('#owner-strong-secret')?.value || '';
+    if (!credential.trim()) {
+      return toast(localized('请输入强主密码或 okv1_ 恢复密钥', 'Enter your master passphrase or okv1_ recovery key'), 'error');
+    }
+  } else {
+    credential = readPin('owner-pin');
+    if (!/^\d{6}$/.test(credential)) return toast(localized('PIN 必须是六位数字', 'PIN must contain six digits'), 'error');
+    if (!ownerLockState.pinConfigured && credential !== readPin('owner-pin-confirm')) return toast(localized('两次 PIN 不一致', 'PIN entries do not match'), 'error');
+  }
   button.disabled = true;
   cancelButton.disabled = true;
   try {
-    const settingPin = !ownerLockState.pinConfigured;
-    ownerLockState = ownerLockState.pinConfigured ? await api.ownerUnlock(pin) : await api.ownerSetPin(pin);
+    const settingPin = !strongMode && !ownerLockState.pinConfigured;
+    ownerLockState = (strongMode || ownerLockState.pinConfigured)
+      ? await api.ownerUnlock(credential)
+      : await api.ownerSetPin(credential);
+    credential = '';
+    if ($('#owner-strong-secret')) $('#owner-strong-secret').value = '';
     ownerPinSetupRequested = false;
+    window.OpenKeyletAppearance?.play?.(settingPin ? 'success' : 'unlock');
     renderOwnerLock();
     if (settingPin) toast(localized('PIN 锁已开启', 'PIN lock enabled'));
     await refresh(false);
     await refreshDrafts(true);
   } catch (error) {
     toast(cleanError(error), 'error');
-    clearPin('owner-pin');
-    focusPin('owner-pin');
+    if (strongMode) {
+      if ($('#owner-strong-secret')) {
+        $('#owner-strong-secret').value = '';
+        $('#owner-strong-secret').focus();
+      }
+    } else {
+      clearPin('owner-pin');
+      focusPin('owner-pin');
+    }
   } finally {
     button.disabled = false;
     cancelButton.disabled = false;
@@ -2607,7 +3066,7 @@ $('#start-pairing-button').addEventListener('click', async (event) => {
   try {
     await api.quickPair(port);
     $('#browser-enabled').checked = true;
-    toast(localized('已开启 120 秒配对窗口，已安装的扩展会自动连接', '120s pairing window open. Installed extensions will connect automatically.'));
+    toast(localized('已开启 5 分钟自动配对窗口，支持连续连接多个 Chrome 账号', '5-minute auto-pairing window open. Multiple Chrome profiles can connect automatically.'));
     await refresh(false);
   } catch (error) {
     toast(cleanError(error), 'error');
@@ -2639,6 +3098,41 @@ $('#launch-at-login-enabled').addEventListener('change', (event) => setSystemInt
 $('#pin-enabled').addEventListener('change', savePinSettings);
 $('#close-behavior').addEventListener('change', saveDesktopSettings);
 $('#owner-auto-lock-minutes').addEventListener('change', saveDesktopSettings);
+const BROWSER_EXTENSIONS_URL = 'chrome://extensions/';
+$('#browser-extensions-url').addEventListener('click', (event) => {
+  event.currentTarget.select();
+});
+$('#copy-extensions-url-button').addEventListener('click', async (event) => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  try {
+    await api.copyOwnerValue(BROWSER_EXTENSIONS_URL, false);
+    $('#browser-extensions-url').select();
+    const port = Number($('#browser-port').value);
+    let pairingArmed = false;
+    if (Number.isInteger(port) && port >= 1024 && port <= 65535) {
+      try {
+        await api.quickPair(port);
+        $('#browser-enabled').checked = true;
+        pairingArmed = true;
+        await refresh(false);
+      } catch {}
+    }
+    toast(pairingArmed
+      ? localized(
+          `已复制 ${BROWSER_EXTENSIONS_URL}，并已开启自动配对窗口`,
+          `Copied ${BROWSER_EXTENSIONS_URL}. Auto-pairing window is open.`,
+        )
+      : localized(
+          `已复制 ${BROWSER_EXTENSIONS_URL}，请粘贴到 Chrome 地址栏`,
+          `Copied ${BROWSER_EXTENSIONS_URL}. Paste it into Chrome's address bar.`,
+        ));
+  } catch (error) {
+    toast(cleanError(error), 'error');
+  } finally {
+    button.disabled = false;
+  }
+});
 $('#quick-pairing-button').addEventListener('click', async event => {
   const button = event.currentTarget;
   button.disabled = true;
@@ -2646,7 +3140,7 @@ $('#quick-pairing-button').addEventListener('click', async event => {
     $('#browser-open-help').hidden = true;
     let copyError = null;
     try {
-      await api.copyOwnerValue('chrome://extensions/', false);
+      await api.copyOwnerValue(BROWSER_EXTENSIONS_URL, false);
       $('#browser-open-help').hidden = false;
     } catch (error) { copyError = error; }
     let pairingError = null;
@@ -2655,12 +3149,13 @@ $('#quick-pairing-button').addEventListener('click', async event => {
       $('#browser-enabled').checked = true;
     } catch (error) { pairingError = error; }
     let browserError = null;
-    try { await api.openChrome(); } catch (error) { browserError = error; }
+    const selectedProfile = $('#chrome-profile-select')?.value || null;
+    try { await api.openChrome(selectedProfile); } catch (error) { browserError = error; }
     if (copyError) toast(cleanError(copyError), 'error');
     else if (pairingError && browserError) toast(localized('配对失败，且无法打开 Chrome。请检查 Browser Bridge 并手动打开 Chrome。', 'Pairing failed and Chrome could not be opened. Check Browser Bridge and open Chrome manually.'), 'error');
     else if (pairingError) toast(cleanError(pairingError), 'error');
     else if (browserError) toast(localized('地址已复制，请手动打开 Chrome 并粘贴。', 'Address copied. Open Chrome and paste it manually.'), 'error');
-    else toast(localized('地址已复制，配对已准备。', 'Address copied. Pairing is ready.'));
+    else toast(localized('地址已复制，5 分钟自动配对窗口已开启。', 'Address copied. 5-minute auto-pairing window is open.'));
     await refresh(false);
   } catch (error) {
     toast(cleanError(error), 'error');
@@ -2682,6 +3177,8 @@ $('#open-data-button').addEventListener('click', () => api.dataFolder().catch((e
 $('#rescan-agents').addEventListener('click', () => scanAgents(true));
 $('#header-export-backup-button').addEventListener('click', (event) => exportBackup(event.currentTarget));
 $('#header-import-backup-button').addEventListener('click', (event) => importBackup(event.currentTarget));
+$('#safe-export-backup-button')?.addEventListener('click', (event) => exportBackup(event.currentTarget));
+$('#safe-import-backup-button')?.addEventListener('click', (event) => importBackup(event.currentTarget));
 
 let generatorTarget = null, generatorSequence = 0;
 let backupPasswordResolve = null, backupPasswordExport = false;
@@ -2689,15 +3186,25 @@ function finishBackupPassword(result) {
   $('#backup-password-form').reset(); $('#backup-password-modal').classList.add('hidden');
   const resolve = backupPasswordResolve; backupPasswordResolve = null; resolve?.(result);
 }
-function askBackupPassword(exporting) {
+function askBackupPassword(exporting, fileName = '') {
   setModuleMenu(false);
   finishBackupPassword(null); backupPasswordExport = exporting;
-  $('#backup-password-title').textContent = exporting ? localized('导出加密备份', 'EXPORT ENCRYPTED BACKUP') : localized('恢复备份', 'RESTORE BACKUP');
+  $('#backup-password-title').textContent = exporting ? localized('导出加密备份', 'EXPORT ENCRYPTED BACKUP') : localized('输入备份密码', 'UNLOCK .MVAULT BACKUP');
   $('#backup-password-help').textContent = exporting
     ? localized('设置至少 12 个字符的备份密码。恢复时需要此密码，请妥善保管。', 'Use a backup password of at least 12 characters. Keep it for restoration.')
-    : localized('输入创建备份时设置的密码；旧版自动解锁备份可留空。', 'Enter the backup password. Leave blank for older automatically unlocked backups.');
+    : fileName
+      ? localized(`输入「${fileName}」创建时设置的备份密码，验证后将先展示导入预览。`, `Enter the backup password for "${fileName}" to preview its contents before importing.`)
+      : localized('输入创建备份时设置的密码；旧版自动解锁备份可留空。', 'Enter the backup password. Leave blank for older automatically unlocked backups.');
+  const submitButton = $('#backup-password-form button[type="submit"]');
+  if (submitButton) {
+    submitButton.textContent = exporting
+      ? localized('选择保存位置', 'CHOOSE DESTINATION')
+      : fileName
+        ? localized('解密并预览', 'UNLOCK & PREVIEW')
+        : localized('选择文件', 'CHOOSE FILE');
+  }
   $('#backup-password-confirm-field').classList.toggle('hidden', !exporting);
-  $('#backup-password').required = exporting;
+  $('#backup-password').required = exporting || Boolean(fileName);
   $('#backup-password-confirm').required = exporting;
   $('#backup-password-modal').classList.remove('hidden'); $('#backup-password').focus();
   return new Promise(resolve => { backupPasswordResolve = resolve; });
@@ -2805,12 +3312,543 @@ $('#drag-extension-button').addEventListener('pointermove', async event => {
 $('#drag-extension-button').addEventListener('dragstart', event => event.preventDefault());
 $('#drag-extension-button').addEventListener('keydown', event => { if(event.key==='Enter' || event.key===' ') { event.preventDefault(); api.extensionFolder().catch(error=>toast(cleanError(error),'error')); } });
 
+$('#vault-view-toggle')?.addEventListener('click', () => {
+  setVaultViewMode(vaultViewMode === 'list' ? 'grid' : 'list');
+});
+
+(() => {
+  let menu = null;
+  let activeSelect = null;
+  let activeIndex = -1;
+
+  function ensureMenu() {
+    if (menu) return menu;
+    menu = document.createElement('div');
+    menu.id = 'custom-select-menu';
+    menu.className = 'custom-select-menu hidden';
+    menu.setAttribute('role', 'listbox');
+    menu.tabIndex = -1;
+    document.body.append(menu);
+    return menu;
+  }
+
+  function closeSelectMenu(restoreFocus = false) {
+    if (!activeSelect) return;
+    const target = activeSelect;
+    activeSelect = null;
+    activeIndex = -1;
+    target.classList.remove('is-select-open');
+    target.removeAttribute('aria-expanded');
+    if (menu) {
+      menu.classList.add('hidden');
+      menu.classList.remove('is-flipped');
+      menu.replaceChildren();
+    }
+    if (restoreFocus && target.isConnected) target.focus();
+  }
+
+  function setActiveIndex(nextIndex) {
+    if (!menu) return;
+    const items = [...menu.querySelectorAll('.custom-select-option:not(:disabled)')];
+    if (!items.length) return;
+    activeIndex = ((nextIndex % items.length) + items.length) % items.length;
+    items.forEach((item, index) => item.classList.toggle('is-active', index === activeIndex));
+    items[activeIndex].scrollIntoView({ block: 'nearest' });
+  }
+
+  function commitOption(value) {
+    if (!activeSelect) return;
+    const target = activeSelect;
+    const changed = target.value !== value;
+    target.value = value;
+    closeSelectMenu(true);
+    if (changed) {
+      target.dispatchEvent(new Event('input', { bubbles: true }));
+      target.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+  }
+
+  function openSelectMenu(select) {
+    if (!select || select.disabled || select.multiple || !select.options.length) return;
+    if (activeSelect === select) {
+      closeSelectMenu(true);
+      return;
+    }
+    closeSelectMenu(false);
+    const el = ensureMenu();
+    activeSelect = select;
+    select.classList.add('is-select-open');
+    select.setAttribute('aria-expanded', 'true');
+    el.replaceChildren();
+
+    const checkSvg = '<svg class="custom-select-check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3.5 8.5 6.5 11.5 12.5 4.5"/></svg>';
+    const options = [...select.options];
+    let selectedEnabledIdx = -1;
+    let enabledCounter = 0;
+
+    for (const opt of options) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'custom-select-option';
+      btn.setAttribute('role', 'option');
+      btn.dataset.value = opt.value;
+      btn.disabled = opt.disabled;
+      const selected = opt.value === select.value;
+      btn.setAttribute('aria-selected', selected ? 'true' : 'false');
+      if (!opt.disabled) {
+        if (selected) selectedEnabledIdx = enabledCounter;
+        enabledCounter++;
+      }
+
+      const title = opt.dataset.title || opt.textContent || '';
+      const sub = opt.dataset.sub || '';
+      if (sub) {
+        btn.classList.add('has-sub');
+        const avatar = document.createElement('span');
+        avatar.className = 'custom-select-avatar';
+        avatar.setAttribute('aria-hidden', 'true');
+        avatar.textContent = (title.trim()[0] || '?').toUpperCase();
+        const copy = document.createElement('span');
+        copy.className = 'custom-select-copy';
+        const titleEl = document.createElement('span');
+        titleEl.className = 'custom-select-title';
+        titleEl.textContent = title;
+        const subEl = document.createElement('span');
+        subEl.className = 'custom-select-sub';
+        subEl.textContent = sub;
+        copy.append(titleEl, subEl);
+        btn.append(avatar, copy);
+      } else {
+        const titleEl = document.createElement('span');
+        titleEl.className = 'custom-select-title';
+        titleEl.textContent = title;
+        btn.append(titleEl);
+      }
+      btn.insertAdjacentHTML('beforeend', checkSvg);
+      btn.addEventListener('mousedown', (event) => {
+        event.preventDefault();
+      });
+      btn.addEventListener('click', () => {
+        if (!btn.disabled) commitOption(opt.value);
+      });
+      el.append(btn);
+    }
+
+    el.classList.remove('hidden', 'is-flipped');
+    el.style.visibility = 'hidden';
+    const rect = select.getBoundingClientRect();
+    const minWidth = Math.min(Math.max(rect.width, 168), window.innerWidth - 16);
+    el.style.minWidth = `${minWidth}px`;
+    el.style.maxWidth = `${Math.min(Math.max(rect.width, 320), window.innerWidth - 16)}px`;
+    const menuRect = el.getBoundingClientRect();
+    const left = Math.max(8, Math.min(rect.left, window.innerWidth - menuRect.width - 8));
+    const spaceBelow = window.innerHeight - rect.bottom - 10;
+    const spaceAbove = rect.top - 10;
+    const flip = spaceBelow < menuRect.height && spaceAbove > spaceBelow;
+    const top = flip
+      ? Math.max(8, rect.top - menuRect.height - 6)
+      : Math.min(window.innerHeight - menuRect.height - 8, rect.bottom + 6);
+    el.classList.toggle('is-flipped', flip);
+    el.style.left = `${Math.round(left)}px`;
+    el.style.top = `${Math.round(top)}px`;
+    el.style.visibility = '';
+    setActiveIndex(selectedEnabledIdx >= 0 ? selectedEnabledIdx : 0);
+  }
+
+  document.addEventListener('mousedown', (event) => {
+    if (event.button !== 0) return;
+    if (menu && !menu.classList.contains('hidden') && event.target.closest('#custom-select-menu')) return;
+    const select = event.target.closest('select');
+    if (select && !select.disabled && !select.multiple && select.options.length) {
+      event.preventDefault();
+      select.focus();
+      openSelectMenu(select);
+      return;
+    }
+    if (activeSelect) closeSelectMenu(false);
+  }, true);
+
+  document.addEventListener('keydown', (event) => {
+    if (activeSelect) {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeSelectMenu(true);
+        return;
+      }
+      if (event.key === 'Tab') {
+        closeSelectMenu(false);
+        return;
+      }
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        setActiveIndex(activeIndex + 1);
+        return;
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        setActiveIndex(activeIndex - 1);
+        return;
+      }
+      if (event.key === 'Home') {
+        event.preventDefault();
+        setActiveIndex(0);
+        return;
+      }
+      if (event.key === 'End') {
+        event.preventDefault();
+        const count = menu?.querySelectorAll('.custom-select-option:not(:disabled)').length || 0;
+        if (count) setActiveIndex(count - 1);
+        return;
+      }
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        const items = [...(menu?.querySelectorAll('.custom-select-option:not(:disabled)') || [])];
+        const chosen = items[activeIndex];
+        if (chosen) commitOption(chosen.dataset.value);
+        return;
+      }
+      return;
+    }
+    const select = document.activeElement?.tagName === 'SELECT' ? document.activeElement : null;
+    if (select && !select.disabled && !select.multiple && [' ', 'Enter', 'ArrowDown', 'ArrowUp'].includes(event.key)) {
+      event.preventDefault();
+      openSelectMenu(select);
+    }
+  });
+
+  window.addEventListener('resize', () => closeSelectMenu(false));
+  window.addEventListener('blur', () => closeSelectMenu(false));
+  document.addEventListener('scroll', (event) => {
+    if (!activeSelect) return;
+    if (menu && (event.target === menu || menu.contains(event.target))) return;
+    closeSelectMenu(false);
+  }, true);
+})();
+
+async function applySmartParseToEditor(parsed, options = {}) {
+  const sourceInput = parsed?.input;
+  if (!sourceInput) return;
+  const modalHidden = $('#connection-modal').classList.contains('hidden');
+  if (modalHidden) {
+    const opened = await openEditor(null, null);
+    if (!opened) return;
+  } else if (editorExistingItem) {
+    // Do not overwrite an existing item being edited; close draft first and open fresh.
+    if (!await closeEditorWithDraft()) return;
+    const opened = await openEditor(null, null);
+    if (!opened) return;
+  }
+  editorSourceInput = sourceInput;
+  editorSmartClipboardSource = options.clipboardSource || '';
+  editorSmartTotpUri = parsed.totpUri || '';
+  const uniqueName = (() => {
+    const base = String(sourceInput.name || '').trim() || localized('智能导入项目', 'Imported item');
+    if (!state?.connections?.some((item) => item.name.trim().toLowerCase() === base.toLowerCase())) return base;
+    let index = 2;
+    while (state.connections.some((item) => item.name.trim().toLowerCase() === `${base} (${index})`.toLowerCase())) index++;
+    return `${base} (${index})`;
+  })();
+  value('#connection-name', uniqueName);
+  value('#connection-description', sourceInput.description || '');
+  $('#connection-type').innerHTML = typeOptions('', sourceInput.itemType || 'custom');
+  value('#connection-folder', sourceInput.folder || '');
+  renderLoginUris(sourceInput.loginUris || []);
+  $('#connection-enabled').checked = sourceInput.enabled ?? true;
+  $('#template-picker').classList.add('hidden');
+  const ownerValues = draftSecretValues(sourceInput.secrets);
+  const privateKeyName = sourceInput.secrets?.privateKeyName || '';
+  currentModules = (sourceInput.modules || []).map((module) => {
+    const secretName = module.kind === 'customSecret' ? module.name : module.kind;
+    return {
+      ...module,
+      secretValue: ownerValues[secretName] || '',
+      configured: Boolean(ownerValues[secretName]),
+      existing: false,
+      privateKeyName: module.kind === 'privateKey' ? privateKeyName : '',
+      pending: false,
+      agentVisible: typeof module.agentVisible === 'boolean' ? module.agentVisible : defaultModuleAgentVisible(module.kind),
+    };
+  });
+  renderModules();
+
+  const banner = $('#smart-parse-banner');
+  if (banner) {
+    $('#smart-parse-badge').textContent = localized(parsed.labelZh || parsed.label, parsed.label);
+    $('#smart-parse-summary').textContent = parsed.summary || '';
+    const warningsEl = $('#smart-parse-warnings');
+    if (parsed.warnings?.length) {
+      warningsEl.textContent = parsed.warnings.join(' · ');
+      warningsEl.classList.remove('hidden');
+    } else {
+      warningsEl.textContent = '';
+      warningsEl.classList.add('hidden');
+    }
+    const attachWrap = $('#smart-totp-attach');
+    const targetSelect = $('#smart-totp-target');
+    if (parsed.totpUri && state?.connections?.length && attachWrap && targetSelect) {
+      const issuer = (parsed.totpIssuer || '').toLowerCase();
+      const sorted = [...state.connections].sort((a, b) => {
+        const aMatch = issuer && a.name.toLowerCase().includes(issuer) ? 1 : 0;
+        const bMatch = issuer && b.name.toLowerCase().includes(issuer) ? 1 : 0;
+        if (aMatch !== bMatch) return bMatch - aMatch;
+        return (a.itemType === 'login' ? 0 : 1) - (b.itemType === 'login' ? 0 : 1);
+      });
+      targetSelect.replaceChildren(...sorted.map((item) => {
+        const opt = document.createElement('option');
+        opt.value = item.id;
+        opt.textContent = item.name;
+        return opt;
+      }));
+      attachWrap.classList.remove('hidden');
+    } else if (attachWrap) {
+      attachWrap.classList.add('hidden');
+    }
+    banner.classList.remove('hidden');
+  }
+  toast(localized(`已智能识别：${parsed.labelZh || parsed.label}`, `Detected: ${parsed.label}`));
+}
+
+async function smartIngestText(rawText, options = {}) {
+  const text = String(rawText || '').trim();
+  if (!text) return toast(localized('剪贴板为空，请先复制 API Key、cURL、SSH、.env 或 2FA', 'Clipboard is empty — copy an API key, cURL, SSH, .env, or 2FA URI first'), 'error');
+  await refreshOwnerLock();
+  if (!ownerLockState.unlocked) return;
+  try {
+    const parsed = await api.smartParseText(text, options.filename || null, options.url || null);
+    await applySmartParseToEditor(parsed, { clipboardSource: options.fromClipboard ? rawText : '' });
+  } catch (error) {
+    toast(cleanError(error), 'error');
+  }
+}
+
+async function triggerSmartPasteFromClipboard() {
+  await refreshOwnerLock();
+  if (!ownerLockState.unlocked) return;
+  try {
+    // Try image from clipboard first (e.g. screenshot of a 2FA QR code).
+    if (navigator.clipboard?.read && window.OpenKeyletQR?.supported) {
+      try {
+        const items = await navigator.clipboard.read();
+        for (const item of items) {
+          const imgType = item.types.find((t) => t.startsWith('image/'));
+          if (imgType) {
+            const blob = await item.getType(imgType);
+            const decoded = await window.OpenKeyletQR.decode(blob);
+            await smartIngestText(decoded, { fromClipboard: false });
+            return;
+          }
+        }
+      } catch (_) {
+        // Fallback to text clipboard read below.
+      }
+    }
+    let text = '';
+    try { text = await api.readOwnerClipboard(); } catch (_) {}
+    if (!text && navigator.clipboard?.readText) {
+      try { text = await navigator.clipboard.readText(); } catch (_) {}
+    }
+    await smartIngestText(text, { fromClipboard: true });
+  } catch (error) {
+    toast(cleanError(error), 'error');
+  }
+}
+
+async function handleSmartFile(file) {
+  if (!file) return;
+  await refreshOwnerLock();
+  if (!ownerLockState.unlocked) return;
+  try {
+    if (file.type?.startsWith('image/') || /\.(png|jpe?g|webp|gif|bmp)$/i.test(file.name || '')) {
+      if (!window.OpenKeyletQR?.decode) throw new Error(localized('当前环境不支持二维码图片解码', 'QR decoding is unavailable in this WebView'));
+      const decoded = await window.OpenKeyletQR.decode(file);
+      await smartIngestText(decoded, { filename: file.name, fromClipboard: false });
+      return;
+    }
+    if (file.size > 512 * 1024) {
+      throw new Error(localized('文件超过 512 KiB，请通过设置页导入大文件', 'File exceeds 512 KiB; use System → Import for larger files'));
+    }
+    const text = await file.text();
+    await smartIngestText(text, { filename: file.name, fromClipboard: false });
+  } catch (error) {
+    toast(cleanError(error), 'error');
+  }
+}
+
+$('#smart-paste-button')?.addEventListener('click', () => void triggerSmartPasteFromClipboard());
+$('#editor-smart-paste-button')?.addEventListener('click', () => void triggerSmartPasteFromClipboard());
+
+$('#smart-totp-attach-button')?.addEventListener('click', async () => {
+  if (!editorSmartTotpUri) return;
+  const targetId = $('#smart-totp-target')?.value;
+  const item = state?.connections?.find((c) => c.id === targetId);
+  if (!item) return;
+  const btn = $('#smart-totp-attach-button');
+  btn.disabled = true;
+  try {
+    const pastedClipboard = editorSmartClipboardSource;
+    await api.attachTotpToItem(item.id, editorSmartTotpUri, item.updatedAt);
+    closeEditor();
+    if (pastedClipboard) await api.clearClipboardIfMatches(pastedClipboard).catch(() => false);
+    window.OpenKeyletAppearance?.play?.('success');
+    toast(localized(`已将 2FA 附加到「${item.name}」`, `Attached 2FA to "${item.name}"`));
+    await refresh();
+  } catch (error) {
+    toast(cleanError(error), 'error');
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$('#totp-qr-file-input')?.addEventListener('change', async (event) => {
+  const file = event.target.files?.[0];
+  event.target.value = '';
+  if (!file || pendingTotpQrModuleIndex < 0) return;
+  const index = pendingTotpQrModuleIndex;
+  pendingTotpQrModuleIndex = -1;
+  try {
+    const decoded = await window.OpenKeyletQR.decode(file);
+    const row = $$('#module-list .module-row')[index];
+    const input = row && $('[data-secret-value]', row);
+    if (input && currentModules[index]) {
+      input.value = decoded;
+      currentModules[index].secretValue = decoded;
+      toast(localized('已从二维码填充 2FA 密钥', 'Filled 2FA secret from QR image'));
+    }
+  } catch (error) {
+    toast(cleanError(error), 'error');
+  }
+});
+
+document.addEventListener('click', (event) => {
+  const scanBtn = event.target.closest('[data-scan-totp-qr]');
+  if (!scanBtn) return;
+  const row = scanBtn.closest('.module-row');
+  if (!row) return;
+  pendingTotpQrModuleIndex = Number(row.dataset.moduleIndex);
+  $('#totp-qr-file-input')?.click();
+});
+
+document.addEventListener('paste', (event) => {
+  if (!ownerLockState?.unlocked) return;
+  const target = event.target;
+  if (target && target.closest?.('input, textarea, select, [contenteditable="true"]')) return;
+  const modalOpen = $$('.modal-backdrop:not(.hidden)').length > 0;
+  const canPasteInBlankEditor = !$('#connection-modal').classList.contains('hidden')
+    && !$('#template-picker').classList.contains('hidden');
+  if (modalOpen && !canPasteInBlankEditor) return;
+  if (!modalOpen && activePage !== 'connections') return;
+  const dt = event.clipboardData;
+  if (!dt) return;
+  const imageItem = [...(dt.items || [])].find((item) => item.type?.startsWith('image/'));
+  if (imageItem) {
+    const blob = imageItem.getAsFile();
+    if (blob) {
+      event.preventDefault();
+      void handleSmartFile(blob);
+      return;
+    }
+  }
+  const text = dt.getData('text/plain');
+  if (text && text.trim()) {
+    event.preventDefault();
+    void smartIngestText(text, { fromClipboard: true });
+  }
+});
+
+{
+  let dragDepth = 0;
+  const overlay = $('#smart-drop-overlay');
+  const isFileDrag = (event) => Array.from(event.dataTransfer?.types || []).includes('Files');
+  document.addEventListener('dragenter', (event) => {
+    if (!ownerLockState?.unlocked || !isFileDrag(event)) return;
+    event.preventDefault();
+    dragDepth++;
+    if (activePage === 'connections') overlay?.classList.remove('hidden');
+  });
+  document.addEventListener('dragover', (event) => {
+    if (!ownerLockState?.unlocked || !isFileDrag(event)) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+  });
+  document.addEventListener('dragleave', (event) => {
+    if (!isFileDrag(event)) return;
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (dragDepth === 0) overlay?.classList.add('hidden');
+  });
+  document.addEventListener('drop', (event) => {
+    if (!isFileDrag(event)) return;
+    event.preventDefault();
+    dragDepth = 0;
+    overlay?.classList.add('hidden');
+    if (!ownerLockState?.unlocked) return;
+    const file = event.dataTransfer?.files?.[0];
+    if (file) void handleSmartFile(file);
+  });
+}
+
+{
+  // Vertical-only frameless window resize handles (width remains locked at 460px).
+  for (const edge of $$('.window-resize-edge')) {
+    edge.addEventListener('mousedown', (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      invoke('start_vertical_resize', { direction: edge.dataset.resizeEdge }).catch(() => {});
+    });
+  }
+
+  // Screen-edge auto-hide magnetic drawer preference & peek handle.
+  const EDGE_DOCK_KEY = 'openkeylet.edgeDock.v1';
+  const edgeDockInput = $('#edge-dock-enabled');
+  const peekEl = $('#edge-dock-peek');
+  let edgeDockEnabled = (() => {
+    try { return localStorage.getItem(EDGE_DOCK_KEY) !== 'false'; } catch (_) { return true; }
+  })();
+  if (edgeDockInput) edgeDockInput.checked = edgeDockEnabled;
+
+  function syncEdgeDockToBackend() {
+    invoke('set_edge_dock_enabled', { enabled: edgeDockEnabled }).catch(() => {});
+  }
+
+  edgeDockInput?.addEventListener('change', (event) => {
+    edgeDockEnabled = Boolean(event.currentTarget.checked);
+    try { localStorage.setItem(EDGE_DOCK_KEY, edgeDockEnabled ? 'true' : 'false'); } catch (_) {}
+    syncEdgeDockToBackend();
+  });
+
+  function applyEdgeDockState(payload) {
+    const edge = payload?.edge || '';
+    const collapsed = Boolean(payload?.collapsed && edge);
+    if (edge) document.documentElement.dataset.edgeDock = edge;
+    else delete document.documentElement.dataset.edgeDock;
+    document.documentElement.dataset.edgeCollapsed = collapsed ? 'true' : 'false';
+    if (peekEl) peekEl.classList.toggle('hidden', !collapsed);
+  }
+
+  peekEl?.addEventListener('pointerenter', () => { invoke('edge_dock_expand').catch(() => {}); });
+  peekEl?.addEventListener('click', () => { invoke('edge_dock_expand').catch(() => {}); });
+  document.addEventListener('pointerenter', () => {
+    if (document.documentElement.dataset.edgeDock) invoke('edge_dock_hover', { entered: true }).catch(() => {});
+  });
+  document.addEventListener('pointerleave', () => {
+    if (document.documentElement.dataset.edgeDock) invoke('edge_dock_hover', { entered: false }).catch(() => {});
+  });
+
+  if (window.__TAURI__?.event?.listen) {
+    window.__TAURI__.event.listen('edge-dock-state', (event) => {
+      applyEdgeDockState(event?.payload);
+    });
+  }
+  syncEdgeDockToBackend();
+}
+
 async function bootstrap() {
   applyLanguage();
+  syncVaultViewMode();
   initLettering();
   await refreshOwnerLock();
   await refresh();
   await refreshDrafts();
+  loadChromeProfiles();
   scanAgents();
 }
 bootstrap();

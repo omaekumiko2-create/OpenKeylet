@@ -173,8 +173,12 @@ try {
     await page.keyboard.press('Escape');
     assert.equal(await searchInput.inputValue(), '', 'Escape clears search query');
 
-    // 1c. Item drag-and-drop: immediate preview positioning (no (0,0) flash), viewport clamping,
+    // 1c. Default list view + toggle to 4-column grid view + item drag-and-drop:
+    //     immediate preview positioning (no (0,0) flash), viewport clamping,
     //     unclipped edge drop indicator, actual reorder, and Escape cancel
+    assert.equal(await page.evaluate(() => document.querySelector('#connections-list').dataset.view), 'list', 'Vault defaults to single-row list view');
+    await page.locator('#vault-view-toggle').click();
+    assert.equal(await page.evaluate(() => document.querySelector('#connections-list').dataset.view), 'grid', 'View toggle switches to 4-column card grid');
     const cards = page.locator('.connection-card');
     const card0 = await cards.nth(0).locator('.connection-name').boundingBox();
     const card3 = await cards.nth(3).boundingBox();
@@ -210,8 +214,8 @@ try {
       const target = document.querySelector('.connection-card.item-drop-after');
       if (!target) return false;
       const r = target.getBoundingClientRect();
-      // Drop bar is at right: -4px, width 2.5px -> right edge at r.right + 4
-      return (r.right + 4) <= (grid.right + 0.5);
+      const rightOffset = parseFloat(getComputedStyle(target, '::before').right) || 0;
+      return (r.right - rightOffset) <= (grid.right + 0.5);
     });
     assert.equal(edgeDropOk, true, 'Column-4 right-edge drop indicator is NOT clipped by grid overflow-x');
     await page.mouse.up();

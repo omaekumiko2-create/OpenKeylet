@@ -9,7 +9,7 @@
   <body>
     <header>
       <img class="mark" src="icons/42x42.png" srcset="icons/42x42.png 1x, icons/53x53.png 1.25x, icons/63x63.png 1.5x, icons/84x84.png 2x, icons/105x105.png 2.5x, icons/126x126.png 3x, icons/168x168.png 4x" alt="">
-      <div><strong>OpenKeylet</strong><small>LOCAL PASSWORDS & PASSKEYS</small></div>
+      <div><strong class="brand-wordmark"><span class="brand-open">Open</span><span class="brand-keylet">Keylet</span></strong><small>LOCAL PASSWORDS & PASSKEYS</small></div>
     </header>
     <section class="status-row">
       <span id="lamp" class="lamp"></span>
@@ -35,15 +35,17 @@
       <section id="vault-panel" hidden>
         <details class="personal-vault" id="full-vault">
           <summary>完整密码库 / All vault items</summary>
-          <label for="vault-search">搜索 / Search</label><input id="vault-search" type="search" autocomplete="off">
-          <div class="vault-filter-row">
-            <select id="vault-view" aria-label="Vault or trash"><option value="active">密码库 / Vault</option><option value="trash">回收站 / Trash</option></select>
-            <select id="vault-kind" aria-label="Item type"><option value="">所有类型 / All types</option><option value="login">登录 / Login</option><option value="passkey">Passkey</option><option value="card">信用卡 / Card</option><option value="identity">身份 / Identity</option><option value="secureNote">笔记 / Note</option><option value="ssh">SSH</option><option value="api">API</option><option value="custom">其他 / Other</option></select>
+          <div class="accordion-body">
+            <label for="vault-search">搜索 / Search</label><input id="vault-search" type="search" autocomplete="off">
+            <div class="vault-filter-row">
+              <select id="vault-view" aria-label="Vault or trash"><option value="active">密码库 / Vault</option><option value="trash">回收站 / Trash</option></select>
+              <select id="vault-kind" aria-label="Item type"><option value="">所有类型 / All types</option><option value="login">登录 / Login</option><option value="passkey">Passkey</option><option value="card">信用卡 / Card</option><option value="identity">身份 / Identity</option><option value="secureNote">笔记 / Note</option><option value="ssh">SSH</option><option value="api">API</option><option value="custom">其他 / Other</option></select>
+            </div>
+            <label for="vault-folder">文件夹 / Folder</label><select id="vault-folder"><option value="">所有文件夹 / All folders</option></select>
+            <label class="vault-check"><input id="vault-favorites" type="checkbox">仅收藏 / Favorites</label>
+            <div id="vault-all-items"></div>
+            <div class="vault-filter-row"><select id="vault-new-kind" aria-label="New item type"><option value="login">登录 / Login</option><option value="card">信用卡 / Card</option><option value="identity">身份 / Identity</option><option value="secureNote">笔记 / Note</option></select><button id="vault-new" type="button">＋ 新建 / New</button></div>
           </div>
-          <label for="vault-folder">文件夹 / Folder</label><select id="vault-folder"><option value="">所有文件夹 / All folders</option></select>
-          <label class="vault-check"><input id="vault-favorites" type="checkbox">仅收藏 / Favorites</label>
-          <div id="vault-all-items"></div>
-          <div class="vault-filter-row"><select id="vault-new-kind" aria-label="New item type"><option value="login">登录 / Login</option><option value="card">信用卡 / Card</option><option value="identity">身份 / Identity</option><option value="secureNote">笔记 / Note</option></select><button id="vault-new" type="button">＋ 新建 / New</button></div>
         </details>
         <form id="vault-editor" hidden autocomplete="off">
           <strong id="vault-editor-title"></strong>
@@ -60,11 +62,37 @@
         <dialog id="vault-confirm" hidden aria-label="Confirm vault action"><p id="vault-confirm-message"></p><div class="personal-actions"><button id="vault-confirm-accept" type="button">确认 / Confirm</button><button id="vault-confirm-cancel" type="button" class="secondary">取消 / Cancel</button></div></dialog>
         <div id="entries" class="entries"></div>
         <button id="read-form" type="button">保存当前网站的账号 / Save login</button>
+        <div class="personal-actions quick-store-row" id="quick-store-row">
+          <button id="scan-page-qr" type="button" class="secondary">扫描 2FA / Scan QR</button>
+          <button id="quick-store-open" type="button" class="secondary">⚡ 存密钥 / Smart save</button>
+        </div>
+        <form id="quick-store-form" hidden autocomplete="off">
+          <strong id="quick-store-title">智能存密钥 / Smart save</strong>
+          <p id="quick-store-source" class="note"></p>
+          <label for="quick-store-text">粘贴 API Key / cURL / SSH / .env / 2FA 链接</label>
+          <textarea id="quick-store-text" rows="3" maxlength="65536" autocomplete="off" placeholder="sk-... / curl ... / otpauth://totp/..."></textarea>
+          <div id="quick-store-detected" class="quick-detected" hidden>
+            <span id="quick-store-badge" class="quick-badge"></span>
+            <small id="quick-store-summary"></small>
+          </div>
+          <label for="quick-store-name">名称 / Name</label>
+          <input id="quick-store-name" maxlength="80">
+          <div id="quick-totp-attach-box" hidden>
+            <label for="quick-totp-target">附加 2FA 到已有账号 / Attach 2FA to login</label>
+            <select id="quick-totp-target"></select>
+            <button id="quick-totp-attach" type="button">附加 2FA 到所选账号 / Attach 2FA</button>
+          </div>
+          <button id="quick-store-save" type="submit">保存为新项目 / Save to OpenKeylet</button>
+          <button id="quick-store-cancel" type="button" class="secondary">取消 / Cancel</button>
+        </form>
         <details class="personal-vault"><summary>密码生成器 / Password generator</summary>
-          <label for="generator-length">长度 / Length · 8–128</label><input id="generator-length" type="number" min="8" max="128" value="24">
-          <div class="generator-options"><label><input type="checkbox" id="gen-uppercase" checked>A–Z</label><label><input type="checkbox" id="gen-lowercase" checked>a–z</label><label><input type="checkbox" id="gen-digits" checked>0–9</label><label><input type="checkbox" id="gen-symbols" checked>!@#</label></div>
-          <input id="generator-output" readonly aria-label="Generated password" autocomplete="off">
-          <div class="personal-actions"><button id="generate-password" type="button">生成 / Generate</button><button id="copy-generated-password" type="button">复制 / Copy</button></div>
+          <div class="accordion-body">
+            <label for="generator-length">长度 / Length · 8–128</label><input id="generator-length" type="number" min="8" max="128" value="24">
+            <div class="generator-options"><label><input type="checkbox" id="gen-uppercase" checked>A–Z</label><label><input type="checkbox" id="gen-lowercase" checked>a–z</label><label><input type="checkbox" id="gen-digits" checked>0–9</label><label><input type="checkbox" id="gen-symbols" checked>!@#</label></div>
+            <input id="generator-output" readonly aria-label="Generated password" autocomplete="off">
+            <div class="personal-actions"><button id="generate-password" type="button">生成 / Generate</button><button id="copy-generated-password" type="button" class="secondary">复制 / Copy</button></div>
+            <button id="save-generated-password" type="button" class="secondary" hidden>保存刚生成的密码到此网站 / Save for this site</button>
+          </div>
         </details>
         <form id="save-form" hidden autocomplete="off">
           <p id="save-source" class="note"></p>
@@ -82,8 +110,10 @@
         <button id="lock" type="button" class="secondary" hidden>锁定 / Lock</button>
         <details class="personal-vault">
           <summary id="personal-vault-summary">信用卡、身份与笔记 / Cards, identities & notes</summary>
-          <div id="personal-entries"></div>
-          <div class="personal-actions"><button id="add-card" type="button">＋ 信用卡 / Card</button><button id="add-identity" type="button">＋ 身份 / Identity</button><button id="add-note" type="button">＋ 笔记 / Note</button></div>
+          <div class="accordion-body">
+            <div id="personal-entries"></div>
+            <div class="personal-actions"><button id="add-card" type="button" class="secondary">＋ 信用卡 / Card</button><button id="add-identity" type="button" class="secondary">＋ 身份 / Identity</button><button id="add-note" type="button" class="secondary">＋ 笔记 / Note</button></div>
+          </div>
         </details>
         <form id="personal-form" hidden autocomplete="off">
           <strong id="personal-title"></strong>
@@ -95,14 +125,16 @@
       </section>
       <p id="error" role="status" aria-live="polite"></p>
     </main>
-    <details><summary>连接设置 / Connection</summary><form id="pair-form">
+    <details class="connection-details"><summary>连接设置 / Connection</summary><div class="accordion-body"><form id="pair-form">
       <label for="port">BRIDGE PORT</label>
       <input id="port" inputmode="numeric" value="39272" maxlength="5">
       <button type="submit">RECONNECT LOCAL BRIDGE</button>
-    </form></details>
-    <p class="capture-disclosure" id="capture-disclosure">开启后，在你提交表单、点击登录／继续或按 Enter 时读取账号和密码，仅发送到本机 OpenKeylet。待保存密码最多暂存 5 分钟，确认后才写入密码库。<br><span lang="en">When enabled, reads login fields on submit, sign-in/continue clicks or Enter. Sent only to local OpenKeylet; drafts expire within 5 minutes and are saved only after confirmation.</span></p>
-    <label class="capture-setting"><input id="capture-enabled" type="checkbox" aria-describedby="capture-disclosure">开启登录保存提示 / Enable save suggestions</label>
-    <footer>与本机 OpenKeylet 共用密码库 · LOCAL VAULT<br><a href="privacy.html" target="_blank" rel="noopener">隐私说明 / Privacy</a></footer>
+    </form></div></details>
+    <section class="capture-card">
+      <label class="capture-setting"><span>开启登录保存提示 / Enable save suggestions</span><input id="capture-enabled" type="checkbox" aria-describedby="capture-disclosure"></label>
+      <p class="capture-disclosure" id="capture-disclosure">开启后，在你提交表单、点击登录／继续或按 Enter 时读取账号和密码，仅发送到本机 OpenKeylet。待保存密码最多暂存 5 分钟，确认后才写入密码库。<br><span lang="en">When enabled, reads login fields on submit, sign-in/continue clicks or Enter. Sent only to local OpenKeylet; drafts expire within 5 minutes and are saved only after confirmation.</span></p>
+    </section>
+    <footer><span>与本机 OpenKeylet 共用密码库 · LOCAL VAULT</span><a href="privacy.html" target="_blank" rel="noopener">隐私说明 / Privacy</a></footer>
     <script src="vault.js"></script><script src="popup.js"></script>
   </body>
 </html>

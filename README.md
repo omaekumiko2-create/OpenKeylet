@@ -1,291 +1,359 @@
 <p align="center">
-  <img src=".github/assets/openkeylet-hero.svg" alt="OpenKeylet local MCP password and credential manager for AI agents" width="100%" />
+  <img src=".github/assets/openkeylet-banner.jpg" alt="OpenKeylet — Local Encrypted Password & Credential Manager for AI Agents" width="100%" />
 </p>
 
-<h1 align="center">OpenKeylet — Local password and credential manager for AI agents</h1>
+<h1 align="center">OpenKeylet</h1>
 
 <p align="center">
-  <strong>A local MCP credential relay that keeps agent workflows moving without exposing hidden plaintext.</strong>
-</p>
-
-<p align="center">
-  Local first&nbsp;&nbsp;·&nbsp;&nbsp;Free and open source&nbsp;&nbsp;·&nbsp;&nbsp;No OpenKeylet account&nbsp;&nbsp;·&nbsp;&nbsp;Windows / macOS / Linux
+  <strong>Local-first encrypted password vault, Passkey manager, and zero-plaintext <code>stdio</code> MCP credential relay for AI agents.</strong>
 </p>
 
 <p align="center">
-  <a href="../../releases/latest"><strong>Download</strong></a>
+  <code>Local-First</code>&nbsp;·&nbsp;<code>XChaCha20-Poly1305</code>&nbsp;·&nbsp;<code>No Cloud Account</code>&nbsp;·&nbsp;<code>Windows / macOS / Linux</code>&nbsp;·&nbsp;<code>MIT License</code>
+</p>
+
+<p align="center">
+  <a href="../../releases/latest"><strong>Download Latest</strong></a>
   &nbsp;&nbsp;·&nbsp;&nbsp;
-  <a href="README.zh-CN.md">中文</a>
+  <a href="README.zh-CN.md"><strong>简体中文</strong></a>
   &nbsp;&nbsp;·&nbsp;&nbsp;
-  <a href="SECURITY.md">Security</a>
+  <a href="#permission-boundaries--threat-model">Permission Boundaries</a>
+  &nbsp;&nbsp;·&nbsp;&nbsp;
+  <a href="#step-by-step-tutorials">Tutorials</a>
+  &nbsp;&nbsp;·&nbsp;&nbsp;
+  <a href="#recommended-practices">Best Practices</a>
+  &nbsp;&nbsp;·&nbsp;&nbsp;
+  <a href="SECURITY.md">Security Policy</a>
 </p>
 
 ---
 
-OpenKeylet is a free, open-source, cross-platform password manager, credential vault, and local `stdio` MCP server for AI agents. It lets MCP clients such as Codex, Claude Code, Cursor, OpenCode, Antigravity, and DeepSeek Harness use saved passwords, API credentials, SSH keys, TOTP codes, and custom secrets while hidden plaintext stays outside the normal model context.
+**OpenKeylet** bridges your personal local password manager with modern AI coding & terminal agents — including **Antigravity, Codex, Claude Code, Cursor, DeepSeek Harness, and OpenCode**.
 
-Use OpenKeylet when an agent needs to sign in to a website, connect to a server, call an authenticated API, or finish a terminal prompt without asking you to paste a secret into the conversation.
+When an agent needs to SSH into a server, call an authenticated API, render a `.env` secret file, fill a browser login, or sign in with a **WebAuthn Passkey**, OpenKeylet executes the credential step **locally on your machine** while keeping hidden plaintext out of the LLM context, tool responses, and logs.
 
-**Previously KRU.** OpenKeylet keeps the same local vault, encryption keys, browser pairing, and `.mvault` backup format. Existing `{{kru:module}}` placeholders and `KRU_DATA_DIR` / `KRU_LAUNCHER_PATH` environment variables remain supported; use `{{openkeylet:module}}` and `OPENKEYLET_*` for new setups. After upgrading, open **Settings → Agent connection → Repair** to migrate a managed `kru` MCP entry to `openkeylet` and update its executable path, then start a new agent session. Existing desktop and startup shortcuts are migrated when the new GUI starts.
+---
 
-## Use OpenKeylet like this
+## Interface Gallery
 
-Once OpenKeylet is connected, describe the task normally. Include the unique OpenKeylet item name for the most reliable match, or simply tell the agent to check OpenKeylet when authentication is needed.
-
-| Goal | Example |
-| --- | --- |
-| **Server task** | `Use "Production Server" in OpenKeylet MCP to deploy the current build and verify the service.` |
-| **Authenticated API** | `Use "DNS Provider" in OpenKeylet MCP to list the domains in this account.` |
-| **Browser sign-in** | `Open the admin console. When credentials are required, use "Admin Account" in OpenKeylet MCP.` |
-| **Automatic lookup** | `Continue the task. If authentication is required, check OpenKeylet first.` |
-
-The quoted text is the item name saved in OpenKeylet. If you omit it, the agent can inspect OpenKeylet's item list and choose a match.
-
-## What OpenKeylet does
-
-OpenKeylet is a small local MCP tool for saving and using credentials without breaking an agent's workflow. The agent controls the task, while OpenKeylet performs credential operations locally—filling a focused field, running local or SSH commands, transferring files and directories, or sending authenticated API requests.
-
-The personal vault supports logins, cards, identities, secure notes, SSH, API and custom items, with type filters, folders and favorites. Fields remain composable. Passwords, card numbers, security codes, identity addresses and secure notes are encrypted; names, public purposes and folders remain item metadata.
-
-The browser extension can create, edit and manually fill cards and identities from the same local vault. Autofill supports standard HTML `autocomplete`, common field names and labels, month controls, expiry formats and select options on HTTPS websites or local development addresses. It skips hidden/transparent, disabled and readonly fields; when a relevant form is focused, it fills only that form. It never submits a form or fills a different-origin frame. Lists expose only a card's last four digits. Custom payment widgets and third-party payment frames may require manual filling.
-
-Desktop and extension password generators use the system secure random source, with 8–128 characters and selectable uppercase, lowercase, digits and symbols. Generated passwords are not retained in history.
-
-The extension's **All vault items** panel works on browser pages as well as websites. Search and filter the full vault, edit login URLs and matching rules, organize folders and favorites, and manage cards, identities and notes. Deletion moves an item to **Trash**, where it stays until restored or permanently deleted. Trashed items cannot fill passwords or sign with passkeys. Restoring a conflicting name creates a unique name without overwriting another item.
-
-Changing a saved password retains the latest 20 previous passwords in encrypted **Password history**. Desktop and extension views can reveal, copy or clear this history after unlocking; agents and autofill cannot request old passwords. Full vault backups include history and trash. Permanent deletion and history clearing do not remove older copies from existing backups.
-
-There is no OpenKeylet account, subscription, hosted vault, or remote MCP service. OpenKeylet is free and open source, runs on Windows, macOS, and Linux, and keeps vault data encrypted on the current device. Optional GitHub backup stores encrypted snapshots in your own private repository. Its local `stdio` MCP starts only when an agent calls it.
+Designed in a distraction-free **Pure Monochrome Carbon & Porcelain** aesthetic with native platform chrome across Windows, macOS, and Linux.
 
 <table>
   <tr>
-    <td width="33%"><strong>01 / STORE</strong><br><br>Save only the modules the item needs. Values are encrypted locally.</td>
-    <td width="33%"><strong>02 / DISCOVER</strong><br><br>The agent sees item names, field names, non-secret targets, and available actions.</td>
-    <td width="33%"><strong>03 / USE</strong><br><br>OpenKeylet performs the selected credential action locally without returning hidden plaintext.</td>
+    <td width="50%" align="center">
+      <img src=".github/assets/ui-vault-dark.png" alt="Carbon Dark Single-Row Vault List" /><br />
+      <sub><strong>Carbon Dark</strong> · Single-row list (default) with one-click 4-column card grid toggle</sub>
+    </td>
+    <td width="50%" align="center">
+      <img src=".github/assets/ui-light-porcelain.png" alt="Porcelain Light Single-Row Vault List" /><br />
+      <sub><strong>Porcelain Light</strong> · Crisp ceramic dual theme with full names, 2FA &amp; Passkey badges</sub>
+    </td>
   </tr>
-</table>
-
-<p align="center">
-  <img src=".github/assets/openkeylet-flow.svg" alt="AI agent finds a credential item and OpenKeylet uses the hidden secret locally" width="100%" />
-</p>
-
-## Start in three steps
-
-1. **Download and open OpenKeylet**
-   Choose the portable build for your platform. No registration is required.
-
-2. **Connect your agent**
-   Open **Settings → Agent connection**, connect a detected client, then start a new agent session.
-
-3. **Save an item**
-   Give it a unique name and add only the modules you need. You can start from a preset or build the item module by module.
-
-OpenKeylet registers a local `stdio` MCP command. The MCP process starts on demand when the agent calls it.
-
-## MCP client compatibility
-
-OpenKeylet's Agent connection screen can detect, connect, and repair local configuration for **Codex**, **Claude Code**, **Cursor**, **OpenCode**, **Antigravity**, and **DeepSeek Harness**. Other AI assistants and coding agents can connect through the manual configuration below whenever they support a local `stdio` MCP server.
-
-## One item, several actions
-
-| Action | When OpenKeylet advertises it | What happens locally |
-| --- | --- | --- |
-| **Fill** | The item contains a credential module | OpenKeylet writes the selected value into a focused browser, desktop control, or managed terminal |
-| **SSH** | The item contains a password or private key | OpenKeylet authenticates locally; the host, port, and username can be saved defaults or supplied for the task |
-| **File transfer** | The item contains a password or private key | OpenKeylet recursively uploads or downloads files and directories over SFTP |
-| **HTTP** | The item contains any configured secret | OpenKeylet injects built-in authentication or resolves hidden-module placeholders locally |
-| **Terminal** | The agent runs a local command or opens a managed terminal | OpenKeylet can substitute hidden modules without returning them to the agent |
-
-An item may advertise more than one action. OpenKeylet has no observation, diagnostic, restricted, or execution mode: if `ssh_run` is available, the agent sends the command the task actually requires.
-
-## Plaintext visibility is per module
-
-Every module has its own Agent visibility switch:
-
-- **Hidden** — the default for credential modules. OpenKeylet can use the value, but it is not included in MCP responses.
-- **Visible** — the value may be returned to the agent only after you explicitly enable the switch.
-- **TOTP** — OpenKeylet derives the current six-digit code; the permanent seed is never returned.
-
-The eye and copy controls in the editor are for the local owner. Copying a secret, TOTP code, generated password, or recovery key marks the entry to stay out of Windows clipboard history and automatically clears the clipboard after 30 seconds (only if unchanged, or immediately when locking/quitting). The optional six-digit PIN locks desktop viewing and management against other users on the same computer (with optional idle auto-lock and failed-attempt cooldown) and verifies extension vault / passkey access; it does not replace OS screen lock, vault encryption, or disable background MCP actions.
-
-Reorder modules using the drag handle on the left, or focus a handle and press the Up/Down arrow keys. Text fields support normal typing, selection, and copying. Deleting an item, module, or draft requires confirmation; module removal takes effect when you save the item.
-
-## Built for local use
-
-<table>
   <tr>
-    <td width="33%"><strong>Encrypted vault</strong><br><br>XChaCha20-Poly1305 protects stored fields. The machine key stays local.</td>
-    <td width="33%"><strong>Portable backup</strong><br><br>Export an encrypted <code>.mvault</code> package and import it on another device.</td>
-    <td width="33%"><strong>Auditable</strong><br><br>Local activity records show which client requested which action without logging secret values.</td>
+    <td width="50%" align="center">
+      <img src=".github/assets/ui-editor-totp.png" alt="Item Editor with Per-Module Visibility, TOTP, and Passkey" /><br />
+      <sub><strong>Per-Module Control</strong> · Independent Agent visibility, live 2FA TOTP &amp; Passkeys</sub>
+    </td>
+    <td width="50%" align="center">
+      <img src=".github/assets/ui-settings-system.png" alt="One-Click Agent Setup" /><br />
+      <sub><strong>Agent Setup</strong> · One-click local <code>stdio</code> MCP link &amp; repair</sub>
+    </td>
   </tr>
 </table>
-
-## Browser, SSH, and API behavior
-
-### Browser filling
-
-The bundled Chromium extension shares the desktop application's local encrypted vault. In **Settings → Browser Bridge**, follow the two numbered steps: **1. Open the extensions page** by clicking **Open Chrome & copy address**, pasting it into Chrome's address bar, and turning on Developer mode; **2. Drag in the extension** by dropping the OpenKeylet icon onto an empty area of that page. The **Can't install by dragging?** section offers a folder button for **Load unpacked**. Keep the `browser-extension` directory in place. Pairing is automatic. This version pins the extension ID; reload older installations, or remove and load them again if necessary, then pair again.
-
-Open the toolbar popup to select a login for the current website and fill its username and password. Logins without explicit website rules use the exact scheme, host and port. The desktop editor also supports multiple websites with origin, base-domain, host, exact-URL, prefix, regex and never-match rules. URL rules validate the actual target frame URL, and filling rechecks it before writing. Forms are not automatically submitted. **Save login** reads the current form and lets you confirm a new item or update an existing one. Both interfaces refresh the same vault, with stale-write detection. If a PIN is configured, the extension requires an unlock lasting five minutes. OpenKeylet and Browser Bridge must remain running.
-
-Automatic save suggestions are off by default. Enable **Ask to save logins** in the popup to receive a **Review & save** notice and a `+` toolbar badge after submitting a login, registration or password-change form. The extension recognizes account fields and new passwords, ignores hidden/OTP/payment fields, and skips ambiguous or mismatched passwords. Review the source website and values in the extension window, unlock if needed, then confirm a new item or update an existing login. A submission does not prove authentication succeeded. Unchanged logins are suppressed when the vault is unlocked. Suggestions stay only in worker memory for up to five minutes; dismissing, explicitly locking from the extension, disconnecting the bridge, closing the tab, or changing to another origin clears them. Turning the option off stops collection and clears pending suggestions.
-
-On HTTPS/local test pages, capture supports ordinary form submissions, recognizable login/registration buttons, Enter, dynamic forms, open shadow roots and same-origin frames. A username submitted through a **Next/Continue** step can accompany a subsequent password step in the same tab, frame and origin for up to two minutes; it stays in memory and is also cleared on lock, disconnect or disabling suggestions. Password filling dispatches input/change events for React controlled inputs and Vue models. Closed shadow roots, cross-origin account handoffs, ambiguous fields and custom buttons without recognizable labels may still need manual entry or **Save login**.
-
-Passkey creation and sign-in open an extension confirmation window. A new passkey is stored as a separate vault item. Private keys remain encrypted in the desktop vault; only registration data and assertion signatures reach the browser. Websites requiring user verification need an OpenKeylet PIN, verified afresh for each passkey request. **Use device** returns to the native browser flow. The desktop editor shows the passkey's account and relying party; moving that item to trash disables the passkey until restored. Permanent deletion removes the local credential.
-
-This version supports top-level HTTPS pages (and local `localhost`), ES256, discoverable credentials and allow-list sign-in. Cross-origin frames, conditional autofill, hardware attestation and advanced WebAuthn extensions use the native path where supported. Existing passkeys from other providers are not automatically imported.
-
-The Agent's `credential_fill` path still writes one selected value into the focused control and can submit its form with explicit `submit=true`. That path does not apply the popup's website matching. OpenKeylet does not export cookies.
-
-### SSH
-
-OpenKeylet supports password and private-key authentication, unrestricted-length commands and output, direct stdin, and recursive SFTP upload/download. Host, port, and username may be saved as defaults or supplied for the current task. Destination parent directories are created automatically and existing file or directory targets are replaced only after a complete temporary copy is ready. OpenKeylet does not pin or compare SSH host fingerprints. Authentication plaintext is not returned to the agent.
-
-### HTTP APIs
-
-OpenKeylet recognizes common API providers and Basic combinations, and falls back to Bearer Token when no provider matches. A saved service URL is a default and relative-path base, not an Origin restriction; the agent may use any HTTP/HTTPS destination required by the task. Other protocols can place `{{openkeylet:module name}}` placeholders in the URL, headers, query, JSON/text body, or form values, and OpenKeylet resolves them locally. Redirects are followed, responses have no default size limit and may stream directly to a local file, and multipart uploads are supported.
-
-## Local app controls
-
-The Settings page includes:
-
-- desktop shortcut (where supported) and launch-at-login controls;
-- close-to-tray or quit behavior;
-- optional six-digit local PIN;
-- Agent connection and repair;
-- Browser Bridge pairing;
-- encrypted backup import/export and direct access to the local data folder.
-
-On Linux, opening the GUI registers the current executable in the application menu and installs its icon. Desktop shortcuts and launch at login are opt-in.
-
-Replacing or upgrading the executable does not remove your vault. OpenKeylet intentionally reuses the current OS user's data directory:
-
-| Platform | Vault location |
-| --- | --- |
-| Windows | `%APPDATA%\mcp-vault\v2` |
-| macOS | `~/Library/Application Support/mcp-vault/v2` |
-| Linux | `${XDG_DATA_HOME:-~/.local/share}/mcp-vault/v2` |
-
-Desktop `.mvault` exports use a separate backup password (at least 12 characters), Argon2id (64 MiB, 3 iterations, 1 lane), and XChaCha20-Poly1305. The file contains no unlock key; restoration requires the password. Older and current CLI automatically unlocked packages remain importable but contain their own unlock material and must be protected like the original credentials.
-
-### Optional personal vault repository (GitHub / Gitea / Forgejo)
-
-In **Settings → Cloud / 05**, you can optionally connect a private repository that you own to store and synchronize your encrypted vault across devices:
-
-1. Choose **Set up GitHub backup** and select the platform (**GitHub** or self-hosted HTTPS **Gitea / Forgejo**) and authorization. On GitHub, you can reuse an existing [GitHub CLI login](https://cli.github.com/manual/gh_auth_login) or supply a [fine-grained GitHub token](https://github.com/settings/personal-access-tokens/new). On Gitea/Forgejo, provide your HTTPS server URL and an access token.
-2. Choose **Check account**, verify the account, and enter `owner/repository`. For an existing private repository, grant the token **Contents: Read and write** for that repository.
-3. To create a repository, select **Create this private repository in my account**. This requires repository creation authorization (**Administration: Write** for GitHub fine-grained tokens). Create organization repositories on the host first. An existing repository is never adopted or made private automatically; uncheck creation to connect one you already own.
-4. Choose **Create a new backup**, generate a recovery key, and acknowledge saving it outside the repository. Optionally enable **Automatic two-way sync** so local edits and startup synchronize in the background. Leave **Upload the first encrypted backup after connecting** selected to use **Connect & upload**, or deselect it to save the connection and upload/sync later.
-5. On another device, choose **Connect an existing backup**, provide authorization, the same repository and the original recovery key, then choose **Sync now** or **Restore**. Manual upload is disabled until the first restore or sync completes.
-
-GitHub CLI authorization is read only when you check the account or submit the connection. Its token never enters the renderer or logs and is stored encrypted locally after connecting. A failed first upload retains the connection so you can retry without recreating the repository. If repository creation cannot be confirmed, check the host before reconnecting.
-
-The entire portable payload, including item names, addresses, notes, tombstones, and credentials, is encrypted locally with XChaCha20-Poly1305 and a separate random 256-bit recovery key. The repository receives `openkeylet.vault.json` without any unlock key. The token and recovery key are encrypted under the device's local vault key and never included in backups. Browser pairing, PIN, agent configuration, activity logs and editor drafts stay local. You can view the saved recovery key from the unlocked GUI.
-
-You can use **Sync now** (and optional **Automatic two-way sync**) for bidirectional multi-device synchronization, or **Back up now** / **Restore** for manual snapshot operations. Two-way sync merges entries by `id` and `updatedAt`, propagates permanent deletions via tombstones, retries automatically on `409 Conflict` by re-pulling and merging, and skips empty commits when local and remote fingerprints match. Manual **Restore** still keeps conflicting items separately without deleting local items. Repository privacy (`private: true`) is verified before every upload, restore, and sync. Both GitHub.com and self-hosted HTTPS Gitea/Forgejo repositories are supported, with an 8 MiB encrypted snapshot limit.
-
-Keep the recovery key: without it or a still-connected device, a backup cannot be recovered. Git history retains older encrypted snapshots, including deleted credentials. Disconnecting removes this device's saved connection only; it does not delete repository history or revoke the GitHub token. Legacy and CLI self-unlocking `.mvault` exports must not be uploaded as cloud-safe encrypted backups.
-
-New backups contain v8 portable data, including item types, folders, favorites, website rules, passkeys, password history and trash; v3/v4/v5/v6/v7 backups remain importable. Existing v7/v8/v9/v10/v11 vaults remain readable and are saved as v12 on the next modification. Older applications cannot read v12 vaults, password-protected backup containers or v8 portable data.
-
-Use **System → Local data → Import vault** to migrate Bitwarden unencrypted JSON or Chrome/Edge password CSV. A count-and-compatibility preview precedes the import. Cancelling makes no vault changes; confirming merges all records transactionally and deduplicates identical entries without overwriting existing items. The selected file is read only once; the pending preview payload is encrypted in memory and expires after five minutes.
-
-Bitwarden import preserves logins, cards, identities, secure notes, SSH keys, folders, favorites, notes, custom fields and multiple website rules. ES256/P-256 PKCS#8 passkeys are converted locally, including credential IDs, user handles and counters. Legacy nonzero counters increment under the vault lock before a signature is returned; avoid continuing to use another copy of those credentials. Standard Base32 and `otpauth://totp` secrets support SHA-1/SHA-256/SHA-512, 6–8 digits and configurable periods. Unsupported TOTP seeds are retained with a preview warning.
-
-The preview explains remaining migration differences: attachments need separate transfer; linked fields are retained as encrypted custom fields; the latest 20 source passwords enter password history, with longer histories additionally archived in an encrypted custom field. Per-item master-password reprompt and organization sharing permissions do not transfer. Deleted source records are skipped. Unsupported item types, invalid keys or invalid records fail without writing a partial import. Source exports are not deleted or modified.
-
-## Common questions
-
-### Is OpenKeylet a password manager for AI agents?
-
-Yes. OpenKeylet combines a locally encrypted credential vault with an MCP server that agents can call when a task reaches an authentication step. It is designed for AI coding agents, terminal agents, and other local MCP clients.
-
-### Does OpenKeylet give my password to the LLM?
-
-Not by default. Hidden modules are used locally by OpenKeylet and are excluded from MCP responses and normal model context. You can explicitly make an individual module visible when a workflow genuinely requires the value.
-
-### What credentials can OpenKeylet store and use?
-
-OpenKeylet supports usernames, passwords, API keys and tokens, SSH private keys and passphrases, TOTP seeds, hosts, ports, service URLs, and custom fields. Modules can be combined freely in one item.
-
-### Does OpenKeylet require a cloud account?
-
-Local use does not require an account. Optional GitHub encrypted backup uses your own GitHub account and private repository; no OpenKeylet account is needed.
-
-## Downloads
-
-| Target | Package | Notes |
-| --- | --- | --- |
-| Windows x64 | `.zip` | Portable GUI, tray, desktop input, and browser extension |
-| macOS arm64 | `.zip` | Native `.app`; Accessibility permission is required for desktop input |
-| Linux x64 GUI | `.tar.gz` | AppImage GUI; desktop input supports X11 |
-| Linux x64 headless | `.tar.gz` | No WebView dependency; MCP, SSH, HTTP, terminal, backup, and browser bridge |
-
-<p align="center">
-  <a href="../../releases/latest"><strong>OPEN LATEST RELEASE →</strong></a>
-</p>
 
 <details>
-  <summary>Watch the short product demo</summary>
-  <p><a href="https://www.youtube.com/watch?v=GKQLEgAdbTU">OpenKeylet demo on YouTube →</a></p>
+  <summary>View Optional Personal Encrypted Vault Repository UI (GitHub / Self-hosted Gitea &amp; Forgejo)</summary>
+  <br />
+  <p align="center">
+    <img src=".github/assets/ui-settings-cloud.png" alt="Personal Vault Repository Auto-Sync UI" width="380" />
+  </p>
 </details>
 
-## MCP surface
+---
 
-OpenKeylet 0.15 uses unique item names directly instead of exposing internal UUIDs. If the user has already named the item and the action is clear, the agent can call that action immediately. An explicit item or a unique `items_search` result becomes lightweight context for the current MCP session, so compatible fill, SSH, transfer, HTTP, and terminal calls can omit the repeated name. Natural phrases such as `use Production Server in OpenKeylet MCP` are understood. Discovery remains available for lookup, switching, module inspection, and ambiguity. Hidden plaintext must never be requested from the user, and unknown fields or retired tool names are rejected.
+## Architecture: Zero-Plaintext Local Relay
 
-Each agent session owns its stdio MCP process. Starting a newer OpenKeylet build or another agent session does not interrupt work already in progress; sessions end when their client disconnects or the user explicitly quits OpenKeylet from the tray.
+<p align="center">
+  <img src=".github/assets/openkeylet-architecture.jpg" alt="OpenKeylet Zero-Plaintext Local Relay Architecture" width="100%" />
+</p>
 
-| Tool | Purpose | MCP impact hint |
+<table>
+  <tr>
+    <td width="25%"><strong>01 · Encrypted Core</strong><br /><br />All secrets, Passkey private keys, TOTP seeds, and cards are encrypted locally with <code>XChaCha20-Poly1305</code>. No OpenKeylet account or hosted server exists.</td>
+    <td width="25%"><strong>02 · Metadata Discovery</strong><br /><br />Agents see only item names, field labels, non-secret targets, and advertised actions via on-demand <code>stdio</code> MCP — never hidden plaintext.</td>
+    <td width="25%"><strong>03 · Local Execution</strong><br /><br />OpenKeylet signs Passkeys, fills web/desktop forms, runs SSH/SFTP, calls APIs, and writes template files locally while redacting echoed secrets (<code>[REDACTED]</code>).</td>
+    <td width="25%"><strong>04 · User-Owned Sync</strong><br /><br />Optionally export <code>.mvault</code> encrypted packages or enable end-to-end encrypted two-way sync to your own private GitHub / Gitea repository.</td>
+  </tr>
+</table>
+
+---
+
+## Permission Boundaries & Threat Model
+
+OpenKeylet is intentionally **transparent about what it protects and what it does not**. Because background AI agents must execute credentials smoothly without blocking on a master password every minute, OpenKeylet separates local convenience from cryptographic offline protection:
+
+### What OpenKeylet Protects vs. Does Not Protect
+
+| Boundary | Status | How It Works |
+| --- | :---: | --- |
+| **LLM Context & Prompt Leakage** | **Protected** | Default-hidden modules are never returned in MCP responses, tool outputs, or activity logs. Terminal and HTTP outputs dynamically redact known secrets and live TOTP codes. |
+| **Unauthorized Plaintext Extraction** | **Protected** | No unrestricted `get_secret` tool exists. Agents can only *use* hidden credentials through explicit actions unless you manually flip a module's **Agent Visible** switch. |
+| **Other People Using Your Unlocked PC** | **Protected (with PIN)** | The optional 6-digit PIN locks the desktop GUI, scrubs items/logs behind the lock screen, blocks management IPC commands, enforces progressive wrong-PIN cooldown, and supports optional idle auto-lock (5 / 15 / 30 / 60 min). |
+| **Clipboard History Leakage** | **Protected** | Copying passwords, secrets, TOTP codes, generated passwords, or recovery keys marks them to bypass Windows `Win+V` & Cloud Clipboard and **auto-clears after 30 seconds** (only if unchanged — never wiping newer user copies) or immediately on lock/quit. |
+| **Offline Cloud / Backup Theft** | **Protected** | Desktop `.mvault` exports use Argon2id (64 MiB) + XChaCha20-Poly1305 with a ≥12-char password. Cloud repo snapshots use a separate random 256-bit `okv1_` recovery key; the remote repo receives ciphertext only and must be `private: true`. |
+| **Malicious Agent / Compromised OS User** | **Not a Sandbox** | OpenKeylet does **not** defend against malware running as your same OS user, a compromised browser, or a malicious agent sending destructive commands over an enabled SSH/HTTP item. Pair with OS login lock & full-disk encryption (BitLocker / FileVault / LUKS). |
+| **Background MCP When GUI Is Locked** | **By Design: Active** | Locking the desktop GUI with PIN stops *people* from viewing/editing the vault on screen; background `stdio` MCP sessions continue working for **enabled** items so long-running agent jobs are not interrupted. Disable an item to block agents from using it. |
+
+### Per-Module Visibility Matrix
+
+| Module State | Visible to Owner (Unlocked GUI) | Returned to AI Agent (MCP) | Usable Locally by OpenKeylet |
+| --- | :---: | :---: | :---: |
+| **Hidden** *(default for secrets)* | Masked (click Eye / Copy) | Never | Yes (`ssh`, `http`, `fill`, `browser`, `secret_write_file`) |
+| **Visible** *(explicit toggle)* | Yes | Yes | Yes |
+| **TOTP Seed** | Masked + **Copy 2FA Code** | Seed never returned; live 6-digit code injected/redacted locally | Yes |
+| **Passkey Private Key** | Metadata only (RP ID + user) | Private key never leaves desktop vault | Yes (requires extension confirmation; optional Agent Passkey toggle) |
+| **Disabled / Trashed Item** | Viewable / Restorable by owner | Blocked | Blocked (no autofill, no Passkey signing, no MCP execution) |
+
+> Read the complete [Security Policy & Threat Boundary](SECURITY.md) before using OpenKeylet with sensitive production infrastructure.
+
+---
+
+## Recommended Practices
+
+1. **Turn on 6-Digit PIN + Idle Auto-Lock on shared or office machines**
+   Go to **System → APP / 03**, enable **PIN lock**, and pick a comfortable **Auto-lock** interval (e.g., `15 minutes`). Your background MCP workflows keep running while your screen stays safe when you step away.
+2. **Use the item `Enable` toggle as your Agent kill-switch**
+   Keep everyday dev/staging credentials enabled for agents, and leave high-risk production root keys or personal banking logins **disabled** until you actively need them.
+3. **Keep `Agent Visible` OFF unless truly needed**
+   Leave the left toggle on every password, API key, SSH key, and TOTP module set to **Hidden** (`OFF`). Prefer `{{openkeylet:module name}}` placeholders in `http_send`, `terminal_run`, `ssh_run`, and `secret_write_file`.
+4. **Store your `okv1_` Recovery Key and `.mvault` password outside the repository**
+   Print or save your recovery key in a separate offline location. Without it (and with no connected device left), encrypted cloud snapshots cannot be decrypted.
+5. **Control Agent Passkey signing explicitly**
+   Under **System → WEB / 04**, toggle **Agent Passkey signing** off if you only want manual user-confirmed Passkeys in the browser.
+6. **Avoid concurrent offline edits to the exact same item**
+   Two-way repo sync merges cleanly across devices by item `id` and `updatedAt`, and propagates permanent deletions via tombstones. Sync before editing the same item on a second machine to avoid last-write-wins overwrites.
+
+---
+
+## Step-by-Step Tutorials
+
+### Tutorial 1 · Bind Your AI Agent (1-Click Setup)
+
+OpenKeylet connects to AI coding and terminal agents over local on-demand **`stdio` MCP** — no open network ports and no cloud broker.
+
+1. Launch **OpenKeylet** and open **System → MCP / 02 (Agent Setup)** (shortcut: `⌘/Ctrl + ,`).
+2. Find your client — **Antigravity**, **Codex**, **Claude Code**, **Cursor**, **DeepSeek Harness**, or **OpenCode** — and click **CONNECT** (if you moved the binary or upgraded from KRU, click **REPAIR**).
+   - OpenKeylet writes the local `stdio` MCP entry (`openkeylet mcp stdio`) automatically.
+   - Where supported, it also installs the *"prefer OpenKeylet for authentication"* rule so the agent knows to check OpenKeylet automatically instead of asking you to paste passwords.
+3. Verify the top status panel shows **`MCP · READY`** (green dot), then **start a fresh chat session** (or reload MCP servers in your IDE).
+4. **Sanity-check the link** by asking your agent:
+   ```text
+   List the enabled items you can see in OpenKeylet MCP.
+   ```
+   The agent will call `items_search` and return only item names, targets, and available actions — never hidden secrets.
+
+> Using another MCP-compatible client? Expand [Manual `stdio` MCP Configuration](#complete-mcp-surface-17-tools) below or run `openkeylet config stdio-json`.
+
+---
+
+### Tutorial 2 · Tell Your Agent Which Credential to Use (`USE` Button & Natural Language)
+
+There are **two effortless ways** to hand a credential to an AI agent without ever revealing the secret:
+
+#### Way A — The Fastest Workflow: One-Click `USE` Button
+
+1. Locate your item in the vault (default **Single-Row List** view, or click the layout toggle next to **`+ ADD`** to switch to the **4-Column Card Grid**).
+2. Make sure its green status dot is **ON** (clicking the dot toggles Agent access on/off immediately).
+3. Click **`USE`** on the row/card. OpenKeylet immediately copies a secret-free reference phrase to your clipboard:
+   ```text
+   use Prod Tokyo Cluster in OpenKeylet MCP
+   ```
+4. **Paste it into your AI Agent chat** and type your task right after it:
+   ```text
+   use Prod Tokyo Cluster in OpenKeylet MCP — check disk space, tail the last 50 lines of /var/log/nginx/error.log, and restart nginx if needed.
+   ```
+   ```text
+   use GitHub Maintainer in OpenKeylet MCP — open the release settings page in my browser and sign in.
+   ```
+
+#### Way B — Pure Natural Language Prompt Cookbook
+
+You don't need special syntax or tool names. Just speak naturally and mention the item name (or let the agent search OpenKeylet automatically):
+
+| Real-World Task | What You Can Say to the Agent | Tools OpenKeylet Uses Locally |
 | --- | --- | --- |
-| `items_search(query?)` | Find usable items, modules, and advertised actions | Read-only, idempotent, local |
-| `credential_fill` | Use one saved module in an approved local target, optionally submitting it | Changes local state; submission can have external effects |
-| `terminal_run` | Run a one-shot local shell command with optional stdin and hidden-module substitution | Local or external effects possible |
-| `ssh_run` | Run a command through a saved identity and saved or runtime SSH target | External effects possible |
-| `ssh_upload` | Recursively upload a local file or directory through a saved identity | Reads a local path and changes the remote target |
-| `ssh_download` | Recursively download a remote file or directory through a saved identity | Reads a remote path and changes the local target |
-| `http_send` | Send an authenticated HTTP request, optionally transferring local files | External and local-file effects possible |
-| `terminal_start` | Start a managed local process | Changes local state |
-| `terminal_write` | Write ordinary input into a managed terminal | External effects possible |
-| `terminal_read` | Read redacted managed-terminal output | Read-only, idempotent, local |
-| `terminal_stop` | Close a managed terminal session | Idempotent state change |
+| **SSH Diagnostics & Ops** | `SSH into "Prod Tokyo Cluster" via OpenKeylet and check why Docker container web-1 is restarting.` | `items_search` → `ssh_run` |
+| **Deploy / SFTP Transfer** | `Upload ./dist to /var/www/app on "Prod Tokyo Cluster" and reload caddy.` | `ssh_upload` → `ssh_run` |
+| **Download Server Logs** | `Download /var/log/app/crash.log from "Prod Tokyo Cluster" into ./tmp/crash.log and analyze it.` | `ssh_download` |
+| **Authenticated REST API** | `Using "Cloudflare DNS" in OpenKeylet, list all A/AAAA records for example.com.` | `http_send` |
+| **Generate `.env` Safely** | `Create .env.local with DEEPSEEK_API_KEY from "DeepSeek Inference API" via secret_write_file — do not print the key.` | `secret_write_file` |
+| **Browser Login + 2FA** | `Log into my staging console in Chrome using "AWS Staging Console" from OpenKeylet (including 2FA).` | `browser_inspect` → `browser_fill_login` → `browser_click` |
+| **WebAuthn Passkey Sign-In** | `Sign into github.com in my browser using the Passkey stored in "GitHub Maintainer".` | `browser_inspect` → `browser_passkey` |
+| **Fill Billing / Address Form** | `Fill out the shipping and card fields on the current checkout tab using "Corporate Visa ···· 4242".` | `browser_inspect` → `browser_fill_personal` |
+| **Interactive CLI / `sudo`** | `Start a local terminal session, run the deployment CLI, and fill the passphrase from "Release Signing Key" when prompted.` | `terminal_start` → `credential_fill` → `terminal_read` |
+| **Auto-Discovery (Hands-Off)** | `Finish deploying the staging branch. If any step needs SSH, API, or web login, check OpenKeylet first.` | `items_search` → matching action |
 
-Ordinary commands, scripts, JSON, or configuration can be passed directly through `terminal_run.stdin` or `ssh_run.stdin`, avoiding shell escaping and temporary files. Commands, stdin, paths, PTY input, and HTTP request fields can reference hidden modules with `{{openkeylet:module name}}`. Local paths accept absolute, home-relative, and MCP-workspace-relative forms. OpenKeylet imposes no fixed limit on command length, SSH or terminal output, module count, or concurrent terminal count; callers may still opt into explicit time or response-size limits.
+#### Way C — Secret Placeholders for Templates & Commands (`{{openkeylet:...}}`)
 
-Every successful tool call returns typed `structuredContent` and equivalent JSON text. Business failures return an MCP tool result with `isError=true`; malformed protocol input remains a protocol error. Tool annotations help clients describe impact, but all real security restrictions are enforced by OpenKeylet's backend.
+When asking an agent to render `.env` / YAML / JSON files or pass secrets into commands/headers, tell it to use `{{openkeylet:Module Name}}` placeholders:
 
-There is no unrestricted `get_secret` tool. `items_search` returns item and module metadata plus advertised actions. A credential value is included only when its Agent visibility switch is on.
+```env
+DEEPSEEK_API_KEY={{openkeylet:API Credential}}
+CF_API_TOKEN={{openkeylet:Token}}
+```
 
-Manual `stdio` configuration:
+OpenKeylet resolves placeholders **locally** inside `secret_write_file`, `http_send`, `ssh_run`, and `terminal_run`, and automatically replaces any echoed secret in stdout/stderr/HTTP output with `[REDACTED]`.
+
+---
+
+### Tutorial 3 · Create, Test & Organize Modular Items
+
+1. Click **`+ ADD`** (`⌘/Ctrl + N`) and pick a template: **Login**, **SSH**, **API**, **Card**, **Identity**, **Secure Note**, or **Blank**.
+2. **Compose only the modules you need**: click **`+ ADD MODULE`** to add Username, Password (with built-in generator), TOTP 2FA, API Credential, SSH Private Key, Passphrase, Host/Port, Service URL, or Custom Fields. Drag module handles to reorder.
+3. **Keep the left eye/switch OFF** for secret modules (default: *Hidden from Agent*), or turn it ON only for non-sensitive values an agent should read verbatim.
+4. **Add multiple website rules** on login items (`baseDomain`, `host`, `startsWith`, `exact`, `regex`) so browser autofill and `browser_fill_login` match subdomains accurately.
+5. Click **`CHECK`** on SSH or API items to verify connectivity right from the vault, click **`HIS`** to inspect/copy up to 20 past password versions, and use **drag-and-drop** (or `↑/↓` in List view, `←/→` in Grid view) to arrange your favorite order.
+
+---
+
+### Tutorial 4 · Browser Extension, Autofill, 2FA & Passkeys
+
+1. Open **System → WEB / 04 (Browser Bridge)** and enable the bridge (the top status strip turns **`WEB · ON`**).
+2. **Step 1**: Click **Open Chrome & copy address** → paste `chrome://extensions/` → turn on **Developer mode**.
+3. **Step 2**: Drag the OpenKeylet badge onto the extensions page (or click **Extension folder** → **Load unpacked**). Pairing completes automatically.
+4. **Daily Human Use**:
+   - Click the extension popup on any site to fill logins, cards, or identities (supports CJK/international checkout forms, Shadow DOM, React/Vue controlled inputs, and multi-step logins) — never auto-submits behind your back.
+   - Click **2FA** in the popup (or **COPY 2FA CODE** in the desktop editor) for live TOTP codes with automatic 30-second clipboard cleanup.
+   - Register and sign in with **WebAuthn Passkeys** (ES256, discoverable & allow-list credentials, optional `prf` / `largeBlob` extensions); private keys stay encrypted inside the desktop vault.
+5. **Agent-Driven Web Login**:
+   - Keep your target site open in Chrome/Edge/Brave, then tell your agent: `use GitHub Maintainer in OpenKeylet MCP — sign into this page.`
+   - You can watch every fill and click live in your tab; toggle **Agent Passkey signing** OFF under **System → WEB / 04** if you prefer manual Passkey confirmations only.
+
+---
+
+### Tutorial 5 · Offline `.mvault` Backups & Vault Migration (v3–v8 Compatible)
+
+All local data operations live together under **System → SAFE / 06 (Local Data & Offline Packages)**:
+
+* **Export `.mvault`**: Click **Export .mvault** and choose an independent backup password (≥ 12 characters). Encrypted with Argon2id (64 MiB, 3 iterations) + XChaCha20-Poly1305; includes all items, Passkeys, password history (last 20), and Trash.
+* **Restore `.mvault` (with Safe Dry-Run Preview)**:
+  1. Click **Restore .mvault** and pick your `.mvault` file first.
+  2. OpenKeylet automatically detects whether the package requires a password — **legacy v3–v7 and CLI self-unlocking `.mvault` files skip the password prompt automatically** (and display a security advisory encouraging you to re-export with a password).
+  3. Review the **non-destructive merge preview**: exact counts of new items, identical entries skipped, safe numbered conflict renames (e.g. `GitHub(2)` — existing items are never overwritten), Passkeys, Trash, and password history.
+  4. Click **Confirm Import** to commit atomically (and trigger automatic cloud sync if enabled).
+* **Migrate from Bitwarden / Chrome / Edge**: Click **Import Bitwarden / CSV** to preview compatibility notes and transactionally import Bitwarden JSON (including ES256 PKCS#8 Passkeys & TOTP) or Chrome/Edge CSV (also accepts `.mvault` packages).
+
+---
+
+### Tutorial 6 · Multi-Device Encrypted Cloud Sync (GitHub / Self-Hosted Gitea & Forgejo)
+
+In **System → CLOUD / 05**, you may optionally sync ciphertext through a **private** repository you own (completely opt-in):
+
+1. **Choose your host**:
+   - **GitHub**: reuse your local `gh auth login` session or paste a fine-grained PAT with `Contents: Read & write` (plus `Administration: Write` if you want OpenKeylet to create the private repo automatically).
+   - **Self-hosted Gitea / Forgejo**: enter your HTTPS server URL + personal access token, then click **Check server & account** to verify `/api/v1/user` connectivity before saving.
+2. **Verify private repo & store Recovery Key**: enter `owner/repo` (every read/write strictly enforces `private: true`), generate your 256-bit `okv1_` **Recovery Key**, and save it **outside the repository**.
+3. **One-Button Everyday Sync**:
+   - Turn on **Auto two-way sync** for debounced background pushes after edits and automatic pull-merge on launch (handles `409 Conflict` auto-retry and tombstone deletions).
+   - Whenever local changes haven't been synced yet (or a background push hits offline network), a **`PENDING SYNC`** banner stays visible and the primary button switches to **`SYNC PENDING CHANGES`** — one click reconciles everything.
+   - Manual actions (**Back up only**, **Restore only**, **Recovery key**, **Reconnect**, **Disconnect**) stay neatly tucked inside the collapsible **Advanced · Manual snapshot & connection** drawer.
+4. **Add a second machine (Windows / macOS / Linux)**: open **System → CLOUD / 05**, choose **Connect an existing vault repo**, enter the same repo + your `okv1_` Recovery Key, and click **`SYNC & RESTORE`**.
+
+> Local PIN, browser pairing tokens, agent configs, activity logs, and editor drafts **never** leave your device.
+
+---
+
+### Desktop Keyboard Shortcuts
+
+| Shortcut | Action |
+| --- | --- |
+| `⌘/Ctrl + K` or `⌘/Ctrl + F` | Focus search bar |
+| `⌘/Ctrl + N` | Add new vault item |
+| `⌘/Ctrl + 1 / 2 / 3` | Switch between **Items / Log / System** |
+| `⌘/Ctrl + ,` | Open **System** settings |
+| `⌘/Ctrl + S` | Save open item editor |
+| `⌘/Ctrl + Shift + L` | Lock OpenKeylet immediately (when PIN is enabled) |
+| `Esc` | Close active modal / cancel drag / close search |
+
+---
+
+## Complete MCP Surface (17 Tools)
+
+OpenKeylet runs on demand via local `stdio` MCP (`openkeylet mcp stdio`) and exposes 17 typed tools with `structuredContent` outputs:
+
+| Category | Tool | Purpose |
+| --- | --- | --- |
+| **Discovery** | `items_search(query?)` | Search enabled items, module names, public targets, and advertised actions |
+| **Browser & Web** | `browser_inspect` | Inspect active tab URL, forms, fields, and clickable controls via paired extension |
+| | `browser_fill_login` | Match and fill saved login credentials (and TOTP) into a live web page |
+| | `browser_fill_personal` | Fill saved cards or identity details into web forms |
+| | `browser_click` | Click a targeted button/link in the active page |
+| | `browser_passkey` | Complete WebAuthn Passkey registration or sign-in using the local vault |
+| **Direct Fill** | `credential_fill` | Fill one hidden module into a focused browser, desktop control, or managed terminal |
+| **SSH & SFTP** | `ssh_run` | Run SSH commands with local password/key auth, stdin, and `{{openkeylet:...}}` placeholders |
+| | `ssh_upload` | Recursively upload local files/directories over SFTP |
+| | `ssh_download` | Recursively download remote files/directories over SFTP |
+| **HTTP APIs** | `http_send` | Send authenticated HTTP/HTTPS requests (auto-detects providers, Bearer/Basic, custom headers, streaming, multipart) |
+| **Files** | `secret_write_file` | Render a local file template replacing `{{openkeylet:module}}` placeholders atomically without exposing plaintext |
+| **Terminal** | `terminal_run` | One-shot local command with hidden-module substitution and output redaction |
+| | `terminal_start` / `terminal_write` / `terminal_read` / `terminal_stop` | Managed interactive PTY sessions with continuous secret redaction across read boundaries |
+
+<details>
+  <summary>Manual <code>stdio</code> MCP Configuration (JSON &amp; CLI)</summary>
 
 ```json
 {
   "mcpServers": {
     "openkeylet": {
-      "command": "C:\\absolute\\path\\to\\openkeylet.exe",
+      "command": "C:\\path\\to\\openkeylet.exe",
       "args": ["mcp", "stdio"]
     }
   }
 }
 ```
 
-OpenKeylet can also print client-ready configuration:
+Print client-ready configuration from the CLI:
 
-```text
+```bash
 openkeylet config stdio-json
 openkeylet config stdio-toml
 ```
 
-## Security model
+</details>
 
-OpenKeylet is designed to keep hidden values out of normal MCP parameters, responses, activity records, application logs, and LLM API traffic. The OpenKeylet process and the final target necessarily handle plaintext briefly while an action runs.
+---
 
-OpenKeylet is not a sandbox. It does not defend against a malicious agent, a compromised machine or browser, or another process running as the same OS user. It cannot determine whether the agent focused the correct input or chose a trustworthy target. Read the complete [security policy and threat boundary](SECURITY.md) before relying on OpenKeylet for sensitive infrastructure.
+## Downloads & Data Locations
 
-## Build from source
+| Target | Format | Notes |
+| --- | --- | --- |
+| **Windows x64** | `.zip` | Portable GUI, tray, native clipboard history exclusion, desktop fill & browser extension |
+| **macOS arm64** | `.zip` | Native `.app` with macOS traffic lights & titlebar; Accessibility permission needed for desktop fill |
+| **Linux x64 GUI** | `.tar.gz` | AppImage GUI; X11 desktop fill & system tray |
+| **Linux x64 Headless** | `.tar.gz` | Zero WebView/GUI deps (`--no-default-features`); full MCP, SSH, HTTP, terminal, backup & bridge |
 
-Requirements: Rust 1.88+, Node.js 22+, and the [Tauri 2 platform prerequisites](https://v2.tauri.app/start/prerequisites/).
+Upgrading the binary preserves your vault automatically:
+
+| Platform | Default Vault Directory |
+| --- | --- |
+| Windows | `%APPDATA%\mcp-vault\v2` |
+| macOS | `~/Library/Application Support/mcp-vault/v2` |
+| Linux | `${XDG_DATA_HOME:-~/.local/share}/mcp-vault/v2` |
+
+*(Override with `OPENKEYLET_DATA_DIR=/absolute/path` for isolated/portable vaults.)*
+
+**Automatic Updates (GitHub Releases)**: Official signed builds check `releases/latest/download/latest.json` directly on GitHub Releases (no custom server), verify the Ed25519 manifest signature and SHA-256 checksum, optionally download silently in the background, and apply updates in place on restart without breaking MCP paths. Configure under **System → UPDATE / 07**, or run `openkeylet update check` / `openkeylet update install` on headless Linux.
+
+<details>
+  <summary>Upgrading from KRU</summary>
+  <p>OpenKeylet is the successor to <strong>KRU</strong> and keeps full compatibility with existing local vaults, keys, <code>.mvault</code> backups, <code>{{kru:module}}</code> placeholders, and <code>KRU_*</code> environment variables. After upgrading, open <strong>System → Agent Setup → Repair</strong> to migrate existing <code>kru</code> MCP entries to <code>openkeylet</code>, then restart your agent.</p>
+</details>
+
+---
+
+## Build & Test from Source
+
+Requirements: **Rust 1.88+**, **Node.js 22+**, and [Tauri 2 prerequisites](https://v2.tauri.app/start/prerequisites/).
 
 ```bash
 npm install
@@ -295,18 +363,23 @@ npm run build
 npm run portable
 ```
 
-Browser integration tests load the real unpacked extension in an isolated Chromium profile and use a temporary vault with synthetic credentials. After installing Playwright's Chromium (`npx playwright install chromium`), run `npm run test:browser`. Configure `PLAYWRIGHT_BROWSERS_PATH`, `CARGO_TARGET_DIR` and your temporary directory to match your environment policy. These tests cover password synchronization, independently verified passkey registration/signatures and cancellation; native desktop-to-Chrome dragging still needs a manual check.
-
-Login compatibility checks are available through `npm run test:login-patterns -- --all-browsers` (Chromium plus installed Chrome and Edge), `npm run test:login-flows` (real extension, React/Vue components, dynamic forms and multi-step flows), and `npm run test:login-capture` (confirmation, history, privacy and origin boundaries). `npm run test:public-logins` optionally inspects public GitHub, Google, Microsoft and GitLab login-page field structures without entering credentials or submitting forms. A successful structural probe or synthetic test is not certification of a live website's authentication flow; challenges and inaccessible pages are reported as unverified.
-
-Additional release targets:
+Additional release targets & verification suites:
 
 ```bash
 npm run release:mac
 npm run release:linux
 npm run release:headless
+
+# Real-Chromium extension, Passkey, UX & adversarial stress E2E (Playwright)
+npm run test:browser
+node scripts/test-agent-browser.mjs
+node scripts/test-realworld-passkey-autofill.mjs
+node scripts/test-ux-interactions.mjs
+node scripts/test-adversarial-e2e.mjs
 ```
+
+---
 
 ## License
 
-[MIT](LICENSE) — use it, inspect it, and improve it.
+[MIT](LICENSE) — inspect it, build it, and run it completely on your own hardware.

@@ -94,7 +94,7 @@ function showSaveNotice(available) {
   saveNotice.style.cssText = "all:initial!important;position:fixed!important;right:16px!important;bottom:16px!important;z-index:2147483647!important;";
   const shadow = saveNotice.attachShadow({ mode: "closed" });
   const style = document.createElement("style");
-  style.textContent = ":host{color-scheme:dark}section{box-sizing:border-box;width:min(340px,calc(100vw - 32px));padding:16px;border:1px solid #61696c;border-radius:12px;background:#303538;color:#e2e8eb;box-shadow:0 6px 26px #0006;font:14px/1.5 system-ui,sans-serif}strong{display:block;color:#80d9ea}p{margin:8px 0 12px}button{font:inherit;cursor:pointer;border:1px solid #69767a;border-radius:7px;background:#454e53;color:#f0f4f5;padding:7px 11px;margin-right:8px}button:focus-visible{outline:2px solid #80d9ea}";
+  style.textContent = ":host{color-scheme:dark}section{box-sizing:border-box;width:min(340px,calc(100vw - 32px));padding:15px 16px;border:1px solid #27272e;border-radius:12px;background:#0d0d10;color:#f4f4f5;box-shadow:0 16px 40px rgba(0,0,0,.65);font:13px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}strong{display:block;color:#f4f4f5;font-weight:600;letter-spacing:-.02em}p{margin:6px 0 12px;color:#a1a1aa}button{font:inherit;font-size:12px;font-weight:600;cursor:pointer;border:1px solid #2e2e36;border-radius:8px;background:#1b1b1f;color:#f4f4f5;padding:7px 12px;margin-right:8px}button:first-of-type{background:#f4f4f5;color:#09090b;border-color:transparent}button:focus-visible{outline:2px solid #f4f4f5;outline-offset:2px}";
   const section = document.createElement("section");
   section.setAttribute("role", "status");
   const title = document.createElement("strong"); title.textContent = "OpenKeylet · 保存登录信息";

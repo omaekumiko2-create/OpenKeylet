@@ -1569,6 +1569,233 @@ struct SecretWriteFileOutput {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DraftModuleSpec {
+    #[schemars(
+        description = "Module kind: host, port, url, username, password, apiCredential, privateKey, passphrase, totp, or customSecret."
+    )]
+    kind: String,
+    #[serde(default)]
+    #[schemars(description = "Required field label when kind is customSecret.")]
+    name: String,
+    #[serde(default)]
+    #[schemars(
+        description = "Public value for host, port, url (or non-secret SSH login username). Secret kinds (password, apiCredential, privateKey, passphrase, totp, customSecret) must leave value empty."
+    )]
+    value: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DraftPrepareInput {
+    #[schemars(description = "Display name for the prepared vault item draft.")]
+    name: String,
+    #[serde(default)]
+    #[schemars(description = "Item type: login, ssh, api, card, identity, secureNote, or custom.")]
+    item_type: String,
+    #[serde(default)]
+    folder: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    host: String,
+    #[serde(default)]
+    port: Option<u16>,
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    username: String,
+    #[serde(default)]
+    #[schemars(
+        description = "Additional module slots (e.g. password, apiCredential, privateKey, totp, or customSecret fields) for the owner to fill in OpenKeylet."
+    )]
+    modules: Vec<DraftModuleSpec>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+struct DraftPrepareOutput {
+    draft_id: String,
+    name: String,
+    item_type: String,
+    pending_secret_fields: Vec<String>,
+    next_step: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CreateItemSpec {
+    name: String,
+    #[serde(default)]
+    item_type: String,
+    #[serde(default)]
+    folder: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    host: String,
+    #[serde(default)]
+    port: Option<u16>,
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    username: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SecretGenerateInput {
+    #[serde(default)]
+    #[schemars(
+        description = "Existing OpenKeylet item name/ID to store the generated secret into. Omit if using createItem or the current session item."
+    )]
+    item: String,
+    #[serde(default)]
+    #[schemars(description = "Optional metadata to create a brand-new enabled vault item.")]
+    create_item: Option<CreateItemSpec>,
+    #[serde(default = "default_password_field")]
+    #[schemars(
+        description = "Target secret field name (e.g. password, apiCredential, passphrase, or a custom field name like DB_PASSWORD or JWT_SECRET). Defaults to password."
+    )]
+    field: String,
+    #[serde(default = "default_password_format")]
+    #[schemars(description = "Secret format: password (default), hex, or base64url.")]
+    format: String,
+    #[serde(default = "default_secret_length")]
+    #[schemars(
+        description = "Length of generated secret (8-128 for password; 16-128 characters for hex/base64url). Defaults to 24."
+    )]
+    length: usize,
+    #[serde(default = "default_true")]
+    uppercase: bool,
+    #[serde(default = "default_true")]
+    lowercase: bool,
+    #[serde(default = "default_true")]
+    digits: bool,
+    #[serde(default = "default_true")]
+    symbols: bool,
+    #[serde(default)]
+    #[schemars(
+        description = "Allow overwriting an already-configured secret field on an existing item. Defaults to false."
+    )]
+    overwrite: bool,
+}
+
+fn default_password_field() -> String {
+    "password".to_owned()
+}
+
+fn default_password_format() -> String {
+    "password".to_owned()
+}
+
+fn default_secret_length() -> usize {
+    24
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+struct SecretGenerateOutput {
+    item_id: String,
+    item_name: String,
+    field: String,
+    placeholder: String,
+    length: usize,
+    format: String,
+    created_item: bool,
+    overwritten: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SshKeygenInput {
+    #[serde(default)]
+    #[schemars(description = "Name for a new SSH item (omit if attaching to an existing item).")]
+    name: String,
+    #[serde(default)]
+    #[schemars(description = "Optional existing item name/ID to attach the new private key to.")]
+    item: String,
+    #[serde(default)]
+    host: String,
+    #[serde(default)]
+    port: Option<u16>,
+    #[serde(default)]
+    username: String,
+    #[serde(default)]
+    #[schemars(description = "Public key comment, e.g. deploy@openkeylet.")]
+    comment: String,
+    #[serde(default)]
+    folder: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    #[schemars(
+        description = "Allow replacing an existing privateKey on the target item. Defaults to false."
+    )]
+    overwrite: bool,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+struct SshKeygenOutput {
+    item_id: String,
+    item_name: String,
+    key_type: String,
+    public_key: String,
+    fingerprint: String,
+    private_key_stored: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SecretIngestFileInput {
+    #[schemars(
+        description = "Local file path (.env or SSH private key PEM) to ingest directly into OpenKeylet without returning plaintext to the model. Refuses paths inside OpenKeylet's own vault directory."
+    )]
+    path: String,
+    #[serde(default)]
+    #[schemars(description = "Name for a new vault item (omit if updating an existing item).")]
+    name: String,
+    #[serde(default)]
+    #[schemars(description = "Optional existing vault item name/ID to merge ingested secrets into.")]
+    item: String,
+    #[serde(default = "default_auto_format")]
+    #[schemars(description = "File format: auto (default), env, or privateKey.")]
+    format: String,
+    #[serde(default)]
+    folder: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    #[schemars(description = "Allow overwriting existing fields when updating an item. Defaults to false.")]
+    overwrite: bool,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional output path to write a secret-free template file with {{openkeylet:KEY}} placeholders (for .env files)."
+    )]
+    seal_template_path: Option<String>,
+    #[serde(default)]
+    #[schemars(description = "Allow overwriting sealTemplatePath if it already exists. Defaults to false.")]
+    overwrite_template: bool,
+}
+
+fn default_auto_format() -> String {
+    "auto".to_owned()
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+struct SecretIngestFileOutput {
+    item_id: String,
+    item_name: String,
+    item_type: String,
+    ingested_keys: Vec<String>,
+    placeholders: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    template_path: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct TerminalStartInput {
     #[serde(default)]
     #[schemars(
@@ -2933,6 +3160,825 @@ impl VaultMcp {
         .await;
         into_tool_result(result)
     }
+
+    #[tool(
+        name = "draft_prepare",
+        description = "Prepare an encrypted item draft skeleton in OpenKeylet containing public metadata (name, itemType, host, port, url, description) and empty secret module slots so the owner can simply paste the secret in OpenKeylet's desktop GUI without ever sending secret plaintext through the LLM. Secret modules must never include plaintext values.",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<DraftPrepareOutput>(),
+        annotations(title = "Prepare OpenKeylet item draft", read_only_hint = false, destructive_hint = false, idempotent_hint = false, open_world_hint = false)
+    )]
+    async fn draft_prepare(
+        &self,
+        Parameters(input): Parameters<DraftPrepareInput>,
+    ) -> CallToolResult {
+        let result: Result<DraftPrepareOutput, String> = (|| {
+            let name = input.name.trim().to_owned();
+            if name.is_empty() {
+                return Err("Draft name cannot be empty".to_owned());
+            }
+            let item_type = if input.item_type.trim().is_empty() {
+                if !input.host.trim().is_empty() {
+                    "ssh".to_owned()
+                } else if !input.url.trim().is_empty() {
+                    "api".to_owned()
+                } else {
+                    "custom".to_owned()
+                }
+            } else {
+                input.item_type.trim().to_owned()
+            };
+
+            let mut modules = Vec::new();
+            let mut secrets = crate::model::SecretBundle::default();
+            let mut pending_secret_fields = Vec::new();
+            let has_kind = |k: &str, mods: &[crate::model::ItemModule]| {
+                mods.iter().any(|m| m.kind == k)
+            };
+
+            if !input.host.trim().is_empty() {
+                modules.push(crate::model::ItemModule {
+                    kind: "host".to_owned(),
+                    name: "host".to_owned(),
+                    value: input.host.trim().to_owned(),
+                    agent_visible: Some(true),
+                });
+            }
+            if let Some(port) = input.port {
+                modules.push(crate::model::ItemModule {
+                    kind: "port".to_owned(),
+                    name: "port".to_owned(),
+                    value: port.to_string(),
+                    agent_visible: Some(true),
+                });
+            } else if item_type == "ssh" && !input.host.trim().is_empty() {
+                modules.push(crate::model::ItemModule {
+                    kind: "port".to_owned(),
+                    name: "port".to_owned(),
+                    value: "22".to_owned(),
+                    agent_visible: Some(true),
+                });
+            }
+            if !input.url.trim().is_empty() {
+                modules.push(crate::model::ItemModule {
+                    kind: "url".to_owned(),
+                    name: "url".to_owned(),
+                    value: input.url.trim().to_owned(),
+                    agent_visible: Some(true),
+                });
+            }
+            if !input.username.trim().is_empty() {
+                modules.push(crate::model::ItemModule {
+                    kind: "username".to_owned(),
+                    name: "username".to_owned(),
+                    value: String::new(),
+                    agent_visible: Some(false),
+                });
+                secrets
+                    .named_secrets
+                    .insert("username".to_owned(), input.username.trim().to_owned());
+            }
+
+            for spec in input.modules {
+                let kind = spec.kind.trim().to_owned();
+                let is_secret = crate::model::module_kind_has_plaintext_reveal(&kind);
+                if is_secret && kind != "username" && !spec.value.trim().is_empty() {
+                    return Err(format!(
+                        "Refused secret plaintext in draft_prepare for '{kind}'. Leave secret values empty so the owner fills them locally in OpenKeylet."
+                    ));
+                }
+                if kind == "customSecret" {
+                    let field_name = spec.name.trim().to_owned();
+                    if field_name.is_empty() {
+                        return Err("customSecret module requires a non-empty name".to_owned());
+                    }
+                    modules.push(crate::model::ItemModule {
+                        kind: "customSecret".to_owned(),
+                        name: field_name.clone(),
+                        value: String::new(),
+                        agent_visible: Some(false),
+                    });
+                    pending_secret_fields.push(field_name);
+                } else if !has_kind(&kind, &modules) {
+                    if kind == "username" && !spec.value.trim().is_empty() {
+                        secrets
+                            .named_secrets
+                            .insert("username".to_owned(), spec.value.trim().to_owned());
+                    } else if is_secret {
+                        pending_secret_fields.push(kind.clone());
+                    }
+                    modules.push(crate::model::ItemModule {
+                        kind: kind.clone(),
+                        name: kind,
+                        value: if is_secret {
+                            String::new()
+                        } else {
+                            spec.value.trim().to_owned()
+                        },
+                        agent_visible: Some(!is_secret),
+                    });
+                }
+            }
+
+            if pending_secret_fields.is_empty() {
+                let default_slot = match item_type.as_str() {
+                    "api" => "apiCredential",
+                    "ssh" | "login" => "password",
+                    "secureNote" => "secureNote",
+                    _ => "password",
+                };
+                if !has_kind(default_slot, &modules) {
+                    modules.push(crate::model::ItemModule {
+                        kind: default_slot.to_owned(),
+                        name: default_slot.to_owned(),
+                        value: String::new(),
+                        agent_visible: Some(false),
+                    });
+                    pending_secret_fields.push(default_slot.to_owned());
+                }
+            }
+
+            let conn_input = crate::model::ConnectionInput {
+                login_uris: Vec::new(),
+                item_type: item_type.clone(),
+                folder: input.folder.trim().to_owned(),
+                favorite: false,
+                id: None,
+                modules,
+                name: name.clone(),
+                enabled: true,
+                description: input.description.trim().to_owned(),
+                http_auth_type: if item_type == "api" {
+                    "auto".to_owned()
+                } else {
+                    String::new()
+                },
+                private_key_import_path: String::new(),
+                auth_header: String::new(),
+                auth_location: String::new(),
+                auth_prefix: String::new(),
+                api_auth_headers: Vec::new(),
+                test_path: String::new(),
+                remove_secret_names: Vec::new(),
+                secrets,
+            };
+            let draft = self
+                .vault
+                .save_editor_draft(None, conn_input)
+                .map_err(|e| e.to_string())?;
+            let _ = self.vault.add_activity(NewActivity {
+                status: "success".to_owned(),
+                source: self.activity_source(),
+                connection_name: name.clone(),
+                action: format!("Prepare draft ({})", pending_secret_fields.join(", ")),
+                duration_ms: 0,
+                error: String::new(),
+            });
+            Ok(DraftPrepareOutput {
+                draft_id: draft.id.to_string(),
+                name,
+                item_type,
+                pending_secret_fields,
+                next_step: "Open OpenKeylet and click DRAFT to paste the secret value(s) and save."
+                    .to_owned(),
+            })
+        })();
+        into_tool_result(result)
+    }
+
+    #[tool(
+        name = "secret_generate",
+        description = "Cryptographically generate a strong password or random token locally inside OpenKeylet and store it encrypted directly into an existing or new vault item without ever returning plaintext to the model. Immediately usable via {{openkeylet:field}} in secret_write_file, ssh_run, http_send, or terminal_run.",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<SecretGenerateOutput>(),
+        annotations(title = "Generate & store secret locally", read_only_hint = false, destructive_hint = false, idempotent_hint = false, open_world_hint = false)
+    )]
+    async fn secret_generate(
+        &self,
+        Parameters(input): Parameters<SecretGenerateInput>,
+    ) -> CallToolResult {
+        let result: Result<SecretGenerateOutput, String> = (|| {
+            let started = Instant::now();
+            let field = input.field.trim().to_owned();
+            if field.is_empty() || field.chars().count() > 64 || field.chars().any(char::is_control)
+            {
+                return Err("Invalid secret field name".to_owned());
+            }
+            let format = input.format.trim().to_ascii_lowercase();
+            let generated = zeroize::Zeroizing::new(generate_secret_value(
+                &format,
+                input.length,
+                input.uppercase,
+                input.lowercase,
+                input.digits,
+                input.symbols,
+            )?);
+
+            let (saved, created_item, overwritten) = if let Some(spec) = input.create_item {
+                let name = spec.name.trim().to_owned();
+                if name.is_empty() {
+                    return Err("createItem.name cannot be empty".to_owned());
+                }
+                let item_type = if spec.item_type.trim().is_empty() {
+                    if field == "apiCredential" {
+                        "api".to_owned()
+                    } else if !spec.host.trim().is_empty() {
+                        "ssh".to_owned()
+                    } else {
+                        "custom".to_owned()
+                    }
+                } else {
+                    spec.item_type.trim().to_owned()
+                };
+                let mut modules = Vec::new();
+                let mut secrets = crate::model::SecretBundle::default();
+                if !spec.host.trim().is_empty() {
+                    modules.push(crate::model::ItemModule {
+                        kind: "host".to_owned(),
+                        name: "host".to_owned(),
+                        value: spec.host.trim().to_owned(),
+                        agent_visible: Some(true),
+                    });
+                }
+                if let Some(port) = spec.port {
+                    modules.push(crate::model::ItemModule {
+                        kind: "port".to_owned(),
+                        name: "port".to_owned(),
+                        value: port.to_string(),
+                        agent_visible: Some(true),
+                    });
+                }
+                if !spec.url.trim().is_empty() {
+                    modules.push(crate::model::ItemModule {
+                        kind: "url".to_owned(),
+                        name: "url".to_owned(),
+                        value: spec.url.trim().to_owned(),
+                        agent_visible: Some(true),
+                    });
+                }
+                if !spec.username.trim().is_empty() {
+                    modules.push(crate::model::ItemModule {
+                        kind: "username".to_owned(),
+                        name: "username".to_owned(),
+                        value: String::new(),
+                        agent_visible: Some(false),
+                    });
+                    secrets
+                        .named_secrets
+                        .insert("username".to_owned(), spec.username.trim().to_owned());
+                }
+                insert_secret_module(&mut modules, &mut secrets, &field, &generated);
+                let conn_input = crate::model::ConnectionInput {
+                    login_uris: Vec::new(),
+                    item_type,
+                    folder: spec.folder.trim().to_owned(),
+                    favorite: false,
+                    id: None,
+                    modules,
+                    name,
+                    enabled: true,
+                    description: spec.description.trim().to_owned(),
+                    http_auth_type: if field == "apiCredential" {
+                        "auto".to_owned()
+                    } else {
+                        String::new()
+                    },
+                    private_key_import_path: String::new(),
+                    auth_header: String::new(),
+                    auth_location: String::new(),
+                    auth_prefix: String::new(),
+                    api_auth_headers: Vec::new(),
+                    test_path: String::new(),
+                    remove_secret_names: Vec::new(),
+                    secrets,
+                };
+                let saved = self
+                    .vault
+                    .save_connection(conn_input)
+                    .map_err(|e| e.to_string())?;
+                (saved, true, false)
+            } else {
+                let existing = self.resolve_item_for_action(&input.item, None)?;
+                let already_present = existing.secrets.get(&field).is_some();
+                if already_present && !input.overwrite {
+                    return Err(format!(
+                        "Field '{field}' is already configured on '{}'. Pass overwrite=true to rotate it.",
+                        existing.stored.name
+                    ));
+                }
+                let mut modules = existing.stored.modules.clone();
+                let mut secrets = crate::model::SecretBundle::default();
+                insert_secret_module(&mut modules, &mut secrets, &field, &generated);
+                let item_type = existing.stored.item_type().to_owned();
+                let expected = existing.stored.updated_at.clone();
+                let conn_input = crate::model::ConnectionInput {
+                    login_uris: existing.stored.login_uris,
+                    item_type,
+                    folder: existing.stored.folder,
+                    favorite: existing.stored.favorite,
+                    id: Some(existing.stored.id),
+                    modules,
+                    name: existing.stored.name,
+                    enabled: existing.stored.enabled,
+                    description: existing.stored.description,
+                    http_auth_type: existing.stored.http_auth_type,
+                    private_key_import_path: String::new(),
+                    auth_header: existing.stored.auth_header,
+                    auth_location: existing.stored.auth_location,
+                    auth_prefix: existing.stored.auth_prefix,
+                    api_auth_headers: existing.stored.api_auth_headers,
+                    test_path: existing.stored.test_path,
+                    remove_secret_names: Vec::new(),
+                    secrets,
+                };
+                let saved = self
+                    .vault
+                    .save_connection_checked(conn_input, Some(expected.as_str()))
+                    .map_err(|e| e.to_string())?;
+                (saved, false, already_present)
+            };
+
+            self.bind_active_item(saved.id);
+            let _ = self.vault.add_activity(NewActivity {
+                status: "success".to_owned(),
+                source: self.activity_source(),
+                connection_name: saved.name.clone(),
+                action: format!("Generate secret ({field})"),
+                duration_ms: started.elapsed().as_millis() as u64,
+                error: String::new(),
+            });
+            Ok(SecretGenerateOutput {
+                item_id: saved.id.to_string(),
+                item_name: saved.name,
+                placeholder: format!("{{{{openkeylet:{field}}}}}"),
+                field,
+                length: generated.len(),
+                format,
+                created_item,
+                overwritten,
+            })
+        })();
+        into_tool_result(result)
+    }
+
+    #[tool(
+        name = "ssh_keygen",
+        description = "Generate a fresh Ed25519 SSH keypair locally inside OpenKeylet, encrypt and store the private key directly in a new or existing SSH vault item, and return ONLY the OpenSSH public key and SHA256 fingerprint (private key never leaves the vault).",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<SshKeygenOutput>(),
+        annotations(title = "Generate Ed25519 SSH keypair locally", read_only_hint = false, destructive_hint = false, idempotent_hint = false, open_world_hint = false)
+    )]
+    async fn ssh_keygen(
+        &self,
+        Parameters(input): Parameters<SshKeygenInput>,
+    ) -> CallToolResult {
+        let result: Result<SshKeygenOutput, String> = (|| {
+            let started = Instant::now();
+            let comment = if input.comment.trim().is_empty() {
+                if !input.name.trim().is_empty() {
+                    format!("{}@openkeylet", input.name.trim())
+                } else {
+                    "openkeylet".to_owned()
+                }
+            } else {
+                input.comment.trim().to_owned()
+            };
+            let keypair = crate::smart_ingest::generate_ed25519_keypair(&comment)
+                .map_err(|e| e.to_string())?;
+
+            let saved = if !input.item.trim().is_empty() {
+                let existing = self.resolve_item_for_action(&input.item, None)?;
+                if existing.secrets.get("privateKey").is_some() && !input.overwrite {
+                    return Err(format!(
+                        "'{}' already has a privateKey. Pass overwrite=true to replace it.",
+                        existing.stored.name
+                    ));
+                }
+                let mut modules = existing.stored.modules.clone();
+                if !modules.iter().any(|m| m.kind == "privateKey") {
+                    modules.push(crate::model::ItemModule {
+                        kind: "privateKey".to_owned(),
+                        name: "privateKey".to_owned(),
+                        value: String::new(),
+                        agent_visible: Some(false),
+                    });
+                }
+                let mut secrets = crate::model::SecretBundle::default();
+                secrets.private_key = Some(keypair.private_key_pem.to_string());
+                secrets.private_key_name = Some("id_ed25519".to_owned());
+                let item_type = existing.stored.item_type().to_owned();
+                let expected = existing.stored.updated_at.clone();
+                let conn_input = crate::model::ConnectionInput {
+                    login_uris: existing.stored.login_uris,
+                    item_type,
+                    folder: existing.stored.folder,
+                    favorite: existing.stored.favorite,
+                    id: Some(existing.stored.id),
+                    modules,
+                    name: existing.stored.name,
+                    enabled: existing.stored.enabled,
+                    description: existing.stored.description,
+                    http_auth_type: existing.stored.http_auth_type,
+                    private_key_import_path: String::new(),
+                    auth_header: existing.stored.auth_header,
+                    auth_location: existing.stored.auth_location,
+                    auth_prefix: existing.stored.auth_prefix,
+                    api_auth_headers: existing.stored.api_auth_headers,
+                    test_path: existing.stored.test_path,
+                    remove_secret_names: Vec::new(),
+                    secrets,
+                };
+                self.vault
+                    .save_connection_checked(conn_input, Some(expected.as_str()))
+                    .map_err(|e| e.to_string())?
+            } else {
+                let name = input.name.trim().to_owned();
+                if name.is_empty() {
+                    return Err("Provide either name (for a new SSH item) or item (for an existing item)".to_owned());
+                }
+                let mut modules = Vec::new();
+                let mut secrets = crate::model::SecretBundle::default();
+                if !input.host.trim().is_empty() {
+                    modules.push(crate::model::ItemModule {
+                        kind: "host".to_owned(),
+                        name: "host".to_owned(),
+                        value: input.host.trim().to_owned(),
+                        agent_visible: Some(true),
+                    });
+                    modules.push(crate::model::ItemModule {
+                        kind: "port".to_owned(),
+                        name: "port".to_owned(),
+                        value: input.port.unwrap_or(22).to_string(),
+                        agent_visible: Some(true),
+                    });
+                }
+                if !input.username.trim().is_empty() {
+                    modules.push(crate::model::ItemModule {
+                        kind: "username".to_owned(),
+                        name: "username".to_owned(),
+                        value: String::new(),
+                        agent_visible: Some(false),
+                    });
+                    secrets
+                        .named_secrets
+                        .insert("username".to_owned(), input.username.trim().to_owned());
+                }
+                modules.push(crate::model::ItemModule {
+                    kind: "privateKey".to_owned(),
+                    name: "privateKey".to_owned(),
+                    value: String::new(),
+                    agent_visible: Some(false),
+                });
+                secrets.private_key = Some(keypair.private_key_pem.to_string());
+                secrets.private_key_name = Some("id_ed25519".to_owned());
+                let conn_input = crate::model::ConnectionInput {
+                    login_uris: Vec::new(),
+                    item_type: "ssh".to_owned(),
+                    folder: input.folder.trim().to_owned(),
+                    favorite: false,
+                    id: None,
+                    modules,
+                    name,
+                    enabled: true,
+                    description: if input.description.trim().is_empty() {
+                        format!("Ed25519 · {}", keypair.fingerprint)
+                    } else {
+                        input.description.trim().to_owned()
+                    },
+                    http_auth_type: String::new(),
+                    private_key_import_path: String::new(),
+                    auth_header: String::new(),
+                    auth_location: String::new(),
+                    auth_prefix: String::new(),
+                    api_auth_headers: Vec::new(),
+                    test_path: String::new(),
+                    remove_secret_names: Vec::new(),
+                    secrets,
+                };
+                self.vault
+                    .save_connection(conn_input)
+                    .map_err(|e| e.to_string())?
+            };
+
+            self.bind_active_item(saved.id);
+            let _ = self.vault.add_activity(NewActivity {
+                status: "success".to_owned(),
+                source: self.activity_source(),
+                connection_name: saved.name.clone(),
+                action: format!("Generate Ed25519 SSH key ({})", keypair.fingerprint),
+                duration_ms: started.elapsed().as_millis() as u64,
+                error: String::new(),
+            });
+            Ok(SshKeygenOutput {
+                item_id: saved.id.to_string(),
+                item_name: saved.name,
+                key_type: "ssh-ed25519".to_owned(),
+                public_key: keypair.public_key,
+                fingerprint: keypair.fingerprint,
+                private_key_stored: true,
+            })
+        })();
+        into_tool_result(result)
+    }
+
+    #[tool(
+        name = "secret_ingest_file",
+        description = "Read a local .env or SSH private key file inside OpenKeylet, encrypt and store its secrets directly into the local vault without returning any secret plaintext to the model, and optionally write a secret-free {{openkeylet:KEY}} template file.",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<SecretIngestFileOutput>(),
+        annotations(title = "Ingest local secret file into vault", read_only_hint = false, destructive_hint = false, idempotent_hint = false, open_world_hint = false)
+    )]
+    async fn secret_ingest_file(
+        &self,
+        Parameters(input): Parameters<SecretIngestFileInput>,
+    ) -> CallToolResult {
+        let result: Result<SecretIngestFileOutput, String> = (|| {
+            let started = Instant::now();
+            let source_path = crate::storage::resolve_user_path(&input.path)
+                .map_err(|e| e.to_string())?;
+            if path_inside_directory(&source_path, self.vault.data_dir()) {
+                return Err(
+                    "Refused to read inside OpenKeylet's own vault data directory".to_owned(),
+                );
+            }
+            let meta = std::fs::metadata(&source_path)
+                .with_context(|| format!("Source file not found: {}", source_path.display()))
+                .map_err(|e| e.to_string())?;
+            if meta.len() > 512 * 1024 {
+                return Err("Source file exceeds 512 KiB limit".to_owned());
+            }
+            let raw = zeroize::Zeroizing::new(
+                std::fs::read_to_string(&source_path)
+                    .context("Source file must be UTF-8 text")
+                    .map_err(|e| e.to_string())?,
+            );
+            let file_name = source_path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("secrets")
+                .to_owned();
+            let fmt = input.format.trim().to_ascii_lowercase();
+            let is_private_key = fmt == "privatekey"
+                || (fmt == "auto" && raw.contains("PRIVATE KEY-----"));
+
+            let mut ingested_keys: Vec<String> = Vec::new();
+            let mut new_modules: Vec<crate::model::ItemModule> = Vec::new();
+            let mut new_secrets = crate::model::SecretBundle::default();
+            let detected_type: &str;
+
+            if is_private_key {
+                if !raw.contains("PRIVATE KEY-----") {
+                    return Err("File does not appear to be a PEM/OpenSSH private key".to_owned());
+                }
+                detected_type = "ssh";
+                new_modules.push(crate::model::ItemModule {
+                    kind: "privateKey".to_owned(),
+                    name: "privateKey".to_owned(),
+                    value: String::new(),
+                    agent_visible: Some(false),
+                });
+                new_secrets.private_key = Some(raw.to_string());
+                new_secrets.private_key_name = Some(file_name.clone());
+                ingested_keys.push("privateKey".to_owned());
+            } else {
+                let vars = crate::smart_ingest::parse_env_vars(&raw);
+                if vars.is_empty() {
+                    return Err("No KEY=VALUE entries found in source file".to_owned());
+                }
+                detected_type = "custom";
+                for var in vars {
+                    new_modules.push(crate::model::ItemModule {
+                        kind: "customSecret".to_owned(),
+                        name: var.key.clone(),
+                        value: String::new(),
+                        agent_visible: Some(false),
+                    });
+                    new_secrets.named_secrets.insert(var.key.clone(), var.value);
+                    ingested_keys.push(var.key);
+                }
+            }
+
+            let saved = if !input.item.trim().is_empty() {
+                let existing = self.resolve_item_for_action(&input.item, None)?;
+                for key in &ingested_keys {
+                    if existing.secrets.get(key).is_some() && !input.overwrite {
+                        return Err(format!(
+                            "Field '{key}' already exists on '{}'. Pass overwrite=true to update it.",
+                            existing.stored.name
+                        ));
+                    }
+                }
+                let mut modules = existing.stored.modules.clone();
+                for m in new_modules {
+                    let exists = modules.iter().any(|cur| {
+                        cur.kind == m.kind
+                            && (cur.kind != "customSecret" || cur.name.eq_ignore_ascii_case(&m.name))
+                    });
+                    if !exists {
+                        modules.push(m);
+                    }
+                }
+                let item_type = existing.stored.item_type().to_owned();
+                let expected = existing.stored.updated_at.clone();
+                let conn_input = crate::model::ConnectionInput {
+                    login_uris: existing.stored.login_uris,
+                    item_type,
+                    folder: existing.stored.folder,
+                    favorite: existing.stored.favorite,
+                    id: Some(existing.stored.id),
+                    modules,
+                    name: existing.stored.name,
+                    enabled: existing.stored.enabled,
+                    description: existing.stored.description,
+                    http_auth_type: existing.stored.http_auth_type,
+                    private_key_import_path: String::new(),
+                    auth_header: existing.stored.auth_header,
+                    auth_location: existing.stored.auth_location,
+                    auth_prefix: existing.stored.auth_prefix,
+                    api_auth_headers: existing.stored.api_auth_headers,
+                    test_path: existing.stored.test_path,
+                    remove_secret_names: Vec::new(),
+                    secrets: new_secrets,
+                };
+                self.vault
+                    .save_connection_checked(conn_input, Some(expected.as_str()))
+                    .map_err(|e| e.to_string())?
+            } else {
+                let name = if input.name.trim().is_empty() {
+                    format!("Env · {file_name}")
+                } else {
+                    input.name.trim().to_owned()
+                };
+                let conn_input = crate::model::ConnectionInput {
+                    login_uris: Vec::new(),
+                    item_type: detected_type.to_owned(),
+                    folder: if input.folder.trim().is_empty() {
+                        if is_private_key {
+                            "SSH".to_owned()
+                        } else {
+                            "Env".to_owned()
+                        }
+                    } else {
+                        input.folder.trim().to_owned()
+                    },
+                    favorite: false,
+                    id: None,
+                    modules: new_modules,
+                    name,
+                    enabled: true,
+                    description: if input.description.trim().is_empty() {
+                        format!("Ingested from {file_name}")
+                    } else {
+                        input.description.trim().to_owned()
+                    },
+                    http_auth_type: String::new(),
+                    private_key_import_path: String::new(),
+                    auth_header: String::new(),
+                    auth_location: String::new(),
+                    auth_prefix: String::new(),
+                    api_auth_headers: Vec::new(),
+                    test_path: String::new(),
+                    remove_secret_names: Vec::new(),
+                    secrets: new_secrets,
+                };
+                self.vault
+                    .save_connection(conn_input)
+                    .map_err(|e| e.to_string())?
+            };
+
+            let mut written_template: Option<String> = None;
+            if let Some(tpl_raw) = input.seal_template_path.as_deref().filter(|s| !s.trim().is_empty()) {
+                if is_private_key {
+                    return Err("sealTemplatePath is only supported for .env files".to_owned());
+                }
+                let tpl_path = crate::storage::resolve_user_path(tpl_raw)
+                    .map_err(|e| e.to_string())?;
+                if path_inside_directory(&tpl_path, self.vault.data_dir()) {
+                    return Err(
+                        "Refused to write template inside OpenKeylet's own vault data directory"
+                            .to_owned(),
+                    );
+                }
+                if tpl_path.exists() && !input.overwrite_template {
+                    return Err(format!(
+                        "Template path already exists and overwriteTemplate is false: {}",
+                        tpl_path.display()
+                    ));
+                }
+                let (sealed, _) = crate::smart_ingest::render_sealed_env(&raw);
+                if let Some(parent) = tpl_path.parent()
+                    && !parent.as_os_str().is_empty()
+                {
+                    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                }
+                let mut writer = atomic_write_file::AtomicWriteFile::open(&tpl_path)
+                    .map_err(|e| e.to_string())?;
+                std::io::Write::write_all(&mut writer, sealed.as_bytes())
+                    .map_err(|e| e.to_string())?;
+                writer.commit().map_err(|e| e.to_string())?;
+                written_template = Some(tpl_path.to_string_lossy().into_owned());
+            }
+
+            self.bind_active_item(saved.id);
+            let _ = self.vault.add_activity(NewActivity {
+                status: "success".to_owned(),
+                source: self.activity_source(),
+                connection_name: saved.name.clone(),
+                action: format!("Ingest file ({} key(s))", ingested_keys.len()),
+                duration_ms: started.elapsed().as_millis() as u64,
+                error: String::new(),
+            });
+            let placeholders = ingested_keys
+                .iter()
+                .map(|k| format!("{{{{openkeylet:{k}}}}}"))
+                .collect();
+            Ok(SecretIngestFileOutput {
+                item_id: saved.id.to_string(),
+                item_name: saved.name,
+                item_type: saved.item_type,
+                ingested_keys,
+                placeholders,
+                template_path: written_template,
+            })
+        })();
+        into_tool_result(result)
+    }
+}
+
+fn generate_secret_value(
+    format: &str,
+    length: usize,
+    uppercase: bool,
+    lowercase: bool,
+    digits: bool,
+    symbols: bool,
+) -> Result<String, String> {
+    match format {
+        "password" => crate::generator::password(&crate::generator::Options {
+            length,
+            uppercase,
+            lowercase,
+            digits,
+            symbols,
+        })
+        .map_err(|e| e.to_string()),
+        "hex" => {
+            if !(16..=128).contains(&length) {
+                return Err("Hex secret length must be 16-128".to_owned());
+            }
+            let byte_len = length.div_ceil(2);
+            let mut bytes = vec![0u8; byte_len];
+            getrandom::fill(&mut bytes).map_err(|e| format!("Random generator unavailable: {e}"))?;
+            let mut hex = String::with_capacity(byte_len * 2);
+            for b in bytes {
+                use std::fmt::Write;
+                let _ = write!(&mut hex, "{b:02x}");
+            }
+            hex.truncate(length);
+            Ok(hex)
+        }
+        "base64url" => {
+            if !(16..=128).contains(&length) {
+                return Err("Base64url secret length must be 16-128".to_owned());
+            }
+            use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+            let byte_len = (length * 3).div_ceil(4) + 2;
+            let mut bytes = vec![0u8; byte_len];
+            getrandom::fill(&mut bytes).map_err(|e| format!("Random generator unavailable: {e}"))?;
+            let mut encoded = URL_SAFE_NO_PAD.encode(bytes);
+            encoded.truncate(length);
+            Ok(encoded)
+        }
+        _ => Err("Unsupported secret format; use password, hex, or base64url".to_owned()),
+    }
+}
+
+fn insert_secret_module(
+    modules: &mut Vec<crate::model::ItemModule>,
+    secrets: &mut crate::model::SecretBundle,
+    field: &str,
+    value: &str,
+) {
+    let builtin = matches!(field, "password" | "apiCredential" | "passphrase" | "totp" | "username");
+    let kind = if builtin { field } else { "customSecret" };
+    let exists = modules.iter().any(|m| {
+        m.kind == kind && (kind != "customSecret" || m.name.eq_ignore_ascii_case(field))
+    });
+    if !exists {
+        modules.push(crate::model::ItemModule {
+            kind: kind.to_owned(),
+            name: if kind == "customSecret" {
+                field.to_owned()
+            } else {
+                kind.to_owned()
+            },
+            value: String::new(),
+            agent_visible: Some(false),
+        });
+    }
+    match field {
+        "password" => secrets.password = Some(value.to_owned()),
+        "passphrase" => secrets.passphrase = Some(value.to_owned()),
+        _ => {
+            secrets.named_secrets.insert(field.to_owned(), value.to_owned());
+        }
+    }
 }
 
 fn path_inside_directory(path: &Path, directory: &Path) -> bool {
@@ -2974,7 +4020,7 @@ impl ServerHandler for VaultMcp {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("openkeylet", env!("CARGO_PKG_VERSION")).with_title("OpenKeylet"))
             .with_instructions(
-            "OpenKeylet lets agents use locally saved credentials without receiving hidden plaintext. An explicit item or unique items_search result becomes the current project; later compatible actions may omit item, and a terminal keeps its own binding. When the user names a project and the action is clear, call it directly. Use items_search only for discovery, selection, inspection, or genuine ambiguity. For websites open in a browser with the paired OpenKeylet extension: use browser_inspect to view open tabs, forms, visible field/button metadata, pending WebAuthn Passkey prompts, and matching vault items (zero plaintext); use browser_fill_login to fill username, password, and optional TOTP (including split-box OTPs) without manual focus; use browser_passkey to sign in or register WebAuthn Passkeys (pass triggerText or triggerSelector to atomically arm and click the page's Passkey button, or omit to complete an already-pending prompt); use browser_fill_personal for cards/identities on HTTPS/localhost; use browser_click to click sign-in/continue buttons. credential_fill also accepts browser selector/fieldHint/tabId/url or falls back to focused controls. terminal_start makes the opened PTY current, so terminal_write, terminal_read, terminal_stop, and terminal credential fills should omit sessionId unless deliberately switching among multiple terminals. Use terminal_run for one-shot local commands and PTY tools only for persistent interaction. Direct {{openkeylet:module}} placeholders work in commands, stdin, paths, terminal input, SSH, and HTTP values; OpenKeylet substitutes and redacts them locally. Never ask the user to reveal a hidden value.",
+            "OpenKeylet lets agents use locally saved credentials without receiving hidden plaintext. An explicit item or unique items_search result becomes the current project; later compatible actions may omit item, and a terminal keeps its own binding. When the user names a project and the action is clear, call it directly. Use items_search only for discovery, selection, inspection, or genuine ambiguity. For creating or storing new credentials without ever exposing plaintext to the model: use draft_prepare to scaffold an encrypted draft with public metadata so the owner only pastes the secret in OpenKeylet; use secret_generate to generate a strong password or token locally into the vault (then reference it via {{openkeylet:field}}); use ssh_keygen to generate an Ed25519 SSH keypair locally and receive only the public key; use secret_ingest_file to import a local .env or private key file directly into the vault (and optionally write a {{openkeylet:KEY}} template). For websites open in a browser with the paired OpenKeylet extension: use browser_inspect to view open tabs, forms, visible field/button metadata, pending WebAuthn Passkey prompts, and matching vault items (zero plaintext); use browser_fill_login to fill username, password, and optional TOTP (including split-box OTPs) without manual focus; use browser_passkey to sign in or register WebAuthn Passkeys (pass triggerText or triggerSelector to atomically arm and click the page's Passkey button, or omit to complete an already-pending prompt); use browser_fill_personal for cards/identities on HTTPS/localhost; use browser_click to click sign-in/continue buttons. credential_fill also accepts browser selector/fieldHint/tabId/url or falls back to focused controls. terminal_start makes the opened PTY current, so terminal_write, terminal_read, terminal_stop, and terminal credential fills should omit sessionId unless deliberately switching among multiple terminals. Use terminal_run for one-shot local commands and PTY tools only for persistent interaction. Direct {{openkeylet:module}} placeholders work in commands, stdin, paths, terminal input, SSH, and HTTP values; OpenKeylet substitutes and redacts them locally. Never ask the user to reveal a hidden value.",
         )
     }
 
@@ -4563,5 +5609,213 @@ mod tests {
         // Activity log must never record raw secret plaintext
         let activities_json = serde_json::to_string(&vault.activities().unwrap()).unwrap();
         assert!(!activities_json.contains("sk-config-secret-9988"));
+    }
+
+    #[tokio::test]
+    async fn zero_plaintext_co_storage_tools_work_and_never_leak_secrets() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = Vault::open(dir.path().to_path_buf()).unwrap();
+        let mcp = VaultMcp::new(vault.clone());
+
+        // 1. draft_prepare rejects secret plaintext, accepts public skeleton
+        let rejected = mcp
+            .draft_prepare(Parameters(DraftPrepareInput {
+                name: "Bad Draft".into(),
+                item_type: "api".into(),
+                folder: String::new(),
+                description: String::new(),
+                host: String::new(),
+                port: None,
+                url: "https://api.example.com".into(),
+                username: String::new(),
+                modules: vec![DraftModuleSpec {
+                    kind: "apiCredential".into(),
+                    name: String::new(),
+                    value: "sk-leaked-plaintext".into(),
+                }],
+            }))
+            .await;
+        assert_eq!(rejected.is_error, Some(true));
+
+        let draft_res = mcp
+            .draft_prepare(Parameters(DraftPrepareInput {
+                name: "Prod Tokyo".into(),
+                item_type: "ssh".into(),
+                folder: "Servers".into(),
+                description: "Production cluster".into(),
+                host: "203.0.113.5".into(),
+                port: Some(2222),
+                url: String::new(),
+                username: "deploy".into(),
+                modules: vec![DraftModuleSpec {
+                    kind: "password".into(),
+                    name: String::new(),
+                    value: String::new(),
+                }],
+            }))
+            .await;
+        assert_ne!(draft_res.is_error, Some(true));
+        let drafts = vault.list_editor_drafts().unwrap();
+        assert_eq!(drafts.len(), 1);
+        assert_eq!(drafts[0].input.name, "Prod Tokyo");
+
+        // 2. secret_generate creates a new item + stores hidden secret locally; chains directly into secret_write_file
+        let gen_res = mcp
+            .secret_generate(Parameters(SecretGenerateInput {
+                item: String::new(),
+                create_item: Some(CreateItemSpec {
+                    name: "Prod Postgres".into(),
+                    item_type: "custom".into(),
+                    folder: "DB".into(),
+                    description: "App DB".into(),
+                    host: "db.internal".into(),
+                    port: Some(5432),
+                    url: String::new(),
+                    username: "app".into(),
+                }),
+                field: "DB_PASSWORD".into(),
+                format: "base64url".into(),
+                length: 32,
+                uppercase: true,
+                lowercase: true,
+                digits: true,
+                symbols: false,
+                overwrite: false,
+            }))
+            .await;
+        assert_ne!(gen_res.is_error, Some(true));
+        let gen_json = serde_json::to_string(&gen_res).unwrap();
+        let db_item = vault
+            .list_decrypted_connections()
+            .unwrap()
+            .into_iter()
+            .find(|c| c.stored.name == "Prod Postgres")
+            .unwrap();
+        let real_secret = db_item.secrets.get("DB_PASSWORD").unwrap().to_owned();
+        assert_eq!(real_secret.len(), 32);
+        assert!(
+            !gen_json.contains(&real_secret),
+            "secret_generate must never return generated plaintext to the model"
+        );
+
+        // Overwrite protection defaults to false
+        let blocked_overwrite = mcp
+            .secret_generate(Parameters(SecretGenerateInput {
+                item: "Prod Postgres".into(),
+                create_item: None,
+                field: "DB_PASSWORD".into(),
+                format: "password".into(),
+                length: 24,
+                uppercase: true,
+                lowercase: true,
+                digits: true,
+                symbols: true,
+                overwrite: false,
+            }))
+            .await;
+        assert_eq!(blocked_overwrite.is_error, Some(true));
+
+        // Generated secret can immediately be rendered via secret_write_file
+        let out_dir = tempfile::tempdir().unwrap();
+        let rendered_env = out_dir.path().join("db.env");
+        let write_res = mcp
+            .secret_write_file(Parameters(SecretWriteFileInput {
+                item: "Prod Postgres".into(),
+                path: rendered_env.to_string_lossy().into_owned(),
+                content: "DB_PASSWORD={{openkeylet:DB_PASSWORD}}\n".into(),
+                overwrite: true,
+                append: false,
+                secret_bindings: HashMap::new(),
+            }))
+            .await;
+        assert_ne!(write_res.is_error, Some(true));
+        assert_eq!(
+            std::fs::read_to_string(&rendered_env).unwrap(),
+            format!("DB_PASSWORD={real_secret}\n")
+        );
+
+        // 3. ssh_keygen stores private key encrypted and returns ONLY public key & fingerprint
+        let key_res = mcp
+            .ssh_keygen(Parameters(SshKeygenInput {
+                name: "Deploy Key".into(),
+                item: String::new(),
+                host: "203.0.113.99".into(),
+                port: Some(22),
+                username: "deploy".into(),
+                comment: "deploy@openkeylet".into(),
+                folder: "SSH".into(),
+                description: String::new(),
+                overwrite: false,
+            }))
+            .await;
+        assert_ne!(key_res.is_error, Some(true));
+        let key_json = serde_json::to_string(&key_res).unwrap();
+        assert!(key_json.contains("ssh-ed25519 "));
+        assert!(key_json.contains("SHA256:"));
+        assert!(
+            !key_json.contains("PRIVATE KEY"),
+            "ssh_keygen must never expose private key material"
+        );
+        let ssh_item = vault
+            .list_decrypted_connections()
+            .unwrap()
+            .into_iter()
+            .find(|c| c.stored.name == "Deploy Key")
+            .unwrap();
+        assert!(
+            ssh_item
+                .secrets
+                .get("privateKey")
+                .unwrap()
+                .contains("BEGIN OPENSSH PRIVATE KEY")
+        );
+
+        // 4. secret_ingest_file imports local .env, never leaks values, and writes sealed template
+        let src_env = out_dir.path().join(".env");
+        let tpl_env = out_dir.path().join(".env.template");
+        std::fs::write(
+            &src_env,
+            "# Secrets\nSTRIPE_KEY=sk_live_ingest_9911\nRESEND_KEY=re_ingest_2233\n",
+        )
+        .unwrap();
+        let ingest_res = mcp
+            .secret_ingest_file(Parameters(SecretIngestFileInput {
+                path: src_env.to_string_lossy().into_owned(),
+                name: "Billing Env".into(),
+                item: String::new(),
+                format: "auto".into(),
+                folder: String::new(),
+                description: String::new(),
+                overwrite: false,
+                seal_template_path: Some(tpl_env.to_string_lossy().into_owned()),
+                overwrite_template: false,
+            }))
+            .await;
+        assert_ne!(ingest_res.is_error, Some(true));
+        let ingest_json = serde_json::to_string(&ingest_res).unwrap();
+        assert!(ingest_json.contains("STRIPE_KEY"));
+        assert!(ingest_json.contains("{{openkeylet:STRIPE_KEY}}"));
+        assert!(!ingest_json.contains("sk_live_ingest_9911"));
+        assert!(!ingest_json.contains("re_ingest_2233"));
+
+        let tpl_text = std::fs::read_to_string(&tpl_env).unwrap();
+        assert!(tpl_text.contains("STRIPE_KEY={{openkeylet:STRIPE_KEY}}"));
+        assert!(!tpl_text.contains("sk_live_ingest_9911"));
+
+        // Refuses ingesting from OpenKeylet's own vault directory
+        let vault_probe = mcp
+            .secret_ingest_file(Parameters(SecretIngestFileInput {
+                path: dir.path().join("vault.json").to_string_lossy().into_owned(),
+                name: "Leak".into(),
+                item: String::new(),
+                format: "auto".into(),
+                folder: String::new(),
+                description: String::new(),
+                overwrite: false,
+                seal_template_path: None,
+                overwrite_template: false,
+            }))
+            .await;
+        assert_eq!(vault_probe.is_error, Some(true));
     }
 }

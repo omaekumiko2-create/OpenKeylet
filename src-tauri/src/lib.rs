@@ -14,8 +14,11 @@ pub mod model;
 pub mod passkey;
 pub mod policy;
 pub mod runtime_epoch;
+pub mod session_broker;
+pub mod smart_ingest;
 pub mod storage;
 pub mod terminal;
+pub mod updater;
 pub mod vault;
 
 #[cfg(feature = "gui")]
@@ -24,6 +27,8 @@ pub mod agent_registry;
 pub mod clipboard;
 #[cfg(feature = "gui")]
 pub mod commands;
+#[cfg(feature = "gui")]
+pub mod edge_dock;
 #[cfg(feature = "desktop-fill")]
 pub mod desktop;
 #[cfg(not(feature = "desktop-fill"))]

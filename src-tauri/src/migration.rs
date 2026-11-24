@@ -52,6 +52,20 @@ pub fn read(path: &Path, format: &str) -> Result<Parsed> {
         bytes.len() as u64 <= MAX_BYTES,
         "Import file exceeds 64 MiB"
     );
+    if format == "ssh_config" {
+        let (entries, preview) =
+            crate::smart_ingest::parse_ssh_config_bytes(&bytes, path.parent())?;
+        return Ok(Parsed { entries, preview });
+    }
+    if format == "env" {
+        let name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .map(|s| format!("Env · {s}"))
+            .unwrap_or_else(|| "Imported .env".to_owned());
+        let (entries, preview) = crate::smart_ingest::parse_env_file(&bytes, &name)?;
+        return Ok(Parsed { entries, preview });
+    }
     parse(&bytes, format)
 }
 
@@ -61,6 +75,14 @@ pub fn parse(bytes: &[u8], format: &str) -> Result<Parsed> {
         "Import file exceeds 64 MiB"
     );
     let bytes = bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(bytes);
+    if format == "ssh_config" {
+        let (entries, preview) = crate::smart_ingest::parse_ssh_config_bytes(bytes, None)?;
+        return Ok(Parsed { entries, preview });
+    }
+    if format == "env" {
+        let (entries, preview) = crate::smart_ingest::parse_env_file(bytes, "Imported .env")?;
+        return Ok(Parsed { entries, preview });
+    }
     let mut preview = Preview::default();
     let entries = match format {
         "bitwarden" => bitwarden(bytes, &mut preview)?,

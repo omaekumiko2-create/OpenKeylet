@@ -1,6 +1,10 @@
 use crate::{
     api_catalog,
-    crypto::{MasterKey, create_owner_pin_verifier, verify_owner_pin},
+    crypto::{
+        MasterKey, STRONG_KEY_FILE, StrongKeyBundle, create_owner_pin_verifier,
+        create_strong_key_bundle, rewrap_strong_passphrase, unwrap_strong_key_bundle,
+        verify_owner_pin,
+    },
     model::{
         Activity, AppState, ConnectionInput, ImportSummary, ItemModule, McpState, NewActivity,
         OwnerEditorDraft, OwnerSecretField, OwnerSecretView, PortableConnection, PublicConnection,
@@ -16,16 +20,49 @@ use std::{
     fs::{self, File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        Arc, RwLock,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 use url::Url;
 use uuid::Uuid;
+use zeroize::Zeroizing;
 
 const MAX_ACTIVITIES: usize = 3_000;
 const VAULT_VERSION: u8 = 12;
 #[cfg(test)]
 #[path = "vault_lifecycle_tests.rs"]
 mod lifecycle_tests;
+
+pub fn normalize_language(raw: &str) -> String {
+    let lower = raw.trim().to_ascii_lowercase();
+    if lower.is_empty() || lower == "auto" || lower == "system" {
+        return "auto".to_owned();
+    }
+    if lower == "en" || lower.starts_with("en-") || lower.starts_with("en_") {
+        return "en".to_owned();
+    }
+    if matches!(
+        lower.as_str(),
+        "zh-tw" | "zh_tw" | "zh-hk" | "zh_hk" | "zh-hant" | "zh_hant"
+    ) {
+        return "zh-TW".to_owned();
+    }
+    if lower == "zh" || lower.starts_with("zh-") || lower.starts_with("zh_") {
+        return "zh".to_owned();
+    }
+    if lower == "ja" || lower.starts_with("ja-") || lower.starts_with("ja_") {
+        return "ja".to_owned();
+    }
+    if lower == "ko" || lower.starts_with("ko-") || lower.starts_with("ko_") {
+        return "ko".to_owned();
+    }
+    if lower == "es" || lower.starts_with("es-") || lower.starts_with("es_") {
+        return "es".to_owned();
+    }
+    "auto".to_owned()
+}
 
 #[derive(Clone)]
 pub struct Vault {
@@ -36,7 +73,9 @@ struct VaultInner {
     data_dir: PathBuf,
     vault_path: PathBuf,
     lock_path: PathBuf,
-    key: MasterKey,
+    key: RwLock<Option<MasterKey>>,
+    strong_mode: AtomicBool,
+    broker_session: RwLock<Option<String>>,
 }
 
 pub struct DecryptedConnection {
@@ -58,13 +97,20 @@ impl Vault {
 
         let result = (|| {
             let vault_path = data_dir.join("vault.json");
-            let key = MasterKey::load_or_create(&data_dir, vault_path.exists())?;
+            let strong_mode = MasterKey::has_strong_key_bundle(&data_dir);
+            let initial_key = if strong_mode {
+                None
+            } else {
+                Some(MasterKey::load_or_create(&data_dir, vault_path.exists())?)
+            };
             let vault = Self {
                 inner: Arc::new(VaultInner {
                     lock_path: data_dir.join("vault.lock"),
                     data_dir,
                     vault_path,
-                    key,
+                    key: RwLock::new(initial_key),
+                    strong_mode: AtomicBool::new(strong_mode),
+                    broker_session: RwLock::new(None),
                 }),
             };
 
@@ -94,8 +140,258 @@ impl Vault {
         &self.inner.data_dir
     }
 
-    pub fn storage_label(&self) -> &str {
-        self.inner.key.source()
+    pub fn is_strong_mode(&self) -> bool {
+        self.inner.strong_mode.load(Ordering::Acquire)
+            || MasterKey::has_strong_key_bundle(&self.inner.data_dir)
+    }
+
+    pub fn is_strong_unlocked(&self) -> bool {
+        if !self.is_strong_mode() {
+            return true;
+        }
+        self.inner
+            .key
+            .read()
+            .map(|guard| guard.is_some())
+            .unwrap_or(false)
+    }
+
+    pub fn storage_label(&self) -> String {
+        if self.is_strong_mode() {
+            if self.is_strong_unlocked() {
+                return "Strong Cloud Vault (RAM-only key)".to_owned();
+            }
+            return "Strong Cloud Vault (Locked · zero key on disk)".to_owned();
+        }
+        self.inner
+            .key
+            .read()
+            .ok()
+            .and_then(|guard| guard.as_ref().map(|k| k.source().to_owned()))
+            .unwrap_or_else(|| "Encrypted local vault".to_owned())
+    }
+
+    fn with_key<T>(&self, action: impl FnOnce(&MasterKey) -> Result<T>) -> Result<T> {
+        let strong_on_disk = MasterKey::has_strong_key_bundle(&self.inner.data_dir);
+        if strong_on_disk != self.inner.strong_mode.load(Ordering::Acquire) {
+            self.inner.strong_mode.store(strong_on_disk, Ordering::Release);
+            if strong_on_disk {
+                if let Ok(mut guard) = self.inner.key.write() {
+                    *guard = None;
+                }
+                if let Ok(mut session) = self.inner.broker_session.write() {
+                    *session = None;
+                }
+            }
+        }
+
+        if strong_on_disk {
+            // If this process borrowed a RAM key from the Desktop Session Broker, verify it wasn't revoked.
+            let stale_broker_session = self
+                .inner
+                .broker_session
+                .read()
+                .ok()
+                .and_then(|guard| guard.clone())
+                .is_some_and(|session_id| {
+                    !crate::session_broker::is_session_still_valid(
+                        &self.inner.data_dir,
+                        &session_id,
+                    )
+                });
+            if stale_broker_session {
+                if let Ok(mut guard) = self.inner.key.write() {
+                    *guard = None;
+                }
+                if let Ok(mut session) = self.inner.broker_session.write() {
+                    *session = None;
+                }
+            }
+        }
+
+        {
+            let guard = self
+                .inner
+                .key
+                .read()
+                .map_err(|_| anyhow::anyhow!("Vault key lock poisoned"))?;
+            if let Some(key) = guard.as_ref() {
+                return action(key);
+            }
+        }
+
+        if strong_on_disk
+            && let Some((dek, session_id)) =
+                crate::session_broker::try_fetch_ram_key(&self.inner.data_dir)
+        {
+            let borrowed = MasterKey::from_ram_bytes(*dek, "Strong Cloud Vault (RAM broker)");
+            let result = action(&borrowed);
+            if let Ok(mut guard) = self.inner.key.write() {
+                *guard = Some(borrowed);
+            }
+            if let Ok(mut session) = self.inner.broker_session.write() {
+                *session = Some(session_id);
+            }
+            return result;
+        }
+
+        bail!(
+            "STRONG_VAULT_LOCKED: OpenKeylet Strong Vault is locked; open the desktop app and unlock with your master passphrase"
+        )
+    }
+
+    pub(crate) fn export_ram_dek_for_broker(&self) -> Option<Zeroizing<[u8; 32]>> {
+        if !self.is_strong_mode() {
+            return None;
+        }
+        let guard = self.inner.key.read().ok()?;
+        guard.as_ref().map(MasterKey::clone_bytes)
+    }
+
+    pub fn unlock_strong(&self, secret: &str) -> Result<()> {
+        let bundle = self.read_strong_key_bundle()?;
+        let dek = unwrap_strong_key_bundle(&bundle, secret)?;
+        let ram_key = MasterKey::from_ram_bytes(*dek, "Strong Cloud Vault (RAM-only key)");
+        // Sanity check: if any connection exists, verify DEK actually decrypts it before storing.
+        if let Ok(doc) = self.read_document()
+            && let Some(first) = doc.connections.first()
+        {
+            let _ = ram_key
+                .decrypt::<SecretBundle>(&first.encrypted_secrets)
+                .context("STRONG_UNLOCK_FAILED: Vault key did not match local encrypted vault")?;
+        }
+        {
+            let mut guard = self
+                .inner
+                .key
+                .write()
+                .map_err(|_| anyhow::anyhow!("Vault key lock poisoned"))?;
+            *guard = Some(ram_key);
+        }
+        if let Ok(mut session) = self.inner.broker_session.write() {
+            *session = None;
+        }
+        self.inner.strong_mode.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    pub fn lock_strong(&self) {
+        if self.is_strong_mode() {
+            if let Ok(mut guard) = self.inner.key.write() {
+                *guard = None;
+            }
+            if let Ok(mut session) = self.inner.broker_session.write() {
+                *session = None;
+            }
+        }
+    }
+
+    pub fn change_strong_passphrase(&self, new_passphrase: &str) -> Result<()> {
+        if !self.is_strong_mode() {
+            bail!("Strong Cloud Vault mode is not enabled");
+        }
+        let existing = self.read_strong_key_bundle()?;
+        let dek = self.with_key(|key| Ok(key.clone_bytes()))?;
+        let updated = rewrap_strong_passphrase(&existing, &dek, new_passphrase)?;
+        self.write_strong_key_bundle(&updated)
+    }
+
+    /// Atomically upgrades the local vault to Strong Cloud Vault mode:
+    /// re-encrypts all local secrets under a fresh random 256-bit DEK wrapped
+    /// by both `master_passphrase` (Argon2id) and `recovery_key` (`okv1_`),
+    /// keeps the DEK only in RAM, and permanently wipes `master.key` from disk
+    /// and the OS keyring.
+    pub fn enable_strong_mode(&self, master_passphrase: &str, recovery_key: &str) -> Result<()> {
+        let new_key = MasterKey::generate_random("Strong Cloud Vault (RAM-only key)")?;
+        let dek = new_key.clone_bytes();
+        let bundle = create_strong_key_bundle(&dek, master_passphrase, recovery_key)?;
+
+        self.with_exclusive_lock(|_| {
+            let mut document = self.read_document_unlocked()?;
+            self.with_key(|old_key| reencrypt_document(&mut document, old_key, &new_key))?;
+            self.write_strong_key_bundle(&bundle)?;
+            self.write_document_unlocked(&document)?;
+            Ok(())
+        })?;
+
+        {
+            let mut guard = self
+                .inner
+                .key
+                .write()
+                .map_err(|_| anyhow::anyhow!("Vault key lock poisoned"))?;
+            *guard = Some(new_key);
+        }
+        if let Ok(mut session) = self.inner.broker_session.write() {
+            *session = None;
+        }
+        self.inner.strong_mode.store(true, Ordering::Release);
+        MasterKey::wipe_local_key(&self.inner.data_dir)?;
+        Ok(())
+    }
+
+    /// Atomically reverts an unlocked Strong Cloud Vault back to standard
+    /// local-only mode by generating a fresh device-local `master.key`,
+    /// re-encrypting all local secrets, and removing `strong-key.json`.
+    pub fn disable_strong_mode(&self) -> Result<()> {
+        if !self.is_strong_mode() {
+            return Ok(());
+        }
+        let fresh_bytes = MasterKey::generate_random("Local")?;
+        let raw = fresh_bytes.clone_bytes();
+        let label = MasterKey::persist_local_key(&self.inner.data_dir, &raw)?;
+        let new_local_key = MasterKey::from_ram_bytes(*raw, label);
+
+        let reencrypt_result = self.with_exclusive_lock(|_| {
+            let mut document = self.read_document_unlocked()?;
+            self.with_key(|old_key| reencrypt_document(&mut document, old_key, &new_local_key))?;
+            self.write_document_unlocked(&document)?;
+            Ok(())
+        });
+        if let Err(error) = reencrypt_result {
+            let _ = MasterKey::wipe_local_key(&self.inner.data_dir);
+            return Err(error);
+        }
+
+        let strong_path = self.inner.data_dir.join(STRONG_KEY_FILE);
+        let _ = fs::remove_file(strong_path);
+        {
+            let mut guard = self
+                .inner
+                .key
+                .write()
+                .map_err(|_| anyhow::anyhow!("Vault key lock poisoned"))?;
+            *guard = Some(new_local_key);
+        }
+        if let Ok(mut session) = self.inner.broker_session.write() {
+            *session = None;
+        }
+        self.inner.strong_mode.store(false, Ordering::Release);
+        Ok(())
+    }
+
+    fn read_strong_key_bundle(&self) -> Result<StrongKeyBundle> {
+        let bytes = fs::read(self.inner.data_dir.join(STRONG_KEY_FILE))
+            .context("STRONG_KEY_MISSING: Strong Vault key bundle not found")?;
+        serde_json::from_slice(&bytes)
+            .context("STRONG_KEY_INVALID: Strong Vault key bundle is corrupted")
+    }
+
+    fn write_strong_key_bundle(&self, bundle: &StrongKeyBundle) -> Result<()> {
+        let bytes = serde_json::to_vec_pretty(bundle)?;
+        let path = self.inner.data_dir.join(STRONG_KEY_FILE);
+        let mut file =
+            AtomicWriteFile::open(&path).context("Unable to create strong-key.json")?;
+        file.write_all(&bytes)
+            .context("Unable to write strong-key.json")?;
+        file.commit()
+            .context("Unable to commit strong-key.json")?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+        }
+        Ok(())
     }
 
     // Device-local integration credentials never enter portable/cloud exports.
@@ -103,14 +399,14 @@ impl Vault {
         &self,
         value: &T,
     ) -> Result<crate::model::SecretEnvelope> {
-        self.inner.key.encrypt(value)
+        self.with_key(|key| key.encrypt(value))
     }
 
     pub(crate) fn unprotect_local_state<T: serde::de::DeserializeOwned>(
         &self,
         envelope: &crate::model::SecretEnvelope,
     ) -> Result<T> {
-        self.inner.key.decrypt(envelope)
+        self.with_key(|key| key.decrypt(envelope))
     }
 
     fn require_supported_version(&self) -> Result<()> {
@@ -186,17 +482,19 @@ impl Vault {
 
     pub fn list_editor_drafts(&self) -> Result<Vec<OwnerEditorDraft>> {
         let document = self.read_document()?;
-        let mut drafts = document
-            .editor_drafts
-            .into_iter()
-            .map(|draft| {
-                Ok(OwnerEditorDraft {
-                    id: draft.id,
-                    updated_at: draft.updated_at,
-                    input: self.inner.key.decrypt(&draft.payload)?,
+        let mut drafts = self.with_key(|key| {
+            document
+                .editor_drafts
+                .into_iter()
+                .map(|draft| {
+                    Ok(OwnerEditorDraft {
+                        id: draft.id,
+                        updated_at: draft.updated_at,
+                        input: key.decrypt(&draft.payload)?,
+                    })
                 })
-            })
-            .collect::<Result<Vec<_>>>()?;
+                .collect::<Result<Vec<_>>>()
+        })?;
         drafts.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
         drafts.truncate(1);
         Ok(drafts)
@@ -211,7 +509,7 @@ impl Vault {
         input.description = checked_text(&input.description, "Project description", 240)?;
         let id = id.unwrap_or_else(Uuid::new_v4);
         let updated_at = Utc::now().to_rfc3339();
-        let payload = self.inner.key.encrypt(&input)?;
+        let payload = self.with_key(|key| key.encrypt(&input))?;
         self.update_document(|document| {
             document.editor_drafts.clear();
             document.editor_drafts.push(StoredEditorDraft {
@@ -243,11 +541,7 @@ impl Vault {
         if next.browser_port == 0 {
             bail!("Local port must be between 1–65535");
         }
-        next.language = if next.language.eq_ignore_ascii_case("en") {
-            "en".to_owned()
-        } else {
-            "zh".to_owned()
-        };
+        next.language = normalize_language(&next.language);
         next.close_behavior = if next.close_behavior.eq_ignore_ascii_case("exit") {
             "exit".to_owned()
         } else {
@@ -266,11 +560,7 @@ impl Vault {
         self.update_document_with_result(|document| {
             let mut next = document.settings.clone();
             if let Some(language) = patch.language {
-                next.language = if language.eq_ignore_ascii_case("en") {
-                    "en".to_owned()
-                } else {
-                    "zh".to_owned()
-                };
+                next.language = normalize_language(&language);
             }
             if let Some(close_behavior) = patch.close_behavior {
                 next.close_behavior = if close_behavior.eq_ignore_ascii_case("exit") {
@@ -297,6 +587,19 @@ impl Vault {
                 }
                 next.owner_auto_lock_minutes = minutes;
             }
+            if let Some(update_auto_check) = patch.update_auto_check {
+                next.update_auto_check = update_auto_check;
+            }
+            if let Some(update_auto_download) = patch.update_auto_download {
+                next.update_auto_download = update_auto_download;
+            }
+            if let Some(update_skipped_version) = patch.update_skipped_version {
+                let trimmed = update_skipped_version.trim();
+                if trimmed.len() > 64 {
+                    bail!("Skipped version string is too long");
+                }
+                next.update_skipped_version = trimmed.to_owned();
+            }
             document.settings = next.clone();
             Ok(next)
         })
@@ -304,22 +607,22 @@ impl Vault {
 
     pub fn browser_bridge_secret(&self) -> Result<String> {
         if let Some(secret) = self.read_document()?.browser_bridge_secret {
-            return self.inner.key.decrypt(&secret);
+            return self.with_key(|key| key.decrypt(&secret));
         }
         self.with_exclusive_lock(|_| {
             let mut document = self.read_document_unlocked()?;
             if let Some(secret) = document.browser_bridge_secret.as_ref() {
-                return self.inner.key.decrypt(secret);
+                return self.with_key(|key| key.decrypt(secret));
             }
             let secret = random_token()?;
-            document.browser_bridge_secret = Some(self.inner.key.encrypt(&secret)?);
+            document.browser_bridge_secret = Some(self.with_key(|key| key.encrypt(&secret))?);
             self.write_document_unlocked(&document)?;
             Ok(secret)
         })
     }
 
     pub fn rotate_browser_bridge_secret(&self) -> Result<()> {
-        let encrypted = self.inner.key.encrypt(&random_token()?)?;
+        let encrypted = self.with_key(|key| key.encrypt(&random_token()?))?;
         self.update_document(|document| {
             document.browser_bridge_secret = Some(encrypted);
             document.settings.browser_paired = false;
@@ -345,14 +648,16 @@ impl Vault {
 
     pub fn list_decrypted_connections(&self) -> Result<Vec<DecryptedConnection>> {
         let document = self.read_document()?;
-        document
-            .connections
-            .into_iter()
-            .map(|stored| {
-                let secrets = self.inner.key.decrypt(&stored.encrypted_secrets)?;
-                Ok(DecryptedConnection { stored, secrets })
-            })
-            .collect()
+        self.with_key(|key| {
+            document
+                .connections
+                .into_iter()
+                .map(|stored| {
+                    let secrets = key.decrypt(&stored.encrypted_secrets)?;
+                    Ok(DecryptedConnection { stored, secrets })
+                })
+                .collect()
+        })
     }
 
     pub fn get_connection(&self, id: Uuid) -> Result<DecryptedConnection> {
@@ -362,7 +667,7 @@ impl Vault {
             .into_iter()
             .find(|connection| connection.id == id)
             .context("Connection not found")?;
-        let secrets = self.inner.key.decrypt(&stored.encrypted_secrets)?;
+        let secrets = self.with_key(|key| key.decrypt(&stored.encrypted_secrets))?;
         Ok(DecryptedConnection { stored, secrets })
     }
 
@@ -421,9 +726,7 @@ impl Vault {
                 }
             }
             let mut secrets = if let Some(connection) = &existing {
-                self.inner
-                    .key
-                    .decrypt::<SecretBundle>(&connection.encrypted_secrets)?
+                self.with_key(|key| key.decrypt::<SecretBundle>(&connection.encrypted_secrets))?
             } else {
                 SecretBundle::default()
             };
@@ -501,6 +804,12 @@ impl Vault {
                     .unwrap_or("SSH KEY")
                     .to_owned();
                 secrets.private_key_name = Some(imported_key_name.clone());
+            } else if let Some(name) = secrets
+                .private_key_name
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+            {
+                imported_key_name = name.trim().to_owned();
             }
 
             prepare_auto_api(&mut input, &mut secrets)?;
@@ -509,7 +818,7 @@ impl Vault {
             let now = Utc::now().to_rfc3339();
             let mut stored =
                 normalize_connection(input, existing.as_ref(), &secrets, imported_key_name, now)?;
-            stored.encrypted_secrets = self.inner.key.encrypt(&secrets)?;
+            stored.encrypted_secrets = self.with_key(|key| key.encrypt(&secrets))?;
             let public = stored.public(Some(&secrets));
             if let Some(index) = existing_index {
                 document.connections[index] = stored;
@@ -573,20 +882,19 @@ impl Vault {
     }
 
     pub fn trash_items(&self) -> Result<Vec<crate::model::PublicTrashItem>> {
-        self.read_document()?
-            .trash
-            .into_iter()
-            .map(|entry| {
-                let secrets: SecretBundle = self
-                    .inner
-                    .key
-                    .decrypt(&entry.connection.encrypted_secrets)?;
-                Ok(crate::model::PublicTrashItem {
-                    deleted_at: entry.deleted_at,
-                    item: entry.connection.public(Some(&secrets)),
+        let trash = self.read_document()?.trash;
+        self.with_key(|key| {
+            trash
+                .into_iter()
+                .map(|entry| {
+                    let secrets: SecretBundle = key.decrypt(&entry.connection.encrypted_secrets)?;
+                    Ok(crate::model::PublicTrashItem {
+                        deleted_at: entry.deleted_at,
+                        item: entry.connection.public(Some(&secrets)),
+                    })
                 })
-            })
-            .collect()
+                .collect()
+        })
     }
 
     pub fn restore_connection(&self, id: Uuid, deleted_at: &str) -> Result<()> {
@@ -642,9 +950,10 @@ impl Vault {
             if stored.updated_at != expected_updated_at {
                 bail!("This item changed; refresh before clearing history");
             }
-            let mut secrets: SecretBundle = self.inner.key.decrypt(&stored.encrypted_secrets)?;
+            let mut secrets: SecretBundle =
+                self.with_key(|key| key.decrypt(&stored.encrypted_secrets))?;
             secrets.password_history.clear();
-            stored.encrypted_secrets = self.inner.key.encrypt(&secrets)?;
+            stored.encrypted_secrets = self.with_key(|key| key.encrypt(&secrets))?;
             stored.updated_at = Utc::now().to_rfc3339();
             Ok(())
         })
@@ -705,18 +1014,25 @@ impl Vault {
         browser_bridge: crate::model::BrowserBridgeState,
     ) -> Result<AppState> {
         let document = self.read_document()?;
-        let connections = document
-            .connections
-            .iter()
-            .map(|connection| {
-                let secrets: SecretBundle =
-                    self.inner.key.decrypt(&connection.encrypted_secrets)?;
-                Ok(connection.public(Some(&secrets)))
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let strong_mode = self.is_strong_mode();
+        let (connections, activities) = if strong_mode && !self.is_strong_unlocked() {
+            (Vec::new(), Vec::new())
+        } else {
+            let connections = self.with_key(|key| {
+                document
+                    .connections
+                    .iter()
+                    .map(|connection| {
+                        let secrets: SecretBundle = key.decrypt(&connection.encrypted_secrets)?;
+                        Ok(connection.public(Some(&secrets)))
+                    })
+                    .collect::<Result<Vec<_>>>()
+            })?;
+            (connections, document.activities.clone())
+        };
         Ok(AppState {
             connections,
-            activities: document.activities.clone(),
+            activities,
             mcp: McpState {
                 status: "ready".to_owned(),
                 error: String::new(),
@@ -726,7 +1042,8 @@ impl Vault {
             browser_bridge,
             security: SecurityState {
                 encrypted: true,
-                storage: self.storage_label().to_owned(),
+                storage: self.storage_label(),
+                strong_mode,
             },
             settings: document.settings.clone(),
         })
@@ -743,32 +1060,28 @@ impl Vault {
         Vec<crate::model::PortableTrashItem>,
     )> {
         let document = self.read_document()?;
-        let active = document
-            .connections
-            .into_iter()
-            .map(|connection| {
-                let secrets = self
-                    .inner
-                    .key
-                    .decrypt::<SecretBundle>(&connection.encrypted_secrets)?;
-                Ok((connection.portable(), secrets))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let trash = document
-            .trash
-            .into_iter()
-            .map(|entry| {
-                Ok(crate::model::PortableTrashItem {
-                    deleted_at: entry.deleted_at,
-                    connection: entry.connection.portable(),
-                    secrets: self
-                        .inner
-                        .key
-                        .decrypt(&entry.connection.encrypted_secrets)?,
+        self.with_key(|key| {
+            let active = document
+                .connections
+                .into_iter()
+                .map(|connection| {
+                    let secrets = key.decrypt::<SecretBundle>(&connection.encrypted_secrets)?;
+                    Ok((connection.portable(), secrets))
                 })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        Ok((active, trash))
+                .collect::<Result<Vec<_>>>()?;
+            let trash = document
+                .trash
+                .into_iter()
+                .map(|entry| {
+                    Ok(crate::model::PortableTrashItem {
+                        deleted_at: entry.deleted_at,
+                        connection: entry.connection.portable(),
+                        secrets: key.decrypt(&entry.connection.encrypted_secrets)?,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            Ok((active, trash))
+        })
     }
 
     pub fn export_tombstones(&self) -> Result<Vec<crate::model::DeletedItemTombstone>> {
@@ -806,7 +1119,8 @@ impl Vault {
             _ => candidate > baseline,
         };
 
-        self.update_document_with_result(|document| {
+        self.with_key(|key| {
+            self.update_document_with_result(|document| {
             let mut summary = crate::model::SyncMergeSummary::default();
 
             // 1. Merge remote tombstones first and purge older local active/trash items.
@@ -839,9 +1153,8 @@ impl Vault {
 
             // 2. Merge remote active connections by UUID + updatedAt (preserving local edits & tombstones).
             for (public, secrets) in remote_active {
-                let mut stored = stored_from_portable(&public, &secrets, &self.inner.key)?;
-                let imported_secrets: SecretBundle =
-                    self.inner.key.decrypt(&stored.encrypted_secrets)?;
+                let mut stored = stored_from_portable(&public, &secrets, key)?;
+                let imported_secrets: SecretBundle = key.decrypt(&stored.encrypted_secrets)?;
                 let requested_name = clean_text(&stored.name, 80);
                 stored.name = if requested_name.is_empty() {
                     "Synced item".to_owned()
@@ -884,8 +1197,7 @@ impl Vault {
                 // Check if already active locally with the same UUID.
                 if let Some(pos) = document.connections.iter().position(|c| c.id == stored.id) {
                     let existing = &document.connections[pos];
-                    let existing_secrets: SecretBundle =
-                        self.inner.key.decrypt(&existing.encrypted_secrets)?;
+                    let existing_secrets: SecretBundle = key.decrypt(&existing.encrypted_secrets)?;
                     if same_synced_state(
                         existing,
                         &existing_secrets,
@@ -917,8 +1229,7 @@ impl Vault {
                     .iter()
                     .filter(|c| same_item_name(&c.name, &stored.name))
                 {
-                    let existing_secrets: SecretBundle =
-                        self.inner.key.decrypt(&existing.encrypted_secrets)?;
+                    let existing_secrets: SecretBundle = key.decrypt(&existing.encrypted_secrets)?;
                     if same_portable_content(
                         existing,
                         &existing_secrets,
@@ -978,8 +1289,7 @@ impl Vault {
                     summary.unchanged += 1;
                     continue;
                 }
-                let stored =
-                    stored_from_portable(&entry.connection, &entry.secrets, &self.inner.key)?;
+                let stored = stored_from_portable(&entry.connection, &entry.secrets, key)?;
                 document.trash.push(crate::model::StoredTrashItem {
                     deleted_at: entry.deleted_at,
                     connection: stored,
@@ -988,6 +1298,69 @@ impl Vault {
             }
 
             Ok(summary)
+        })
+        })
+    }
+
+    pub fn preview_merge_backup_entries(
+        &self,
+        imported: &[(PortableConnection, SecretBundle)],
+        trash: &[crate::model::PortableTrashItem],
+    ) -> Result<crate::backup::BackupMergeStats> {
+        let document = self.read_document()?;
+        self.with_key(|key| {
+            let mut simulated = document.connections;
+            let mut stats = crate::backup::BackupMergeStats {
+                total_items: imported.len(),
+                trash_count: trash.len(),
+                ..Default::default()
+            };
+            for (public, secrets) in imported {
+                stats.passkey_count += secrets.passkeys.len();
+                stats.history_entries += secrets.password_history.len();
+                let mut stored = stored_from_portable(public, secrets, key)?;
+                let requested_name = clean_text(&stored.name, 80);
+                stored.name = if requested_name.is_empty() {
+                    "Import project".to_owned()
+                } else {
+                    requested_name
+                };
+                if stats.sample_names.len() < 6 {
+                    stats.sample_names.push(stored.name.clone());
+                }
+
+                let has_requested_name = simulated
+                    .iter()
+                    .any(|item| same_item_name(&item.name, &stored.name));
+                let mut duplicate = false;
+                for existing in simulated.iter().filter(|item| {
+                    same_item_name(&item.name, &stored.name)
+                        || (has_requested_name && import_name_in_family(&item.name, &stored.name))
+                }) {
+                    let existing_secrets: SecretBundle = key.decrypt(&existing.encrypted_secrets)?;
+                    if same_portable_content(existing, &existing_secrets, &stored, secrets) {
+                        duplicate = true;
+                        break;
+                    }
+                }
+                if duplicate {
+                    stats.duplicate_skipped += 1;
+                    continue;
+                }
+                let assigned = unique_import_name(&simulated, &stored.name);
+                if assigned != stored.name {
+                    stats.name_conflicts += 1;
+                    if stats.conflict_renames.len() < 6 {
+                        stats
+                            .conflict_renames
+                            .push(format!("{} → {}", stored.name, assigned));
+                    }
+                }
+                stored.name = assigned;
+                simulated.push(stored);
+                stats.new_items += 1;
+            }
+            Ok(stats)
         })
     }
 
@@ -1003,15 +1376,15 @@ impl Vault {
         imported: Vec<(PortableConnection, SecretBundle)>,
         trash: Vec<crate::model::PortableTrashItem>,
     ) -> Result<ImportSummary> {
-        self.update_document_with_result(|document| {
+        self.with_key(|key| {
+            self.update_document_with_result(|document| {
             let mut summary = ImportSummary {
                 added: 0,
                 merged: 0,
             };
             for (public, secrets) in imported {
-                let mut stored = stored_from_portable(&public, &secrets, &self.inner.key)?;
-                let imported_secrets: SecretBundle =
-                    self.inner.key.decrypt(&stored.encrypted_secrets)?;
+                let mut stored = stored_from_portable(&public, &secrets, key)?;
+                let imported_secrets: SecretBundle = key.decrypt(&stored.encrypted_secrets)?;
                 let requested_name = clean_text(&stored.name, 80);
                 stored.name = if requested_name.is_empty() {
                     "Import project".to_owned()
@@ -1028,8 +1401,7 @@ impl Vault {
                     same_item_name(&item.name, &stored.name)
                         || (has_requested_name && import_name_in_family(&item.name, &stored.name))
                 }) {
-                    let existing_secrets: SecretBundle =
-                        self.inner.key.decrypt(&existing.encrypted_secrets)?;
+                    let existing_secrets: SecretBundle = key.decrypt(&existing.encrypted_secrets)?;
                     if same_portable_content(
                         existing,
                         &existing_secrets,
@@ -1061,13 +1433,11 @@ impl Vault {
             for entry in trash {
                 chrono::DateTime::parse_from_rfc3339(&entry.deleted_at)
                     .context("Invalid trash deletion date")?;
-                let mut stored =
-                    stored_from_portable(&entry.connection, &entry.secrets, &self.inner.key)?;
+                let mut stored = stored_from_portable(&entry.connection, &entry.secrets, key)?;
                 let mut duplicate = false;
                 for existing in document.trash.iter().map(|entry| &entry.connection) {
                     if same_item_name(&existing.name, &stored.name) {
-                        let secrets: SecretBundle =
-                            self.inner.key.decrypt(&existing.encrypted_secrets)?;
+                        let secrets: SecretBundle = key.decrypt(&existing.encrypted_secrets)?;
                         if same_portable_content(existing, &secrets, &stored, &entry.secrets) {
                             duplicate = true;
                             break;
@@ -1110,6 +1480,7 @@ impl Vault {
             );
             document.activities.truncate(MAX_ACTIVITIES);
             Ok(summary)
+        })
         })
     }
 
@@ -1435,6 +1806,30 @@ pub(crate) fn normalize_connection(
     })
 }
 
+fn reencrypt_document(
+    document: &mut VaultDocument,
+    old_key: &MasterKey,
+    new_key: &MasterKey,
+) -> Result<()> {
+    if let Some(bridge_secret) = document.browser_bridge_secret.as_ref() {
+        let plain = Zeroizing::new(old_key.decrypt::<String>(bridge_secret)?);
+        document.browser_bridge_secret = Some(new_key.encrypt(&*plain)?);
+    }
+    for connection in &mut document.connections {
+        let secrets = old_key.decrypt::<SecretBundle>(&connection.encrypted_secrets)?;
+        connection.encrypted_secrets = new_key.encrypt(&secrets)?;
+    }
+    for trashed in &mut document.trash {
+        let secrets = old_key.decrypt::<SecretBundle>(&trashed.connection.encrypted_secrets)?;
+        trashed.connection.encrypted_secrets = new_key.encrypt(&secrets)?;
+    }
+    for draft in &mut document.editor_drafts {
+        let input = old_key.decrypt::<ConnectionInput>(&draft.payload)?;
+        draft.payload = new_key.encrypt(&input)?;
+    }
+    Ok(())
+}
+
 fn stored_from_portable(
     portable: &PortableConnection,
     secrets: &SecretBundle,
@@ -1584,6 +1979,12 @@ fn merge_secret_bundle(current: &mut SecretBundle, next: &SecretBundle) {
     }
     if next.passphrase.as_ref().is_some_and(|v| !v.is_empty()) {
         current.passphrase = next.passphrase.clone();
+    }
+    if next.private_key.as_ref().is_some_and(|v| !v.is_empty()) {
+        current.private_key = next.private_key.clone();
+        if next.private_key_name.as_ref().is_some_and(|v| !v.is_empty()) {
+            current.private_key_name = next.private_key_name.clone();
+        }
     }
     if next.token.as_ref().is_some_and(|v| !v.is_empty()) {
         current.token = next.token.clone();
@@ -2593,5 +2994,35 @@ mod tests {
             vault.get_secret_value(saved.id, module_name).unwrap().2,
             "custom-value"
         );
+    }
+
+    #[test]
+    fn supports_all_six_interface_languages() {
+        let dir = tempdir().unwrap();
+        let vault = Vault::open(dir.path().to_path_buf()).unwrap();
+        for (input, expected) in [
+            ("auto", "auto"),
+            ("system", "auto"),
+            ("", "auto"),
+            ("en", "en"),
+            ("zh", "zh"),
+            ("zh-CN", "zh"),
+            ("zh-TW", "zh-TW"),
+            ("zh-Hant", "zh-TW"),
+            ("ja", "ja"),
+            ("ja-JP", "ja"),
+            ("ko", "ko"),
+            ("es", "es"),
+            ("es-MX", "es"),
+            ("unknown", "auto"),
+        ] {
+            let settings = vault
+                .update_settings_patch(SettingsPatch {
+                    language: Some(input.to_owned()),
+                    ..SettingsPatch::default()
+                })
+                .unwrap();
+            assert_eq!(settings.language, expected);
+        }
     }
 }

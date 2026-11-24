@@ -5,13 +5,20 @@ let refreshError = false;
 let personalEntries = [], personalEdit = null;
 const captureParams = new URLSearchParams(location.search);
 let captureContext = captureParams.get("capture") || "";
+let quickContext = captureParams.get("quick") || "";
 document.body.classList.toggle("capture-page", Boolean(captureContext));
 const captureTabId = captureParams.has("tab") ? Number(captureParams.get("tab")) : undefined;
 let pendingCapture = null, savingCapture = null, saveEntries = [], detectedForms = [], readSource = null, openedCapture = "";
-const showError = e => { refreshError = false; $("#error").textContent = e?.message || String(e || ""); };
+let quickParsed = null, quickParseTimer = null, openedQuick = "", quickOrigin = "";
+const showError = (e, tone = "") => {
+  refreshError = false;
+  const el = $("#error");
+  el.dataset.tone = tone || (e instanceof Error ? "error" : "info");
+  el.textContent = e?.message || String(e || "");
+};
 async function call(action, fields = {}) {
   const reply = await chrome.runtime.sendMessage({ type: "vault-ui", action, origin: currentOrigin,
-    captureId: captureContext || undefined, captureTabId, ...fields });
+    captureId: captureContext || undefined, quickId: quickContext || undefined, captureTabId, ...fields });
   if (!reply?.ok) throw new Error(reply?.error || "OpenKeylet unavailable");
   return reply.result;
 }
@@ -26,10 +33,11 @@ async function refresh() {
     const state = await call("list");
     if (saving || reading) return;
     if (state.captureExpired) { captureContext = ""; closeSave(); }
+    if (state.quickExpired) { quickContext = ""; closeQuickStore(); }
     $("#status").textContent = "已连接本地密码库 / CONNECTED";
     $("#lamp").classList.add("on");
-    if (state.locked) { closeSave(); closePersonal(); OpenKeyletVaultUI.close(); }
-    else if (!$("#save-form").hidden || !$("#personal-form").hidden || OpenKeyletVaultUI.isEditing()) return;
+    if (state.locked) { closeSave(); closeQuickStore(); closePersonal(); OpenKeyletVaultUI.close(); }
+    else if (!$("#save-form").hidden || !$("#quick-store-form").hidden || !$("#personal-form").hidden || OpenKeyletVaultUI.isEditing()) return;
     OpenKeyletVaultUI.apply(state.vault);
     if (refreshError || currentOrigin !== state.origin) showError("");
     if (state.captureExpired) showError("待保存信息已过期或来源网页已变化 / The save suggestion expired or its source changed");
@@ -38,6 +46,8 @@ async function refresh() {
     $("#website").textContent = currentOrigin;
     $("#website").hidden = !state.pageAvailable;
     $("#page-hint").hidden = state.pageAvailable;
+    $("#scan-page-qr").hidden = !state.pageAvailable;
+    $("#save-generated-password").hidden = !state.pageAvailable || !$("#generator-output").value;
     $("#unlock-form").hidden = !state.locked;
     $("#vault-panel").hidden = state.locked;
     $("#entries").hidden = !state.pageAvailable;
@@ -55,6 +65,10 @@ async function refresh() {
     if (captureContext && pendingCapture && !state.locked && openedCapture !== pendingCapture.id) {
       openedCapture = pendingCapture.id;
       reviewCapture();
+    }
+    if (quickContext && !state.locked && openedQuick !== quickContext) {
+      openedQuick = quickContext;
+      openQuickFromCapture();
     }
     if (!entriesChanged) return;
     $("#entries").replaceChildren();
@@ -92,7 +106,7 @@ async function refresh() {
     personalEntries = []; $("#personal-entries").replaceChildren();
     pendingCapture = null; $("#capture-notice").hidden = true;
     $("#generator-output").value = "";
-    showError(`请确认 OpenKeylet 已打开且浏览器连接已启用。 / Check that OpenKeylet and Browser Bridge are running.\n${e.message || e}`);
+    showError(`请确认 OpenKeylet 已打开且浏览器连接已启用。 / Check that OpenKeylet and Browser Bridge are running.\n${e.message || e}`, "error");
     refreshError = true;
   } finally { loading=false; }
 }
@@ -187,7 +201,7 @@ $("#save-form").addEventListener("submit",async e=>{
   }
   catch(e){showError(e);} finally {saving=false;refresh();}
 });
-$("#pair-form").addEventListener("submit",async e=>{ e.preventDefault(); const port=Number($("#port").value); if(!Number.isInteger(port)||port<1024||port>65535){showError("Invalid port");return;} await chrome.storage.local.set({bridgePort:port}); await chrome.runtime.sendMessage({type:"bridge-config-updated"}); showError("在 OpenKeylet 安装指引中点击“打开浏览器并复制地址” / Click Open Chrome & copy address in OpenKeylet"); });
+$("#pair-form").addEventListener("submit",async e=>{ e.preventDefault(); const port=Number($("#port").value); if(!Number.isInteger(port)||port<1024||port>65535){showError("Invalid port", "error");return;} await chrome.storage.local.set({bridgePort:port}); await chrome.runtime.sendMessage({type:"bridge-config-updated"}); showError("在 OpenKeylet 安装指引中点击“打开 Chrome 并复制地址” / Click Open Chrome & copy address in OpenKeylet"); });
 const PERSONAL_LABELS = {
   secureNote: { secureNote:"安全笔记 / Secure note" },
   card: { cardholderName:"持卡人 / Cardholder", cardNumber:"卡号 / Number", cardBrand:"卡组织 / Brand", cardExpMonth:"到期月 / Expiry month", cardExpYear:"到期年 / Expiry year", cardSecurityCode:"安全码 / Security code" },
@@ -243,7 +257,191 @@ async function generatePassword() {
   for (const key of ["uppercase","lowercase","digits","symbols"]) options[key] = $(`#gen-${key}`).checked;
   return call("generate",{options});
 }
-$("#generate-password").onclick = async () => { try { $("#generator-output").value = await generatePassword(); showError(""); } catch(e) { showError(e); } };
-$("#copy-generated-password").onclick = async () => { try { if ($("#generator-output").value) { await navigator.clipboard.writeText($("#generator-output").value); showError("已复制 / Copied"); } } catch(e) { showError(e); } };
+$("#generate-password").onclick = async () => {
+  try {
+    $("#generator-output").value = await generatePassword();
+    $("#save-generated-password").hidden = !currentOrigin || !$("#generator-output").value;
+    showError("");
+  } catch(e) { showError(e); }
+};
+$("#copy-generated-password").onclick = async () => {
+  try {
+    if ($("#generator-output").value) {
+      await navigator.clipboard.writeText($("#generator-output").value);
+      $("#save-generated-password").hidden = !currentOrigin;
+      showError("已复制 / Copied");
+    }
+  } catch(e) { showError(e); }
+};
+$("#save-generated-password").onclick = () => {
+  const pw = $("#generator-output").value;
+  if (!pw || !currentOrigin) return;
+  closeQuickStore();
+  savingCapture = null;
+  saveEntries = entries;
+  detectedForms = [];
+  readSource = { generatedDirect: true };
+  $("#detected-form").hidden = $("#detected-form-label").hidden = true;
+  presentLogin({ username: "", password: pw, warnings: [] }, currentOrigin);
+  $("#username").focus();
+};
 $("#use-generated-password").onclick = async () => { try { $("#password").value = await generatePassword(); } catch(e) { showError(e); } };
+
+function closeQuickStore() {
+  clearTimeout(quickParseTimer);
+  quickParsed = null;
+  quickOrigin = "";
+  $("#quick-store-form").reset();
+  $("#quick-store-form").hidden = true;
+  $("#quick-store-detected").hidden = true;
+  $("#quick-totp-attach-box").hidden = true;
+  $("#quick-store-source").textContent = "";
+}
+
+function applyQuickParsed(parsed, origin) {
+  quickParsed = parsed;
+  quickOrigin = origin || currentOrigin || "";
+  if (!parsed) {
+    $("#quick-store-detected").hidden = true;
+    $("#quick-totp-attach-box").hidden = true;
+    return;
+  }
+  $("#quick-store-badge").textContent = parsed.labelZh || parsed.label || "SECRET";
+  $("#quick-store-summary").textContent = parsed.summary || "";
+  $("#quick-store-detected").hidden = false;
+  $("#quick-store-name").value = parsed.input?.name || "";
+  const attachBox = $("#quick-totp-attach-box");
+  if (parsed.totpUri && entries.length && quickOrigin) {
+    $("#quick-totp-target").replaceChildren(
+      ...entries.map(item => new Option(`${item.name}${item.username ? ` · ${item.username}` : ""}`, item.id))
+    );
+    attachBox.hidden = false;
+  } else {
+    attachBox.hidden = true;
+  }
+}
+
+async function parseQuickStoreText(rawText, origin) {
+  const text = String(rawText || "").trim();
+  if (!text) { applyQuickParsed(null, origin); return; }
+  try {
+    const parsed = await call("quick-parse", { text, origin: origin || currentOrigin || "" });
+    applyQuickParsed(parsed, origin || currentOrigin || "");
+    showError("");
+  } catch (e) {
+    applyQuickParsed(null, origin);
+    showError(e);
+  }
+}
+
+async function openQuickStore(prefillText = "", origin = currentOrigin) {
+  closeSave(); closePersonal(); OpenKeyletVaultUI.close();
+  quickOrigin = origin || currentOrigin || "";
+  $("#quick-store-source").textContent = quickOrigin ? `来源网站 / Source: ${quickOrigin}` : "";
+  $("#quick-store-text").value = prefillText;
+  $("#quick-store-name").value = "";
+  $("#quick-store-detected").hidden = true;
+  $("#quick-totp-attach-box").hidden = true;
+  $("#quick-store-form").hidden = false;
+  if (prefillText) {
+    await parseQuickStoreText(prefillText, quickOrigin);
+  } else {
+    $("#quick-store-text").focus();
+  }
+}
+
+async function openQuickFromCapture() {
+  if (!quickContext) return;
+  reading = true;
+  try {
+    const draft = await call("quick-capture-read");
+    await openQuickStore(draft.text, draft.origin);
+  } catch (e) {
+    quickContext = "";
+    showError(e);
+  } finally {
+    reading = false;
+  }
+}
+
+$("#quick-store-open").onclick = () => void openQuickStore("", currentOrigin);
+$("#scan-page-qr").onclick = async () => {
+  if (reading || saving) return;
+  reading = true;
+  try {
+    const res = await call("scan-page-qr");
+    await openQuickStore(res.text, res.origin);
+    applyQuickParsed(res.parsed, res.origin);
+    showError("已识别网页中的 2FA 二维码 / QR code detected");
+  } catch (e) {
+    showError(e);
+  } finally {
+    reading = false;
+  }
+};
+$("#quick-store-text").addEventListener("input", () => {
+  clearTimeout(quickParseTimer);
+  const value = $("#quick-store-text").value;
+  quickParseTimer = setTimeout(() => void parseQuickStoreText(value, quickOrigin), 220);
+});
+$("#quick-store-cancel").onclick = async () => {
+  const wasQuickWindow = Boolean(quickContext);
+  if (quickContext) await call("quick-capture-dismiss").catch(() => {});
+  quickContext = "";
+  closeQuickStore();
+  if (wasQuickWindow) window.close();
+  else refresh();
+};
+$("#quick-totp-attach").onclick = async () => {
+  if (saving || !quickParsed?.totpUri) return;
+  const targetId = $("#quick-totp-target").value;
+  const target = entries.find(e => e.id === targetId);
+  if (!target) return;
+  saving = true;
+  try {
+    await call("attach-totp", {
+      origin: quickOrigin || currentOrigin,
+      id: target.id,
+      expectedUpdatedAt: target.updatedAt,
+      name: target.name,
+      username: target.username || "",
+      totp: quickParsed.totpUri,
+    });
+    const wasQuickWindow = Boolean(quickContext);
+    quickContext = "";
+    closeQuickStore();
+    showError(`已将 2FA 附加到 ${target.name} / 2FA attached`);
+    if (wasQuickWindow) setTimeout(() => window.close(), 700);
+  } catch (e) {
+    showError(e);
+  } finally {
+    saving = false;
+    refresh();
+  }
+};
+$("#quick-store-form").addEventListener("submit", async e => {
+  e.preventDefault();
+  if (saving) return;
+  saving = true;
+  try {
+    const raw = $("#quick-store-text").value.trim();
+    if (!raw) throw new Error("请先粘贴要保存的密钥或文本 / Paste a secret first");
+    if (!quickParsed) await parseQuickStoreText(raw, quickOrigin);
+    if (!quickParsed?.input) throw new Error("无法解析当前内容 / Could not parse secret");
+    const input = structuredClone(quickParsed.input);
+    const customName = $("#quick-store-name").value.trim();
+    if (customName) input.name = customName;
+    await call("quick-save", { input });
+    const wasQuickWindow = Boolean(quickContext);
+    quickContext = "";
+    closeQuickStore();
+    showError("已保存到本地密码库 / Saved to OpenKeylet");
+    if (wasQuickWindow) setTimeout(() => window.close(), 700);
+  } catch (err) {
+    showError(err);
+  } finally {
+    saving = false;
+    refresh();
+  }
+});
 refresh(); setInterval(refresh,2000);

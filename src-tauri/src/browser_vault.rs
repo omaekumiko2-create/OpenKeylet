@@ -227,6 +227,44 @@ pub async fn handle(
             Ok(json!({"code": code, "remainingSeconds": remaining_seconds, "period": period}))
         }
         "password.save" => vault.save_browser_login(p),
+        "password.attachTotp" => vault.attach_browser_totp(p),
+        "quick.parse" => {
+            let raw = text(p, "text")?;
+            let origin = p["origin"].as_str().filter(|s| !s.trim().is_empty());
+            let parsed = crate::smart_ingest::smart_parse(raw, None, origin)?;
+            Ok(serde_json::to_value(parsed)?)
+        }
+        "quick.save" => {
+            let mut input: ConnectionInput = serde_json::from_value(p["input"].clone())?;
+            ensure!(
+                input.private_key_import_path.is_empty(),
+                "Private key file imports require the desktop app"
+            );
+            // Auto-disambiguate name if an item with the same name already exists.
+            let existing_names: Vec<String> = vault
+                .list_connections()?
+                .into_iter()
+                .map(|c| c.name)
+                .collect();
+            let base = input.name.trim().to_owned();
+            if !base.is_empty()
+                && existing_names
+                    .iter()
+                    .any(|n| n.eq_ignore_ascii_case(&base))
+            {
+                let mut suffix = 2;
+                let mut candidate = format!("{base} ({suffix})");
+                while existing_names
+                    .iter()
+                    .any(|n| n.eq_ignore_ascii_case(&candidate))
+                {
+                    suffix += 1;
+                    candidate = format!("{base} ({suffix})");
+                }
+                input.name = candidate;
+            }
+            Ok(json!(vault.save_connection(input)?))
+        }
         _ => bail!("Unsupported browser operation"),
     }
 }
@@ -453,6 +491,69 @@ impl Vault {
                 zeroize::Zeroizing::new(secrets.get("password").map(str::to_owned));
             secrets.password = Some(password.into());
             secrets.remember_password_change(previous_password.as_deref());
+            stored.updated_at = chrono::Utc::now().to_rfc3339();
+            stored.encrypted_secrets = self.protect_local_state(&secrets)?;
+            let result = json!({"id":stored.id,"name":stored.name,"updatedAt":stored.updated_at});
+            if let Some(i) = index {
+                document.connections[i] = stored;
+            } else {
+                document.connections.push(stored);
+            }
+            Ok(result)
+        })
+    }
+
+    pub fn attach_browser_totp(&self, p: &Value) -> Result<Value> {
+        let website = text(p, "origin")?;
+        passkey::origin(website)?;
+        let totp = text(p, "totp")?.trim();
+        ensure!(!totp.is_empty() && totp.len() <= 2048, "Invalid TOTP value");
+        crate::browser::current_totp(totp)?;
+        let id = p["id"]
+            .as_str()
+            .filter(|s| !s.trim().is_empty())
+            .map(Uuid::parse_str)
+            .transpose()?;
+        self.update_document_with_result(|document| {
+            let index = id
+                .map(|id| {
+                    document
+                        .connections
+                        .iter()
+                        .position(|c| c.id == id)
+                        .context("Login was deleted; reload the extension")
+                })
+                .transpose()?;
+            let (mut stored, mut secrets) = if let Some(i) = index {
+                let c = &document.connections[i];
+                ensure!(c.enabled, "This item is disabled");
+                ensure!(
+                    Some(c.updated_at.as_str()) == p["expectedUpdatedAt"].as_str(),
+                    "Item changed in OpenKeylet; reload before saving"
+                );
+                (
+                    c.clone(),
+                    self.unprotect_local_state::<SecretBundle>(&c.encrypted_secrets)?,
+                )
+            } else {
+                new_item(
+                    self,
+                    document,
+                    website,
+                    p["username"].as_str().unwrap_or_default(),
+                    p["name"].as_str().unwrap_or_default(),
+                    false,
+                )?
+            };
+            if !stored.modules.iter().any(|m| m.kind == "totp") {
+                stored.modules.push(ItemModule {
+                    kind: "totp".into(),
+                    name: "totp".into(),
+                    agent_visible: Some(false),
+                    ..Default::default()
+                });
+            }
+            secrets.named_secrets.insert("totp".into(), totp.to_owned());
             stored.updated_at = chrono::Utc::now().to_rfc3339();
             stored.encrypted_secrets = self.protect_local_state(&secrets)?;
             let result = json!({"id":stored.id,"name":stored.name,"updatedAt":stored.updated_at});
@@ -823,5 +924,88 @@ mod tests {
             .await
             .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn browser_quick_parse_save_and_attach_totp_work() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = Vault::open(dir.path().to_path_buf()).unwrap();
+        let mut session = Session::default();
+        let throttle = Mutex::new(Instant::now());
+
+        // 1. quick.parse recognizes an API key and quick.save persists it with unique naming
+        let parsed = handle(
+            &vault,
+            &mut session,
+            &throttle,
+            "quick.parse",
+            &json!({"text": "sk-ant-api03-browser-quick-999", "origin": "https://console.anthropic.com"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(parsed["kind"], "apiKey");
+        let saved_api = handle(
+            &vault,
+            &mut session,
+            &throttle,
+            "quick.save",
+            &json!({"input": parsed["input"]}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(saved_api["name"], "Anthropic API");
+
+        // Saving a duplicate name automatically disambiguates to "(2)"
+        let saved_api_2 = handle(
+            &vault,
+            &mut session,
+            &throttle,
+            "quick.save",
+            &json!({"input": parsed["input"]}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(saved_api_2["name"], "Anthropic API (2)");
+
+        // 2. password.attachTotp attaches a scanned otpauth URI to an existing website login
+        let login = handle(
+            &vault,
+            &mut session,
+            &throttle,
+            "password.save",
+            &json!({
+                "origin": "https://github.com/login",
+                "name": "GitHub",
+                "username": "octocat",
+                "password": "pw"
+            }),
+        )
+        .await
+        .unwrap();
+        let attached = handle(
+            &vault,
+            &mut session,
+            &throttle,
+            "password.attachTotp",
+            &json!({
+                "origin": "https://github.com/settings/security",
+                "id": login["id"],
+                "expectedUpdatedAt": login["updatedAt"],
+                "totp": "otpauth://totp/GitHub:octocat?secret=JBSWY3DPEHPK3PXP&issuer=GitHub"
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(attached["id"], login["id"]);
+        let totp = handle(
+            &vault,
+            &mut session,
+            &throttle,
+            "password.totp",
+            &json!({"origin": "https://github.com/sessions/two-factor", "id": login["id"]}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(totp["code"].as_str().unwrap().len(), 6);
     }
 }

@@ -18,6 +18,7 @@
 <p>When you fill a website, that website and scripts running on it can access the values you fill. Passkey operations send the website the data needed for registration or authentication after confirmation. The website's privacy practices then apply.</p>
 <p>If you connect an AI agent through the desktop application's MCP integration, that agent can request enabled credential actions, including filling the focused browser control and, when explicitly requested by the action, submitting its form. Hidden plaintext is not returned to the agent by default; this is not a guarantee against a compromised destination, user-exposed fields or subsequent reads by other tools.</p>
 <p>The desktop application has optional GitHub backup. If you configure and use it, encrypted snapshots and necessary repository/account metadata are transferred to GitHub. Snapshots include saved vault data, trash and password history; the recovery key is not uploaded. Disconnecting does not remove existing remote snapshots or Git history. GitHub's own privacy policy applies to its service.</p>
+<p>The desktop application also checks GitHub Releases (`releases/latest/download/latest.json`) for signed software updates when automatic update checks are enabled (configurable under **System → UPDATE / 07**). Update requests are read-only HTTPS GET requests carrying only a generic `OpenKeylet/&lt;version&gt;` User-Agent; no vault data, account information, or unique device identifiers are sent. You can disable automatic update checks or background downloads at any time.</p>
 <p>OpenKeylet does not include advertising, sell personal data, or use vault data for profiling or model training. Data is used only for the disclosed credential-management features and their necessary operation, in accordance with the Chrome Web Store User Data Policy, including its Limited Use requirements.</p>
 <h2>Storage, retention and deletion</h2>
 <p>Saved secrets are encrypted in the local desktop vault. A configured PIN controls owner access and passkey verification; it is not a separate vault-encryption key.</p>
@@ -41,6 +42,7 @@
 <p>填写网站时，该网站及其运行的脚本能读取所填字段。Passkey 操作经确认后，向网站返回注册或认证所需的数据。此后的处理适用该网站自己的隐私规则。</p>
 <p>如果通过桌面端 MCP 接入 AI Agent，Agent 可请求已启用的凭据操作，包括向浏览器聚焦控件填写内容，以及在操作明确请求时提交其表单。默认不会直接向 Agent 返回隐藏明文；这不保证目标网站、主动公开的字段或其他工具后续读取不会暴露数据。</p>
 <p>桌面端提供可选的 GitHub 备份。你配置并使用后，加密快照以及必要的仓库／账号元数据会发送到 GitHub。快照包含已保存的密码库数据、回收站和密码历史，恢复密钥不会上传。断开连接不会删除已有远程快照或 Git 历史。GitHub 服务适用其自身隐私政策。</p>
+<p>桌面端还支持通过 GitHub Releases（`releases/latest/download/latest.json`）检查和下载已签名的软件更新（可在 **设置 → UPDATE / 07** 中随时关闭自动检查或后台下载）。更新检查仅为只读 HTTPS GET 请求，仅携带通用的 `OpenKeylet/&lt;version&gt;` User-Agent，不发送任何密码库数据、账号信息或设备唯一标识符。</p>
 <p>OpenKeylet 不包含广告、不出售个人数据，也不将密码库数据用于画像或模型训练。数据仅用于已披露的凭据管理功能及必要运行，遵守 Chrome 应用商店用户数据政策及 Limited Use 限制。</p>
 <h2>存储、保留和删除</h2>
 <p>已保存的秘密在桌面密码库中加密存储。配置的 PIN 用于所有者访问控制和 Passkey 验证，不是独立的密码库加密密钥。</p>

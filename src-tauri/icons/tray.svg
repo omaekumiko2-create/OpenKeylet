@@ -1,5 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="44" height="44" viewBox="0 0 32 32">
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 400 400">
   <title>OpenKeylet tray icon</title>
-  <rect x="1" y="1" width="30" height="30" rx="5" fill="#f4f2ed" stroke="#93908b" stroke-width="0.75"/>
-  <image x="0" y="0" width="32" height="32" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYAAADDPmHLAAABQElEQVR42u3dsQ2CUBiF0R9ChRtYMBBTu5CJjbSyAI1GyfPdcwYwhvsFmidWAQAAAADQueHbH3iZ55fLeuy5bUNr32k0frbR+AIwvgCMLwDjC8D4AjC+AIwvAOMLAAEgAASAABAAAkAACAABIAAEgAAQAAJAAPytqfyC5jRnHah55/q5A3gEIAAEgAAQAAJAAAgAASAABIAAEAACQAAIgHIi6Ofu67XLV9Est4c7AAJAAAgAASAABIAAEAACQAAIAAEgAASAABAA1c6/h7f4jpvyjiDvCMIjAAEgAASAABAAAkAACAABIAAEgAAQAAJAANRnJ4Kqs5MzvXIiCI8ABIAAEAACQAAIAAEgAASAABAAAkAAAnAJBEBlHgYRQPj4AggfXwDh4wsgfHwBhI8vgPDxBRA+vgDCxwcAAAAAIMIOwtE/1qMnedYAAAAASUVORK5CYII="/>
+  <rect x="14" y="14" width="372" height="372" rx="88" fill="#0d0d10" stroke="#52525b" stroke-width="14"/>
+  <g transform="translate(76 76) scale(0.62)">
+    <path fill="#ffffff" fill-rule="evenodd" d="M24 8H276A16 16 0 0 1 292 24V276A16 16 0 0 1 276 292H24A16 16 0 0 1 8 276V24A16 16 0 0 1 24 8ZM124 108H176A16 16 0 0 1 192 124V176A16 16 0 0 1 176 192H124A16 16 0 0 1 108 176V124A16 16 0 0 1 124 108Z"/>
+    <path fill="#d4d4d8" d="M324 208H376A16 16 0 0 1 392 224V376A16 16 0 0 1 376 392H224A16 16 0 0 1 208 376V324A16 16 0 0 1 224 308H292A16 16 0 0 0 308 292V224A16 16 0 0 1 324 208Z"/>
+  </g>
 </svg>

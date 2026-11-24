@@ -22,8 +22,38 @@
 .github-details dd { margin: 0; color: var(--ink); overflow-wrap: anywhere; text-align: right; font-family: var(--mono); font-size: 10.5px; }
 #github-status { display: block; min-height: 32px; padding: 8px 10px; line-height: 1.45; overflow-wrap: anywhere; }
 .github-actions, .github-manage, .github-key-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.github-card .github-manage { margin-top: 8px; }
+.github-advanced {
+  margin-top: 10px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.github-advanced > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  background: var(--surface-1);
+  cursor: pointer;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--muted);
+  letter-spacing: 0.02em;
+  list-style: none;
+  user-select: none;
+  transition: color 140ms ease, border-color 140ms ease;
+}
+.github-advanced > summary::-webkit-details-marker { display: none; }
+.github-advanced > summary::after { margin-left: auto; content: "+"; font-family: var(--mono); font-size: 13px; }
+.github-advanced > summary:hover { color: var(--ink); border-color: var(--border-default); }
+.github-advanced[open] > summary { color: var(--ink); margin-bottom: 8px; }
+.github-advanced[open] > summary::after { content: "−"; }
+.github-card .github-manage { margin-top: 6px; }
 .github-card .github-manage .button { font-size: 10.5px; padding-inline: 10px; }
+#github-status.pending { border-color: color-mix(in srgb, var(--warning, #d97706) 45%, var(--border-subtle)); color: var(--ink); }
 .github-error { color: var(--danger); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; margin: 8px 0; }
 .github-key-display { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border-subtle); }
 .github-key-display > label { display: block; margin-bottom: 6px; font-size: 11px; color: var(--muted); font-weight: 500; }
@@ -42,6 +72,108 @@
 .github-step:first-child { margin-top: 0; padding-top: 0; border: 0; }
 #github-create-repository-field { margin-bottom: 12px; }
 #github-account-status { color: var(--ink); }
+.github-discovered-box {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--success) 38%, var(--border-subtle));
+  border-radius: var(--radius);
+  background: var(--surface-1);
+}
+.github-discovered-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink);
+  margin: 0 0 8px;
+}
+.github-discovered-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.github-discovered-chip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+.github-discovered-chip:hover {
+  background: var(--surface-hover);
+}
+.github-discovered-chip.selected {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.github-discovered-badges {
+  display: inline-flex;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+.github-discovered-badge {
+  padding: 2px 5px;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-1);
+  color: var(--muted);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+}
+.github-discovered-badge.is-vault {
+  border-color: color-mix(in srgb, var(--success) 42%, var(--border-subtle));
+  background: var(--success-soft);
+  color: var(--success);
+}
+.github-strong-notice {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+  color: var(--ink);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.github-passphrase-panel {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-subtle);
+  display: grid;
+  gap: 8px;
+}
+.github-passphrase-panel .field {
+  display: grid;
+  gap: 5px;
+}
+.github-passphrase-panel .field > span {
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 500;
+}
+.strong-unlock-input-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.strong-unlock-input-row .input {
+  flex: 1;
+  min-width: 0;
+}
+.strong-unlock-input-row .button {
+  flex: 0 0 auto;
+  height: 32px;
+  min-height: 32px;
+  padding: 0 10px;
+  font-size: 10px;
+}
 .github-help-row .button { font-size: 10.5px; padding: 0 10px; height: 28px; min-height: 28px; }
 .github-key-confirm { display: flex; align-items: flex-start; gap: 8px; margin-top: 12px; font-size: 11.5px; line-height: 1.45; color: var(--ink); cursor: pointer; }
 .github-key-confirm input { flex: 0 0 auto; margin: 2px 0 0; }

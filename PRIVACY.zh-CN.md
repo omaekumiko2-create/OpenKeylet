@@ -30,6 +30,8 @@
 
 桌面端提供可选的 GitHub 备份。你配置并使用后，加密快照以及必要的仓库／账号元数据会发送到 GitHub。快照包含已保存的密码库数据、回收站和密码历史，恢复密钥不会上传。断开连接不会删除已有远程快照或 Git 历史。GitHub 服务适用其自身隐私政策。
 
+桌面端还支持通过 GitHub Releases（`releases/latest/download/latest.json`）检查和下载已签名的软件更新（可在 **设置 → UPDATE / 07** 中随时关闭自动检查或后台下载）。更新检查仅为只读 HTTPS GET 请求，仅携带通用的 `OpenKeylet/<version>` User-Agent，不发送任何密码库数据、账号信息或设备唯一标识符。
+
 OpenKeylet 不包含广告、不出售个人数据，也不将密码库数据用于画像或模型训练。数据仅用于已披露的凭据管理功能及必要运行，遵守 Chrome 应用商店用户数据政策及 Limited Use 限制。
 
 ## 存储、保留和删除

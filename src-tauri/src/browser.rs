@@ -36,6 +36,7 @@ const EXTENSION_QUEUE_TIMEOUT: Duration = Duration::from_millis(500);
 const EXTENSION_RECONNECT_GRACE: Duration = Duration::from_secs(2);
 const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(40);
 const HEALTH_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
+const PAIRING_WINDOW: Duration = Duration::from_secs(300);
 pub(crate) const EXTENSION_ORIGIN: &str = "chrome-extension://knkjojeijgalhpdkfapohofobfomenmi";
 
 fn default_job_kind() -> String {
@@ -112,6 +113,13 @@ pub struct BrowserFillResult {
 struct PairResponse {
     token: String,
     port: u16,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InternalBridgeStatus {
+    connected_count: usize,
+    pairing_active: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -197,6 +205,15 @@ struct BridgeServerState {
     extensions: Arc<Mutex<ExtensionPool>>,
     pending: Arc<Mutex<HashMap<Uuid, oneshot::Sender<BrowserFillResult>>>>,
     cancellation: CancellationToken,
+    on_change: Option<Arc<dyn Fn() + Send + Sync>>,
+}
+
+impl BridgeServerState {
+    fn notify_change(&self) {
+        if let Some(callback) = &self.on_change {
+            callback();
+        }
+    }
 }
 
 struct Runtime {
@@ -224,10 +241,19 @@ pub struct BrowserBridge {
     vault: Vault,
     runtime: Arc<Mutex<Runtime>>,
     client: reqwest::Client,
+    on_change: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl BrowserBridge {
     pub fn new(vault: Vault) -> Self {
+        Self::build(vault, None)
+    }
+
+    pub fn with_on_change(vault: Vault, on_change: impl Fn() + Send + Sync + 'static) -> Self {
+        Self::build(vault, Some(Arc::new(on_change)))
+    }
+
+    fn build(vault: Vault, on_change: Option<Arc<dyn Fn() + Send + Sync>>) -> Self {
         Self {
             vault,
             runtime: Arc::new(Mutex::new(Runtime::default())),
@@ -236,6 +262,7 @@ impl BrowserBridge {
                 .connect_timeout(Duration::from_secs(2))
                 .build()
                 .expect("reqwest client configuration must be valid"),
+            on_change,
         }
     }
 
@@ -277,14 +304,21 @@ impl BrowserBridge {
             let runtime = self.runtime.lock().await;
             (runtime.status.clone(), runtime.error.clone())
         };
+        let live = if settings.browser_enabled && matches!(status.as_str(), "listening" | "delegated")
+        {
+            self.probe_bridge_status(settings.browser_port).await
+        } else {
+            InternalBridgeStatus::default()
+        };
         let connected = settings.browser_enabled
             && settings.browser_paired
-            && matches!(status.as_str(), "listening" | "delegated")
-            && self.probe_fill_ready(settings.browser_port).await;
+            && live.connected_count > 0;
         BrowserBridgeState {
             enabled: settings.browser_enabled,
             paired: settings.browser_paired,
             connected,
+            connected_count: if connected { live.connected_count } else { 0 },
+            pairing_active: live.pairing_active,
             status,
             error,
             endpoint: format!("ws://127.0.0.1:{}/extension", settings.browser_port),
@@ -297,14 +331,32 @@ impl BrowserBridge {
             .is_ok_and(|settings| settings.browser_enabled && settings.browser_paired)
     }
 
-    async fn probe_fill_ready(&self, port: u16) -> bool {
-        self.client
-            .get(format!("http://127.0.0.1:{port}/internal/ready"))
-            .bearer_auth(self.internal_token().unwrap_or_default())
+    async fn probe_bridge_status(&self, port: u16) -> InternalBridgeStatus {
+        let token = self.internal_token().unwrap_or_default();
+        if let Ok(response) = self
+            .client
+            .get(format!("http://127.0.0.1:{port}/internal/status"))
+            .bearer_auth(&token)
             .timeout(HEALTH_REQUEST_TIMEOUT)
             .send()
             .await
-            .is_ok_and(|response| response.status().is_success())
+            && response.status().is_success()
+            && let Ok(parsed) = response.json::<InternalBridgeStatus>().await
+        {
+            return parsed;
+        }
+        let ready = self
+            .client
+            .get(format!("http://127.0.0.1:{port}/internal/ready"))
+            .bearer_auth(token)
+            .timeout(HEALTH_REQUEST_TIMEOUT)
+            .send()
+            .await
+            .is_ok_and(|response| response.status().is_success());
+        InternalBridgeStatus {
+            connected_count: usize::from(ready),
+            pairing_active: false,
+        }
     }
 
     pub async fn start_quick_pairing(&self) -> Result<()> {
@@ -497,6 +549,7 @@ impl BrowserBridge {
                     extensions: Arc::new(Mutex::new(ExtensionPool::default())),
                     pending: Arc::new(Mutex::new(HashMap::new())),
                     cancellation: cancellation.clone(),
+                    on_change: self.on_change.clone(),
                 };
                 let router = Router::new()
                     .route("/health", get(health))
@@ -504,6 +557,7 @@ impl BrowserBridge {
                     .route("/extension", get(extension_upgrade))
                     .route("/internal/health", get(internal_health))
                     .route("/internal/ready", get(internal_ready))
+                    .route("/internal/status", get(internal_status))
                     .route("/internal/quick-pair", post(create_quick_pair))
                     .route("/internal/jobs", post(submit_job))
                     .route("/internal/reset", post(reset_pairing))
@@ -601,13 +655,56 @@ async fn internal_ready(
     }
 }
 
+async fn internal_status(
+    State(state): State<BridgeServerState>,
+    headers: HeaderMap,
+) -> Result<Json<InternalBridgeStatus>, (StatusCode, String)> {
+    require_bearer(&headers, &state.internal_token)?;
+    let connected_count = state.extensions.lock().await.clients.len();
+    let pairing_active = {
+        let mut pairing = state.pairing.lock().await;
+        match pairing.as_ref() {
+            Some(window) if std::time::Instant::now() <= window.expires_at => true,
+            Some(_) => {
+                *pairing = None;
+                false
+            }
+            None => false,
+        }
+    };
+    Ok(Json(InternalBridgeStatus {
+        connected_count,
+        pairing_active,
+    }))
+}
+
 async fn create_quick_pair(
     State(state): State<BridgeServerState>,
     headers: HeaderMap,
 ) -> Result<&'static str, (StatusCode, String)> {
     require_bearer(&headers, &state.internal_token)?;
-    *state.pairing.lock().await = Some(PairingWindow {
-        expires_at: std::time::Instant::now() + Duration::from_secs(120),
+    let expires_at = std::time::Instant::now() + PAIRING_WINDOW;
+    *state.pairing.lock().await = Some(PairingWindow { expires_at });
+    state.notify_change();
+    let state_for_expiry = state.clone();
+    tokio::spawn(async move {
+        tokio::select! {
+            _ = state_for_expiry.cancellation.cancelled() => {}
+            _ = sleep(PAIRING_WINDOW + Duration::from_millis(100)) => {
+                let expired = {
+                    let mut pairing = state_for_expiry.pairing.lock().await;
+                    if pairing.as_ref().is_some_and(|w| std::time::Instant::now() > w.expires_at) {
+                        *pairing = None;
+                        true
+                    } else {
+                        false
+                    }
+                };
+                if expired {
+                    state_for_expiry.notify_change();
+                }
+            }
+        }
     });
     Ok("ready")
 }
@@ -637,11 +734,12 @@ async fn claim(
             "Automatic pairing window is closed".to_owned(),
         ));
     }
-    *pairing = None;
+    drop(pairing);
     state
         .vault
         .set_browser_paired(true)
         .map_err(internal_error)?;
+    state.notify_change();
     Ok(Json(PairResponse {
         token: state.extension_token.clone(),
         port: state.port,
@@ -794,6 +892,7 @@ async fn extension_socket(socket: WebSocket, state: BridgeServerState) {
     let connection_id = Uuid::new_v4();
     let (job_sender, mut jobs) = mpsc::channel(8);
     state.extensions.lock().await.add(connection_id, job_sender);
+    state.notify_change();
     loop {
         tokio::select! {
             job = jobs.recv() => {
@@ -849,6 +948,7 @@ async fn extension_socket(socket: WebSocket, state: BridgeServerState) {
         }
     }
     state.extensions.lock().await.remove(connection_id);
+    state.notify_change();
 }
 
 fn require_bearer(headers: &HeaderMap, expected: &str) -> Result<(), (StatusCode, String)> {
@@ -1056,6 +1156,7 @@ mod tests {
             extensions: Arc::new(Mutex::new(ExtensionPool::default())),
             pending: Arc::new(Mutex::new(HashMap::new())),
             cancellation: CancellationToken::new(),
+            on_change: None,
         }
     }
 
@@ -1207,7 +1308,9 @@ mod tests {
             bridge.internal_token().unwrap()
         );
         assert!(vault.settings().unwrap().browser_paired);
-        let reused = client
+        assert!(bridge.status().await.pairing_active);
+        // Multiple Chrome profiles can pair within the same active pairing window.
+        let second_profile = client
             .post(&claim_url)
             .header(
                 header::ORIGIN,
@@ -1216,7 +1319,9 @@ mod tests {
             .send()
             .await
             .unwrap();
-        assert_eq!(reused.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(second_profile.status(), StatusCode::OK);
+        let second_payload: serde_json::Value = second_profile.json().await.unwrap();
+        assert_eq!(second_payload["token"], payload["token"]);
         bridge.stop().await;
     }
 
@@ -1295,8 +1400,9 @@ mod tests {
                 .contains("ready")
         );
         sleep(Duration::from_millis(20)).await;
-        assert!(bridge.status().await.connected);
-        assert!(bridge.status().await.connected);
+        let first_status = bridge.status().await;
+        assert!(first_status.connected);
+        assert_eq!(first_status.connected_count, 1);
 
         let (mut second, _) = tokio_tungstenite::connect_async(ws_request()).await.unwrap();
         second.send(ClientMessage::Text(auth.into())).await.unwrap();
@@ -1310,6 +1416,8 @@ mod tests {
                 .unwrap()
                 .contains("ready")
         );
+        sleep(Duration::from_millis(20)).await;
+        assert_eq!(bridge.status().await.connected_count, 2);
         second
             .send(ClientMessage::Text(r#"{"type":"activate"}"#.into()))
             .await

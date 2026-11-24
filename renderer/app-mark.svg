@@ -1,6 +1,18 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" role="img" aria-labelledby="openkeylet-mark-title openkeylet-mark-desc">
-  <title id="openkeylet-mark-title">OpenKeylet</title>
-  <desc id="openkeylet-mark-desc">A clean geometric key ring and stepped key bit built on a four by four grid.</desc>
-  <path class="logo-ring" fill="#f4f4f5" fill-rule="evenodd" d="M24 8H276A16 16 0 0 1 292 24V276A16 16 0 0 1 276 292H24A16 16 0 0 1 8 276V24A16 16 0 0 1 24 8ZM124 108H176A16 16 0 0 1 192 124V176A16 16 0 0 1 176 192H124A16 16 0 0 1 108 176V124A16 16 0 0 1 124 108Z"/>
-  <path class="logo-bit" fill="#a1a1aa" d="M324 208H376A16 16 0 0 1 392 224V376A16 16 0 0 1 376 392H224A16 16 0 0 1 208 376V324A16 16 0 0 1 224 308H292A16 16 0 0 0 308 292V224A16 16 0 0 1 324 208Z"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#19191e"/>
+      <stop offset="100%" stop-color="#09090b"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="rgba(255,255,255,0.22)"/>
+      <stop offset="100%" stop-color="rgba(255,255,255,0.06)"/>
+    </linearGradient>
+  </defs>
+  <rect x="12" y="12" width="376" height="376" rx="88" fill="url(#bg)"/>
+  <rect x="15" y="15" width="370" height="370" rx="85" fill="none" stroke="url(#rim)" stroke-width="6"/>
+  <g transform="translate(80 80) scale(0.6)">
+    <path fill="#f4f4f5" fill-rule="evenodd" d="M24 8H276A16 16 0 0 1 292 24V276A16 16 0 0 1 276 292H24A16 16 0 0 1 8 276V24A16 16 0 0 1 24 8ZM124 108H176A16 16 0 0 1 192 124V176A16 16 0 0 1 176 192H124A16 16 0 0 1 108 176V124A16 16 0 0 1 124 108Z"/>
+    <path fill="#a1a1aa" d="M324 208H376A16 16 0 0 1 392 224V376A16 16 0 0 1 376 392H224A16 16 0 0 1 208 376V324A16 16 0 0 1 224 308H292A16 16 0 0 0 308 292V224A16 16 0 0 1 324 208Z"/>
+  </g>
 </svg>

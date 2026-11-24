@@ -11,6 +11,7 @@
     "128": "icons/128x128.png"
   },
   "permissions": [
+    "contextMenus",
     "scripting",
     "storage"
   ],

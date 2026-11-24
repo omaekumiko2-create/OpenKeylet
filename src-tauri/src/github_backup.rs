@@ -31,12 +31,14 @@ const CLOUD_FILE: &str = "openkeylet.vault.json";
 const LOCAL_FILE: &str = "github-backup.json";
 const CLOUD_FORMAT: &str = "openkeylet-cloud-backup";
 const LOCAL_FORMAT: &str = "openkeylet-github-device";
+const VAULT_TOPIC: &str = "openkeylet-vault";
 const CLOUD_AAD: &[u8] = b"openkeylet/cloud-backup/v1";
 const MAX_CLOUD_BYTES: usize = 8 * 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = MAX_CLOUD_BYTES * 2;
+const MAX_DISCOVERY_PROBES: usize = 15;
 
 mod auth;
-pub use auth::{AccountStatus, AuthInput};
+pub use auth::{AccountStatus, AuthInput, DiscoveredVaultRepo};
 
 #[derive(Deserialize, Zeroize, ZeroizeOnDrop)]
 #[serde(rename_all = "camelCase")]
@@ -56,17 +58,22 @@ pub struct ConnectInput {
     pub provider: String,
     #[serde(default)]
     pub server_url: String,
+    #[serde(default)]
+    pub master_passphrase: String,
 }
 
 #[derive(Default, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BackupStatus {
     pub connected: bool,
+    pub strong_mode: bool,
     pub provider: String,
     pub server_url: String,
     pub repository: String,
     pub branch: String,
     pub auto_sync: bool,
+    pub pending_sync: bool,
+    pub last_sync_error: Option<String>,
     pub needs_restore: bool,
     pub has_remote_backup: bool,
     pub last_backup_at: Option<String>,
@@ -120,6 +127,10 @@ struct DeviceConfig {
     last_synced_at: Option<String>,
     #[serde(default)]
     last_synced_fingerprint: Option<String>,
+    #[serde(default)]
+    pending_sync: bool,
+    #[serde(default)]
+    last_sync_error: Option<String>,
     remote_backup_at: Option<String>,
     remote_item_count: Option<usize>,
 }
@@ -130,8 +141,17 @@ impl DeviceConfig {
     }
 
     fn status(&self) -> BackupStatus {
+        self.status_with_fingerprint(None)
+    }
+
+    fn status_with_fingerprint(&self, current_fingerprint: Option<&str>) -> BackupStatus {
+        let local_dirty = match (current_fingerprint, self.last_synced_fingerprint.as_deref()) {
+            (Some(curr), Some(last)) => curr != last,
+            _ => false,
+        };
         BackupStatus {
             connected: true,
+            strong_mode: false,
             provider: if self.provider.is_empty() {
                 "github".to_owned()
             } else {
@@ -141,6 +161,8 @@ impl DeviceConfig {
             repository: format!("{}/{}", self.owner, self.repo),
             branch: self.branch.clone(),
             auto_sync: self.auto_sync,
+            pending_sync: self.pending_sync || local_dirty || self.last_sync_error.is_some(),
+            last_sync_error: self.last_sync_error.clone(),
             needs_restore: self.needs_restore,
             has_remote_backup: self.has_remote_backup,
             last_backup_at: self.last_backup_at.clone(),
@@ -169,6 +191,39 @@ struct Repository {
     #[serde(default)]
     disabled: bool,
     default_branch: String,
+}
+
+#[derive(Deserialize)]
+struct RepoListOwner {
+    #[serde(alias = "username")]
+    login: String,
+}
+
+#[derive(Deserialize)]
+struct RepoListItem {
+    name: String,
+    #[serde(default)]
+    full_name: String,
+    owner: Option<RepoListOwner>,
+    private: bool,
+    #[serde(default)]
+    archived: bool,
+    #[serde(default)]
+    disabled: bool,
+    #[serde(default)]
+    default_branch: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    topics: Vec<String>,
+    #[serde(default)]
+    updated_at: String,
+}
+
+#[derive(Deserialize)]
+struct CloudEnvelopeHeader {
+    format: String,
+    version: u8,
 }
 
 #[derive(Deserialize)]
@@ -226,31 +281,280 @@ impl GithubBackup {
         })
     }
 
+    fn finalize_status(&self, mut status: BackupStatus) -> BackupStatus {
+        status.strong_mode = self.vault.is_strong_mode();
+        status
+    }
+
     pub fn status(&self) -> Result<BackupStatus> {
-        Ok(self
+        let strong_mode = self.vault.is_strong_mode();
+        if strong_mode && !self.vault.is_strong_unlocked() {
+            return Ok(BackupStatus {
+                strong_mode: true,
+                ..BackupStatus::default()
+            });
+        }
+        let current_fp = self.vault.sync_content_fingerprint().ok();
+        let status = self
             .load()?
-            .map(|config| config.status())
-            .unwrap_or_default())
+            .map(|config| config.status_with_fingerprint(current_fp.as_deref()))
+            .unwrap_or_default();
+        Ok(self.finalize_status(status))
     }
 
     pub fn is_auto_sync_enabled(&self) -> bool {
+        if self.vault.is_strong_mode() && !self.vault.is_strong_unlocked() {
+            return false;
+        }
         self.load()
             .ok()
             .flatten()
             .is_some_and(|config| config.auto_sync)
     }
 
+    pub fn mark_pending_sync(&self) -> Result<Option<BackupStatus>> {
+        if self.vault.is_strong_mode() && !self.vault.is_strong_unlocked() {
+            return Ok(None);
+        }
+        let Some(mut config) = self.load()? else {
+            return Ok(None);
+        };
+        if !config.auto_sync {
+            return Ok(None);
+        }
+        config.pending_sync = true;
+        self.save(&config)?;
+        Ok(Some(self.finalize_status(config.status())))
+    }
+
+    pub fn record_sync_error(&self, error: &str) -> Result<Option<BackupStatus>> {
+        if self.vault.is_strong_mode() && !self.vault.is_strong_unlocked() {
+            return Ok(None);
+        }
+        let Some(mut config) = self.load()? else {
+            return Ok(None);
+        };
+        let code = error
+            .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .find(|part| part.starts_with("GITHUB_"))
+            .unwrap_or("GITHUB_NETWORK")
+            .to_owned();
+        config.pending_sync = true;
+        config.last_sync_error = Some(code);
+        self.save(&config)?;
+        Ok(Some(self.finalize_status(config.status())))
+    }
+
     pub fn set_auto_sync(&self, enabled: bool) -> Result<BackupStatus> {
         let mut config = self.connected()?;
         config.auto_sync = enabled;
         self.save(&config)?;
-        Ok(config.status())
+        let current_fp = self.vault.sync_content_fingerprint().ok();
+        Ok(self.finalize_status(config.status_with_fingerprint(current_fp.as_deref())))
     }
 
     pub async fn account(&self, input: AuthInput) -> Result<AccountStatus> {
-        let token = auth::token(&input.auth_source, &input.token).await?;
-        let user = self.user(&token, "github", "").await?;
-        Ok(AccountStatus { login: user.login })
+        let provider = normalize_provider(&input.provider)?;
+        let server_url = normalize_server_url(&provider, &input.server_url)?;
+        let auth_source = if provider == "gitea" && input.auth_source.trim().is_empty() {
+            "token"
+        } else {
+            &input.auth_source
+        };
+        let token = auth::token(auth_source, &input.token).await?;
+        let user = self.user(&token, &provider, &server_url).await?;
+        let discovered_repos = self
+            .discover_private_vault_repos(&token, &provider, &server_url, &user.login)
+            .await;
+        Ok(AccountStatus {
+            login: user.login,
+            discovered_repos,
+        })
+    }
+
+    async fn discover_private_vault_repos(
+        &self,
+        token: &str,
+        provider: &str,
+        server_url: &str,
+        login: &str,
+    ) -> Vec<DiscoveredVaultRepo> {
+        use futures_util::stream::{self, StreamExt};
+
+        let request = match self.api_request_for(Method::GET, &["user", "repos"], token, provider, server_url) {
+            Ok(req) => req,
+            Err(_) => return Vec::new(),
+        };
+        let request = if provider == "gitea" {
+            request.query(&[("limit", "50")])
+        } else {
+            request.query(&[
+                ("affiliation", "owner"),
+                ("visibility", "private"),
+                ("sort", "updated"),
+                ("per_page", "100"),
+            ])
+        };
+        let Ok(response) = request.send().await else {
+            return Vec::new();
+        };
+        if !response.status().is_success() {
+            return Vec::new();
+        }
+        let Ok(repos) = read_json::<Vec<RepoListItem>>(response).await else {
+            return Vec::new();
+        };
+
+        // Strict privacy guard: NEVER inspect or recommend public, archived, or disabled repos.
+        let mut candidates: Vec<(u8, String, String, String, bool, String)> = repos
+            .into_iter()
+            .filter(|r| r.private && !r.archived && !r.disabled && !r.default_branch.is_empty())
+            .filter_map(|r| {
+                let owner = r
+                    .owner
+                    .as_ref()
+                    .map(|o| o.login.clone())
+                    .or_else(|| r.full_name.split('/').next().map(str::to_owned))
+                    .unwrap_or_else(|| login.to_owned());
+                if owner.is_empty() || r.name.is_empty() {
+                    return None;
+                }
+                let has_topic = r
+                    .topics
+                    .iter()
+                    .any(|t| t.eq_ignore_ascii_case(VAULT_TOPIC));
+                let name_lower = r.name.to_ascii_lowercase();
+                let desc_lower = r
+                    .description
+                    .as_deref()
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                let priority = if has_topic || name_lower == VAULT_TOPIC {
+                    0
+                } else if name_lower.contains("openkeylet") || desc_lower.contains("openkeylet") {
+                    1
+                } else if name_lower.contains("vault") {
+                    2
+                } else {
+                    3
+                };
+                Some((
+                    priority,
+                    owner,
+                    r.name,
+                    r.default_branch,
+                    has_topic,
+                    r.updated_at,
+                ))
+            })
+            .collect();
+
+        candidates.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| b.5.cmp(&a.5)));
+        candidates.truncate(MAX_DISCOVERY_PROBES);
+
+        let mut discovered: Vec<DiscoveredVaultRepo> = stream::iter(candidates)
+            .map(|(priority, owner, name, default_branch, has_topic, updated_at)| async move {
+                let has_vault_file = self
+                    .probe_vault_file(&owner, &name, &default_branch, token, provider, server_url)
+                    .await;
+                if has_vault_file || has_topic || priority == 0 {
+                    Some(DiscoveredVaultRepo {
+                        full_name: format!("{owner}/{name}"),
+                        owner,
+                        name,
+                        default_branch,
+                        has_vault_file,
+                        has_topic,
+                        updated_at,
+                        private: true,
+                    })
+                } else {
+                    None
+                }
+            })
+            .buffer_unordered(6)
+            .filter_map(|item| async move { item })
+            .collect()
+            .await;
+
+        discovered.sort_by(|a, b| {
+            b.has_vault_file
+                .cmp(&a.has_vault_file)
+                .then_with(|| b.has_topic.cmp(&a.has_topic))
+                .then_with(|| b.updated_at.cmp(&a.updated_at))
+        });
+        discovered
+    }
+
+    async fn probe_vault_file(
+        &self,
+        owner: &str,
+        repo: &str,
+        branch: &str,
+        token: &str,
+        provider: &str,
+        server_url: &str,
+    ) -> bool {
+        let Ok(req) = self.request_for(
+            Method::GET,
+            owner,
+            repo,
+            &["contents", CLOUD_FILE],
+            token,
+            provider,
+            server_url,
+        ) else {
+            return false;
+        };
+        let Ok(response) = req.query(&[("ref", branch)]).send().await else {
+            return false;
+        };
+        if !response.status().is_success() {
+            return false;
+        }
+        let Ok(file) = read_json::<ContentFile>(response).await else {
+            return false;
+        };
+        if file.kind != "file" || file.size == 0 || file.size > MAX_CLOUD_BYTES {
+            return false;
+        }
+        if file.encoding == "base64" && !file.content.is_empty() {
+            let Ok(bytes) = decode_content(&file.content) else {
+                return false;
+            };
+            return serde_json::from_slice::<CloudEnvelopeHeader>(&bytes)
+                .is_ok_and(|header| header.format == CLOUD_FORMAT && header.version == 1);
+        }
+        // Files larger than 1 MB omit inline content on GitHub Contents API; presence of
+        // openkeylet.vault.json on a private repo is still a strong fingerprint.
+        valid_sha(&file.sha)
+    }
+
+    async fn tag_repository_topic(
+        &self,
+        owner: &str,
+        repo: &str,
+        token: &str,
+        provider: &str,
+        server_url: &str,
+    ) {
+        if provider != "github" {
+            return;
+        }
+        if let Ok(req) = self.request_for(
+            Method::PUT,
+            owner,
+            repo,
+            &["topics"],
+            token,
+            provider,
+            server_url,
+        ) {
+            let _ = req
+                .json(&serde_json::json!({ "names": [VAULT_TOPIC] }))
+                .send()
+                .await;
+        }
     }
 
     async fn user(&self, token: &str, provider: &str, server_url: &str) -> Result<GithubUser> {
@@ -270,12 +574,17 @@ impl GithubBackup {
     }
 
     pub fn disconnect(&self) -> Result<BackupStatus> {
+        if self.vault.is_strong_mode() {
+            // Coupled security lifecycle: turning off GitHub vault binding atomically
+            // reverts local storage back to standard local-only mode (requires unlocked).
+            self.vault.disable_strong_mode()?;
+        }
         match fs::remove_file(self.vault.data_dir().join(LOCAL_FILE)) {
             Ok(()) => (),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
             Err(_) => bail!("GITHUB_LOCAL_STATE"),
         }
-        Ok(BackupStatus::default())
+        Ok(self.finalize_status(BackupStatus::default()))
     }
 
     pub async fn connect(&self, input: ConnectInput) -> Result<BackupStatus> {
@@ -290,6 +599,9 @@ impl GithubBackup {
         let (owner, repo) = parse_repository_for(&input.repository, &server_url)?;
         let recovery_key = input.recovery_key.trim();
         parse_recovery_key(recovery_key)?;
+        if !input.master_passphrase.is_empty() {
+            crate::crypto::validate_master_passphrase(&input.master_passphrase)?;
+        }
         let auth_source = if provider == "gitea" && input.auth_source.trim().is_empty() {
             "token"
         } else {
@@ -335,6 +647,8 @@ impl GithubBackup {
             if !created.private || created.id == 0 {
                 bail!("GITHUB_PRIVATE_REQUIRED");
             }
+            self.tag_repository_topic(&owner, &repo, &token, &provider, &server_url)
+                .await;
         }
         let repository = self
             .repository(&owner, &repo, &token, &provider, &server_url)
@@ -357,6 +671,8 @@ impl GithubBackup {
             last_restore_at: None,
             last_synced_at: None,
             last_synced_fingerprint: None,
+            pending_sync: false,
+            last_sync_error: None,
             remote_backup_at: None,
             remote_item_count: None,
         };
@@ -378,8 +694,14 @@ impl GithubBackup {
             ("new", None) => (),
             _ => unreachable!(),
         }
+        if !input.master_passphrase.is_empty() {
+            // Coupled security lifecycle: binding GitHub upgrades local storage into
+            // Strong Cloud Vault mode (zero master.key on disk, dual-slot DEK in RAM).
+            self.vault
+                .enable_strong_mode(&input.master_passphrase, recovery_key)?;
+        }
         self.save(&config)?;
-        Ok(config.status())
+        Ok(self.finalize_status(config.status()))
     }
 
     pub async fn sync(&self) -> Result<SyncResult> {
@@ -438,11 +760,13 @@ impl GithubBackup {
             let now = Utc::now().to_rfc3339();
             config.last_synced_at = Some(now);
             config.last_synced_fingerprint = Some(after_pull_fp);
+            config.pending_sync = false;
+            config.last_sync_error = None;
             self.save(&config)?;
             return Ok(SyncResult {
                 action: if pulled { "pulled" } else { "up_to_date" }.to_owned(),
                 merge: total_merge,
-                status: config.status(),
+                status: self.finalize_status(config.status()),
             });
         }
 
@@ -457,11 +781,13 @@ impl GithubBackup {
                     let now = Utc::now().to_rfc3339();
                     config.last_synced_at = Some(now);
                     config.last_synced_fingerprint = Some(final_fp);
+                    config.pending_sync = false;
+                    config.last_sync_error = None;
                     self.save(&config)?;
                     return Ok(SyncResult {
                         action: if pulled { "merged" } else { "pushed" }.to_owned(),
                         merge: total_merge,
-                        status: config.status(),
+                        status: self.finalize_status(config.status()),
                     });
                 }
                 Err(error) if attempt == 0 && error.to_string().contains("GITHUB_CONFLICT") => {
@@ -562,8 +888,10 @@ impl GithubBackup {
             .context("GITHUB_LOCAL_VAULT")?;
         config.last_synced_at = config.last_backup_at.clone();
         config.last_synced_fingerprint = Some(fp);
+        config.pending_sync = false;
+        config.last_sync_error = None;
         self.save(&config)?;
-        Ok(config.status())
+        Ok(self.finalize_status(config.status()))
     }
 
     pub async fn restore(&self) -> Result<RestoreResult> {
@@ -588,10 +916,12 @@ impl GithubBackup {
         config.last_restore_at = Some(Utc::now().to_rfc3339());
         config.last_synced_at = config.last_restore_at.clone();
         config.last_synced_fingerprint = self.vault.sync_content_fingerprint().ok();
+        config.pending_sync = false;
+        config.last_sync_error = None;
         self.save(&config)?;
         Ok(RestoreResult {
             summary,
-            status: config.status(),
+            status: self.finalize_status(config.status()),
         })
     }
 

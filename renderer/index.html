@@ -8,10 +8,13 @@
     <link rel="stylesheet" href="styles.css" />
     <link rel="stylesheet" href="modern-theme.css" />
     <link rel="stylesheet" href="github-backup.css" />
+    <link rel="stylesheet" href="updater.css" />
     <link rel="stylesheet" href="item-grid.css" />
     <script src="appearance.js"></script>
   </head>
   <body>
+    <div class="window-resize-edge bottom" id="window-resize-bottom" data-resize-edge="south" data-tauri-drag-region="false" aria-hidden="true"></div>
+    <div class="edge-dock-peek hidden" id="edge-dock-peek" role="button" tabindex="0" aria-label="Expand OpenKeylet"><span class="edge-dock-grip" aria-hidden="true"></span></div>
     <div class="title-drag-region" data-tauri-drag-region="deep">
       <div class="app-mark">
         <span class="app-mark-symbol" aria-hidden="true">
@@ -21,7 +24,7 @@
           <path class="logo-bit" fill="#a1a1aa" d="M324 208H376A16 16 0 0 1 392 224V376A16 16 0 0 1 376 392H224A16 16 0 0 1 208 376V324A16 16 0 0 1 224 308H292A16 16 0 0 0 308 292V224A16 16 0 0 1 324 208Z"/>
         </svg>
         </span>
-        <strong>OpenKeylet</strong>
+        <strong class="app-mark-wordmark"><span class="brand-open">Open</span><span class="brand-keylet">Keylet</span></strong>
       </div>
       <div class="title-search" id="title-search" data-tauri-drag-region="false">
         <button id="title-search-toggle" type="button" aria-label="Search vault items" title="Search vault items">
@@ -30,6 +33,11 @@
         </button>
         <input id="title-search-input" class="page-search-input" data-page-search="connections" type="search" placeholder="Search items…" aria-label="Search vault items" autocomplete="off" />
       </div>
+      <button class="title-update-indicator hidden" id="title-update-indicator" type="button" data-tauri-drag-region="false" aria-label="Update available" title="Update available">
+        <span class="title-update-halo" aria-hidden="true"></span>
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3.5v8.5m0 0-3.25-3.25M10 12l3.25-3.25M4.5 15.25h11"/></svg>
+        <i class="title-update-dot" aria-hidden="true"></i>
+      </button>
       <div class="title-tools" data-tauri-drag-region="false">
       <button class="title-switch" id="theme-toggle" type="button" role="switch" aria-checked="false" aria-label="Light mode" title="Switch to light mode">
         <span class="title-switch-option" data-state="false" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M20 12A8 8 0 1 1 12 4A6 6 0 0 0 20 12Z"/></svg></span>
@@ -54,11 +62,33 @@
 
       <main class="main-content">
         <div class="metric-grid" id="metrics"></div>
+        <div class="update-banner hidden" id="update-banner" role="status" aria-live="polite">
+          <div class="update-banner-main">
+            <span class="update-dot" aria-hidden="true"></span>
+            <div class="update-banner-copy">
+              <strong id="update-banner-title">Update available</strong>
+              <small id="update-banner-sub"></small>
+            </div>
+          </div>
+          <div class="update-banner-actions">
+            <button class="button primary" id="update-banner-primary" type="button">UPDATE</button>
+            <button class="button quiet" id="update-banner-notes" type="button">NOTES</button>
+            <button class="update-banner-dismiss" id="update-banner-dismiss" type="button" aria-label="Dismiss">×</button>
+          </div>
+          <div class="update-progress-track hidden" id="update-banner-progress"><div class="update-progress-fill" id="update-banner-progress-fill"></div></div>
+        </div>
 
         <section class="page active" id="page-connections">
           <header class="page-header connections-header">
             <div class="filter-strip item-type-switch" id="item-type-switch" role="group" aria-label="Item type filter"></div>
             <div class="creation-control" data-mode="add">
+              <button class="view-mode-toggle" id="vault-view-toggle" type="button" data-view="list" aria-label="Switch to grid view" title="Switch to grid view">
+                <svg class="view-icon-grid" viewBox="0 0 18 18" aria-hidden="true"><rect x="2" y="2" width="5.5" height="5.5" rx="1.2"/><rect x="10.5" y="2" width="5.5" height="5.5" rx="1.2"/><rect x="2" y="10.5" width="5.5" height="5.5" rx="1.2"/><rect x="10.5" y="10.5" width="5.5" height="5.5" rx="1.2"/></svg>
+                <svg class="view-icon-list" viewBox="0 0 18 18" aria-hidden="true"><path d="M2.5 4.5h13M2.5 9h13M2.5 13.5h13"/></svg>
+              </button>
+              <button class="view-mode-toggle smart-paste-icon-button" id="smart-paste-button" type="button" aria-label="Smart paste from clipboard" title="Smart paste from clipboard (API key, cURL, SSH, .env, URI, 2FA)">
+                <svg viewBox="0 0 18 18" aria-hidden="true"><path d="M6.5 3.5h5v2h-5z"/><path d="M6.5 4.5H4.5a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-9a1 1 0 0 0-1-1h-2"/><path d="M9.5 7.5 7 11h2.2l-.7 3 2.5-3.5H8.8z"/></svg>
+              </button>
               <div class="draft-pill hidden" id="draft-pill">
                 <button class="draft-resume-button" id="drafts-button" type="button" disabled>Draft</button>
                 <button class="draft-delete-button hidden" id="delete-draft-button" type="button" aria-label="Delete draft" title="Delete draft">×</button>
@@ -66,7 +96,7 @@
               <button class="button primary add-item-button" id="add-connection-button" type="button">＋ Add</button>
             </div>
           </header>
-          <div class="list-well"><div class="connections-grid" id="connections-list" tabindex="0" aria-label="Vault items"></div></div>
+          <div class="list-well"><div class="connections-grid" id="connections-list" tabindex="0" aria-label="Vault items"></div><div class="smart-drop-overlay hidden" id="smart-drop-overlay" aria-hidden="true"><div><strong>DROP TO SMART STORE</strong><span>.env · SSH key / config · 2FA QR image · API / cURL</span></div></div></div>
           <span id="item-reorder-status" class="module-reorder-status" aria-live="polite" aria-atomic="true"></span>
         </section>
 
@@ -83,6 +113,12 @@
         <section class="page" id="page-settings">
           <header class="page-header"><div class="filter-strip" id="settings-filter-switch" role="group" aria-label="Settings section filter"></div><div class="page-header-actions"><div class="command-well"><button class="button primary" id="header-export-backup-button" type="button">One-click export package</button></div><div class="command-well"><button class="button quiet" id="header-import-backup-button" type="button">One-click import package</button></div></div></header>
           <div class="list-well"><div class="settings-layout" tabindex="0" aria-label="Settings">
+            <section class="content-panel settings-card wide language-top-card" data-module="LANG / 00" id="language-settings-card">
+              <div class="desktop-options">
+                <div class="desktop-option language-top-option" id="language-option"><span><strong>Interface language</strong><small>Choose your preferred display language across the desktop app.</small></span><div class="language-switch" id="language-switch" role="group" aria-label="Language"><button class="active" type="button" data-language="auto">AUTO</button><button type="button" data-language="en">EN</button><button type="button" data-language="zh">简中</button><button type="button" data-language="zh-TW">繁中</button><button type="button" data-language="ja">日本語</button><button type="button" data-language="ko">한국어</button><button type="button" data-language="es">ES</button></div></div>
+              </div>
+            </section>
+
             <section class="content-panel settings-card" data-module="SYSTEM / 01">
               <div class="settings-heading"><div><h2>System shortcuts</h2><p>Control OpenKeylet desktop shortcuts and startup behavior.</p></div></div>
               <div class="desktop-options">
@@ -101,11 +137,11 @@
             </section>
 
             <section class="content-panel settings-card" data-module="APP / 03">
-              <div class="settings-heading"><div><h2>Window and preferences</h2><p>Control language, sounds, close behavior and local PIN lock.</p></div></div>
+              <div class="settings-heading"><div><h2>Window and preferences</h2><p>Control sounds, close behavior and local PIN lock.</p></div></div>
               <div class="desktop-options">
-                <div class="desktop-option" id="language-option"><span><strong>Interface language</strong><small>Switch between English and Simplified Chinese</small></span><div class="language-switch" id="language-switch" role="group" aria-label="Language"><button class="active" type="button" data-language="en">EN</button><button type="button" data-language="zh">ZH</button></div></div>
                 <div class="desktop-option" id="sound-option"><span><strong>Interface sounds</strong><small>Subtle click feedback for toggles and buttons</small></span><button class="title-switch" id="sound-toggle" type="button" role="switch" aria-checked="false" aria-label="Interface sounds" title="Turn interface sounds on"><span class="title-switch-option" data-state="false" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 9H7L12 5V19L7 15H3Z"/><path d="m15 9 6 6m0-6-6 6"/></svg></span><span class="title-switch-option" data-state="true" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 9H7L12 5V19L7 15H3Z"/><path d="M15 9Q18 12 15 15M18 6Q24 12 18 18"/></svg></span></button></div>
                 <label class="desktop-option" for="close-behavior"><span><strong>Close button</strong><small>Minimize to keep the tray menu available</small></span><select class="input" id="close-behavior"><option value="tray">Minimize to tray</option><option value="exit">Quit OpenKeylet</option></select></label>
+                <div class="desktop-option" id="edge-dock-option"><span><strong>Edge-dock drawer</strong><small>Snap to the left, right, or top screen edge to auto-hide; hover the edge to slide back out.</small></span><label class="switch"><input type="checkbox" id="edge-dock-enabled" checked /><span></span></label></div>
                 <div class="desktop-option pin-option"><span><strong>PIN lock</strong><small>Locks desktop viewing and management against others on this device; turning off removes the PIN</small></span><label class="switch"><input type="checkbox" id="pin-enabled" /><span></span></label></div>
                 <label class="desktop-option hidden" id="owner-auto-lock-option" for="owner-auto-lock-minutes"><span><strong>Auto-lock</strong><small>Lock the desktop window after idle time (background MCP remains ready)</small></span><select class="input" id="owner-auto-lock-minutes"><option value="0">Never</option><option value="5">5 minutes</option><option value="15">15 minutes</option><option value="30">30 minutes</option><option value="60">60 minutes</option></select></label>
               </div>
@@ -118,19 +154,25 @@
               <div class="desktop-options">
                 <div class="desktop-option" id="browser-agent-passkey-option"><span><strong>Agent Passkey signing</strong><small>Allow local AI agents to complete WebAuthn Passkey sign-in and registration for enabled items</small></span><label class="switch"><input type="checkbox" id="browser-agent-passkey-enabled" checked /><span></span></label></div>
               </div>
-              <div class="browser-connect-note"><strong id="browser-install-heading">INSTALL IN TWO STEPS</strong></div>
+              <div class="browser-connect-note"><strong id="browser-install-heading">INSTALL IN THREE STEPS</strong></div>
               <ol class="browser-install-steps" aria-labelledby="browser-install-heading">
                 <li><span class="browser-step-number" aria-hidden="true">1</span><div class="browser-step-body">
-                  <h3 id="browser-step-open-title">Open the extensions page</h3>
-                  <p id="browser-step-open-description">Open Chrome and copy the extensions page address. Paste it into the address bar, then turn on Developer mode.</p>
+                  <h3 id="browser-step-open-title">Open Chrome</h3>
+                  <p id="browser-step-open-description">Launch Chrome and open a 5-minute auto-pairing window (supports multiple Chrome profiles at once).</p>
+                  <div class="browser-profile-row hidden" id="chrome-profile-row"><label class="field-label" for="chrome-profile-select" id="chrome-profile-label">Chrome profile</label><select class="input" id="chrome-profile-select"></select></div>
                   <div class="command-well"><button type="button" class="button primary" id="quick-pairing-button">Open Chrome &amp; copy address</button></div>
                   <p id="browser-open-help" role="status" hidden>Address copied. Paste it into Chrome's address bar and press Enter, then turn on Developer mode.</p>
                 </div></li>
                 <li><span class="browser-step-number" aria-hidden="true">2</span><div class="browser-step-body">
+                  <h3 id="browser-step-copy-title">Open the extensions page</h3>
+                  <p id="browser-step-copy-description">Copy the address below, paste it into Chrome's address bar and press Enter, then turn on Developer mode.</p>
+                  <div class="inline-setting browser-extensions-url-row"><input class="input" id="browser-extensions-url" type="text" value="chrome://extensions/" readonly spellcheck="false" aria-label="Extensions page address" /><div class="command-well"><button type="button" class="button secondary" id="copy-extensions-url-button">Copy</button></div></div>
+                </div></li>
+                <li><span class="browser-step-number" aria-hidden="true">3</span><div class="browser-step-body">
                   <h3 id="browser-step-drag-title">Drag in the extension</h3>
                   <p id="browser-step-drag-description">Hold the icon below, drag it onto an empty area of the extensions page, and release to install.</p>
                   <button type="button" class="extension-drag-card" id="drag-extension-button" aria-describedby="browser-step-drag-description" aria-label="Drag extension folder to Chrome extensions page"><img src="app-mark.svg" draggable="false" alt=""><span id="drag-extension-label">Hold and drag to the extensions page</span></button>
-                  <p id="browser-install-complete">Once installed, the extension connects automatically. Keep OpenKeylet running.</p>
+                  <p id="browser-install-complete">Connects automatically after installation. To add another Chrome profile, switch profiles and repeat.</p>
                 </div></li>
               </ol>
               <details class="browser-install-fallback"><summary id="browser-fallback-title">Can't install by dragging?</summary><p id="browser-fallback-description">Open the extension folder below. On the extensions page, click Load unpacked and select that folder.</p><div class="command-well"><button type="button" class="button quiet" id="open-extension-button">Extension folder</button></div></details>
@@ -146,14 +188,51 @@
               </div>
               <p class="github-note" id="github-note"></p>
               <p class="github-error hidden" id="github-error" role="alert"></p>
-              <div class="button-row github-actions"><div class="command-well"><button class="button primary" id="github-connect" type="button">Connect repository</button></div><div class="command-well"><button class="button primary hidden" id="github-sync" type="button">Sync now</button></div><div class="command-well"><button class="button secondary hidden" id="github-upload" type="button">Back up now</button></div><div class="command-well"><button class="button quiet hidden" id="github-restore" type="button">Restore from cloud</button></div></div>
-              <div class="button-row github-manage hidden" id="github-manage"><div class="command-well"><button class="button quiet" id="github-show-key" type="button">View recovery key</button></div><div class="command-well"><button class="button quiet" id="github-reconfigure" type="button">Update connection</button></div><div class="command-well"><button class="button danger-soft" id="github-disconnect" type="button">Disconnect</button></div></div>
+              <div class="button-row github-actions"><div class="command-well"><button class="button primary" id="github-connect" type="button">Connect repository</button></div><div class="command-well"><button class="button primary hidden" id="github-sync" type="button">Sync now</button></div></div>
+              <details class="github-advanced hidden" id="github-advanced">
+                <summary id="github-advanced-summary">Manual snapshot &amp; connection</summary>
+                <div class="button-row github-manage" id="github-manage"><div class="command-well"><button class="button secondary" id="github-upload" type="button">Back up now</button></div><div class="command-well"><button class="button quiet" id="github-restore" type="button">Restore from cloud</button></div><div class="command-well"><button class="button quiet" id="github-show-key" type="button">View recovery key</button></div><div class="command-well"><button class="button quiet hidden" id="github-change-passphrase" type="button">Change master passphrase</button></div><div class="command-well"><button class="button quiet" id="github-reconfigure" type="button">Update connection</button></div><div class="command-well"><button class="button danger-soft" id="github-disconnect" type="button">Disconnect</button></div></div>
+              </details>
+              <div class="github-passphrase-panel hidden" id="github-passphrase-panel">
+                <label class="field" for="github-new-passphrase"><span id="github-new-passphrase-label">New master passphrase (min 12 chars)</span><input class="input" type="password" id="github-new-passphrase" maxlength="4096" autocomplete="new-password" /></label>
+                <label class="field" for="github-new-passphrase-confirm"><span id="github-new-passphrase-confirm-label">Confirm new master passphrase</span><input class="input" type="password" id="github-new-passphrase-confirm" maxlength="4096" autocomplete="new-password" /></label>
+                <div class="button-row"><div class="command-well"><button type="button" class="button primary" id="github-save-passphrase">Save passphrase</button></div><div class="command-well"><button type="button" class="button quiet" id="github-cancel-passphrase">Cancel</button></div></div>
+              </div>
               <div class="github-key-display hidden" id="github-key-display"><label for="github-saved-key" id="github-saved-key-label">Recovery key</label><textarea class="input github-key" id="github-saved-key" readonly rows="2" spellcheck="false" autocomplete="off"></textarea><p class="github-note" id="github-key-warning"></p><div class="button-row"><div class="command-well"><button type="button" class="button secondary" id="github-copy-saved-key">Copy</button></div><div class="command-well"><button type="button" class="button quiet" id="github-hide-key">Hide</button></div></div></div>
             </section>
 
             <section class="content-panel settings-card wide" data-module="SAFE / 06">
-              <div class="settings-heading"><div class="square-icon coral">BK</div><div><h2>Local data</h2><p>Export all items and passkeys encrypted with a separate backup password, or restore an existing backup.</p></div></div>
-              <div class="security-actions"><div class="command-well"><button class="button primary" id="migration-open" type="button">迁入密码库 / Import vault</button></div><div class="command-well"><button class="button quiet" id="open-data-button">Open data directory</button></div><div class="command-well"><button class="button quiet" id="generator-open" type="button">生成器</button></div><div class="command-well"><button class="button quiet" id="trash-open" type="button">回收站</button></div></div>
+              <div class="settings-heading"><div class="square-icon coral">BK</div><div><h2>Local data</h2><p>Export encrypted .mvault archive packages with a custom password, restore current/legacy .mvault files with preview, or migrate from Bitwarden / Chrome.</p></div></div>
+              <div class="security-actions"><div class="command-well"><button class="button primary" id="safe-export-backup-button" type="button">Export .mvault</button></div><div class="command-well"><button class="button secondary" id="safe-import-backup-button" type="button">Restore .mvault</button></div><div class="command-well"><button class="button quiet" id="migration-open" type="button">Import Bitwarden / CSV</button></div><div class="command-well"><button class="button quiet" id="open-data-button">Open data directory</button></div><div class="command-well"><button class="button quiet" id="generator-open" type="button">生成器</button></div><div class="command-well"><button class="button quiet" id="trash-open" type="button">回收站</button></div></div>
+            </section>
+
+            <section class="content-panel settings-card wide update-card" data-module="UPDATE / 07" id="update-settings-card">
+              <div class="settings-heading"><div><h2 id="update-card-heading">Software updates</h2><p id="update-card-description">Check and install Ed25519-signed releases directly from GitHub Releases.</p></div></div>
+              <div class="status-strip" id="update-status-strip" role="status"></div>
+              <dl class="update-details">
+                <dt id="update-current-version-label">Current version</dt><dd id="update-current-version-value">—</dd>
+                <dt id="update-platform-label">Platform</dt><dd id="update-platform-value">—</dd>
+                <dt id="update-latest-label">Latest release</dt><dd id="update-latest-value">—</dd>
+                <dt id="update-checked-label">Last checked</dt><dd id="update-checked-value">—</dd>
+              </dl>
+              <div class="desktop-options">
+                <div class="desktop-option" id="update-prompt-option"><span><strong id="update-prompt-label">Top-bar update indicator</strong><small id="update-prompt-help">Show a breathing update icon beside the top search bar when a newer version is available</small></span><label class="switch"><input type="checkbox" id="update-prompt-enabled" checked /><span></span></label></div>
+                <div class="desktop-option" id="update-auto-check-option"><span><strong id="update-auto-check-label">Auto-check on launch</strong><small id="update-auto-check-help">Silently check GitHub Releases after launch</small></span><label class="switch"><input type="checkbox" id="update-auto-check-enabled" checked /><span></span></label></div>
+                <div class="desktop-option" id="update-auto-download-option"><span><strong id="update-auto-download-label">Background auto-download</strong><small id="update-auto-download-help">Download and verify updates in the background, then prompt to restart</small></span><label class="switch"><input type="checkbox" id="update-auto-download-enabled" checked /><span></span></label></div>
+              </div>
+              <div class="update-inline-progress hidden" id="update-card-progress">
+                <div class="update-inline-progress-bar"><span id="update-card-progress-fill"></span></div>
+                <div class="update-inline-progress-meta"><span id="update-card-progress-bytes"></span><span id="update-card-progress-pct"></span></div>
+              </div>
+              <p class="update-error hidden" id="update-card-error" role="alert"></p>
+              <p class="update-note" id="update-card-note"></p>
+              <div class="button-row update-actions">
+                <div class="command-well"><button class="button primary hidden" id="update-primary-action-button" type="button">Restart &amp; update</button></div>
+                <div class="command-well"><button class="button secondary" id="update-check-button" type="button">Check for updates</button></div>
+                <div class="command-well"><button class="button quiet hidden" id="update-open-notes-button" type="button">Release notes</button></div>
+                <div class="command-well"><button class="button quiet" id="update-open-releases-button" type="button">GitHub Releases ↗</button></div>
+                <div class="command-well"><button class="button quiet hidden" id="update-clear-skip-button" type="button">Clear skipped</button></div>
+              </div>
             </section>
             <div class="settings-search-empty hidden" id="settings-search-empty">NO MATCHING SETTINGS</div>
           </div></div>
@@ -163,13 +242,14 @@
 
     <div class="owner-lock-layer hidden" id="owner-lock-layer">
       <form class="owner-lock-panel" id="owner-lock-form">
-        <div class="lock-display"><span>OWNER ACCESS</span><strong id="owner-lock-code">LOCK</strong><small>LOCAL GUI / MCP REMAINS READY</small></div>
+        <div class="lock-display"><span id="owner-lock-badge">OWNER ACCESS</span><strong id="owner-lock-code">LOCK</strong><small id="owner-lock-sub">LOCAL GUI / MCP REMAINS READY</small></div>
         <div class="lock-copy"><div class="panel-code" id="owner-lock-mode">SET LOCAL PIN</div><h2 id="owner-lock-title">Set six-digit PIN</h2><p id="owner-lock-description">The PIN protects plaintext viewing, browser vault access and passkey verification.</p></div>
-        <label class="field"><span>Six-digit PIN</span><div class="pin-control" data-pin-group="owner-pin"><input class="pin-cell-input" id="owner-pin" type="password" inputmode="numeric" pattern="[0-9]" maxlength="1" autocomplete="off" required /><input class="pin-cell-input" type="password" inputmode="numeric" pattern="[0-9]" maxlength="1" autocomplete="off" required /><input class="pin-cell-input" type="password" inputmode="numeric" pattern="[0-9]" maxlength="1" autocomplete="off" required /><input class="pin-cell-input" type="password" inputmode="numeric" pattern="[0-9]" maxlength="1" autocomplete="off" required /><input class="pin-cell-input" type="password" inputmode="numeric" pattern="[0-9]" maxlength="1" autocomplete="off" required /><input class="pin-cell-input" type="password" inputmode="numeric" pattern="[0-9]" maxlength="1" autocomplete="off" required /></div></label>
+        <label class="field" id="owner-pin-field"><span>Six-digit PIN</span><div class="pin-control" data-pin-group="owner-pin"><input class="pin-cell-input" id="owner-pin" type="password" inputmode="numeric" pattern="[0-9]" maxlength="1" autocomplete="off" required /><input class="pin-cell-input" type="password" inputmode="numeric" pattern="[0-9]" maxlength="1" autocomplete="off" required /><input class="pin-cell-input" type="password" inputmode="numeric" pattern="[0-9]" maxlength="1" autocomplete="off" required /><input class="pin-cell-input" type="password" inputmode="numeric" pattern="[0-9]" maxlength="1" autocomplete="off" required /><input class="pin-cell-input" type="password" inputmode="numeric" pattern="[0-9]" maxlength="1" autocomplete="off" required /><input class="pin-cell-input" type="password" inputmode="numeric" pattern="[0-9]" maxlength="1" autocomplete="off" required /></div></label>
         <label class="field" id="owner-pin-confirm-field"><span>Re-enter PIN</span><div class="pin-control" data-pin-group="owner-pin-confirm"><input class="pin-cell-input" id="owner-pin-confirm" type="password" inputmode="numeric" pattern="[0-9]" maxlength="1" autocomplete="off" /><input class="pin-cell-input" type="password" inputmode="numeric" pattern="[0-9]" maxlength="1" autocomplete="off" /><input class="pin-cell-input" type="password" inputmode="numeric" pattern="[0-9]" maxlength="1" autocomplete="off" /><input class="pin-cell-input" type="password" inputmode="numeric" pattern="[0-9]" maxlength="1" autocomplete="off" /><input class="pin-cell-input" type="password" inputmode="numeric" pattern="[0-9]" maxlength="1" autocomplete="off" /><input class="pin-cell-input" type="password" inputmode="numeric" pattern="[0-9]" maxlength="1" autocomplete="off" /></div></label>
+        <label class="field hidden" id="owner-strong-field" for="owner-strong-secret"><span id="owner-strong-label">Master passphrase or okv1_ recovery key</span><div class="strong-unlock-input-row"><input class="input" id="owner-strong-secret" type="password" maxlength="4096" autocomplete="current-password" spellcheck="false" /><button class="button quiet" id="owner-strong-reveal" type="button">SHOW</button></div></label>
         <button class="button primary owner-unlock-action" id="owner-unlock-action" type="submit">SET PIN</button>
         <button class="button quiet hidden" id="owner-pin-cancel" type="button">Cancel</button>
-        <div class="lock-note"><i></i><span>PIN locks desktop viewing and editing against others on this computer; pair with OS screen lock and encrypted backups for offline security.</span></div>
+        <div class="lock-note"><i></i><span id="owner-lock-note">PIN locks desktop viewing and editing against others on this computer; pair with OS screen lock and encrypted backups for offline security.</span></div>
       </form>
     </div>
 
@@ -184,7 +264,28 @@
             <datalist id="vault-folder-options"></datalist>
             <div class="item-enabled-option"><label class="switch"><input type="checkbox" id="connection-enabled" role="switch" aria-labelledby="connection-enabled-label" aria-describedby="connection-enabled-help" checked /><span aria-hidden="true"></span></label><label class="item-enabled-copy" for="connection-enabled"><strong id="connection-enabled-label">Enable this item</strong><small id="connection-enabled-help">Agents cannot use a disabled item.</small></label></div>
 
+            <section class="smart-parse-banner hidden" id="smart-parse-banner" role="status">
+              <div class="smart-parse-banner-head">
+                <strong id="smart-parse-badge">DETECTED</strong>
+                <span id="smart-parse-summary"></span>
+              </div>
+              <p class="smart-parse-warnings hidden" id="smart-parse-warnings"></p>
+              <div class="smart-totp-attach hidden" id="smart-totp-attach">
+                <label class="field">
+                  <span id="smart-totp-attach-label">Attach 2FA to an existing item</span>
+                  <div class="inline-setting">
+                    <select class="input" id="smart-totp-target"></select>
+                    <button type="button" class="button secondary" id="smart-totp-attach-button">Attach 2FA</button>
+                  </div>
+                </label>
+              </div>
+            </section>
+
             <section class="template-picker hidden" id="template-picker">
+              <button type="button" class="smart-paste-card" id="editor-smart-paste-button">
+                <b>⚡</b>
+                <span><strong id="editor-smart-paste-title">Smart paste from clipboard</strong><small id="editor-smart-paste-help">Auto-detect API keys, cURL, SSH, .env, DB URIs &amp; 2FA (local only)</small></span>
+              </button>
               <div class="template-copy"><strong>Start with a combination</strong><small>Templates only add modules; they do not limit later changes.</small></div>
               <div class="template-grid"><button type="button" data-item-template="login"><b>A</b><span>Login<small>Account + password</small></span></button><button type="button" data-item-template="ssh"><b>B</b><span>SSH<small>Host + port + account + password</small></span></button><button type="button" data-item-template="api"><b>C</b><span>API<small>API credentials</small></span></button><button type="button" data-item-template="blank"><b>D</b><span>Blank<small>Add modules from scratch</small></span></button></div>
               <div class="template-grid"><button type="button" data-item-template="card"><b>E</b><span>Card<small>Number + expiry + code</small></span></button><button type="button" data-item-template="identity"><b>F</b><span>Identity<small>Contact + address</small></span></button><button type="button" data-item-template="secureNote"><b>G</b><span>Secure note<small>Encrypted text</small></span></button></div>
@@ -221,12 +322,21 @@
             </div>
             <div class="github-help-row"><button class="button secondary" type="button" id="github-check-account">Check account</button><button class="button quiet" type="button" data-github-help="login" id="github-login-help">GitHub login help ↗</button></div>
             <p class="github-note" id="github-account-status" role="status"></p>
+            <div class="github-discovered-box hidden" id="github-discovered-box">
+              <p class="github-discovered-title" id="github-discovered-title">Discovered private OpenKeylet repositories</p>
+              <div class="github-discovered-list" id="github-discovered-list"></div>
+            </div>
             <h3 class="github-step" id="github-step-repository">2 · Private repository</h3>
             <label class="field" for="github-mode"><span id="github-mode-label">Connection method</span><select class="input" id="github-mode"><option value="new" id="github-mode-new">Create a new backup</option><option value="existing" id="github-mode-existing">Connect an existing backup</option></select></label>
             <label class="field" for="github-repository"><span id="github-repository-input-label">Private repository</span><input class="input" id="github-repository" placeholder="owner/openkeylet-vault" maxlength="240" required spellcheck="false" autocapitalize="off" /></label>
             <label class="github-key-confirm" id="github-create-repository-field"><input type="checkbox" id="github-create-repository" /><span id="github-create-repository-label">Create this private repository in my account</span></label>
             <div class="github-help-row"><button class="button quiet" type="button" data-github-help="repository" id="github-create-repo">Create private repository ↗</button><button class="button quiet" type="button" data-github-help="token" id="github-create-token">Create access token ↗</button></div>
-            <h3 class="github-step" id="github-step-key">3 · Recovery key</h3>
+            <h3 class="github-step" id="github-step-key">3 · Strong vault key &amp; recovery key</h3>
+            <div id="github-strong-passphrase-section">
+              <p class="github-strong-notice" id="github-strong-notice">Binding enables Strong Cloud Vault mode together: local master.key is removed from disk, leaving only strong ciphertext. Unlock once per session in RAM with your master passphrase (or okv1_ recovery key).</p>
+              <label class="field" for="github-master-passphrase"><span id="github-master-passphrase-label">Master passphrase (≥ 12 chars)</span><input class="input" type="password" id="github-master-passphrase" maxlength="4096" autocomplete="new-password" placeholder="At least 12 characters" /></label>
+              <label class="field" for="github-master-passphrase-confirm"><span id="github-master-passphrase-confirm-label">Confirm master passphrase</span><input class="input" type="password" id="github-master-passphrase-confirm" maxlength="4096" autocomplete="new-password" /></label>
+            </div>
             <label class="field" for="github-recovery-key"><span id="github-key-label">Recovery key</span><textarea class="input github-key" id="github-recovery-key" rows="2" maxlength="64" required spellcheck="false" autocapitalize="off" autocomplete="off" readonly placeholder="okv1_…"></textarea></label>
             <div class="button-row github-key-actions"><button class="button secondary" id="github-generate-key" type="button">Generate a recovery key</button><button class="button quiet" id="github-copy-key" type="button">Copy key</button></div>
             <p class="github-note" id="github-recovery-help"></p>
@@ -276,9 +386,12 @@
       <div class="modal-card generator-card">
         <div class="modal-header"><h2 id="migration-title">迁入密码库 / Import vault</h2><button class="icon-button" id="migration-close" type="button" aria-label="Close">×</button></div>
         <div class="generator-body migration-body">
-          <label class="field"><span>来源 / Source</span><select class="input" id="migration-format"><option value="bitwarden">Bitwarden · JSON</option><option value="chrome">Chrome / Edge · CSV</option></select></label>
+          <label class="field"><span>来源 / Source</span><select class="input" id="migration-format"><option value="bitwarden">Bitwarden · JSON</option><option value="chrome">Chrome / Edge · CSV</option><option value="ssh_config">SSH Config · ~/.ssh/config</option><option value="env">Environment · .env</option><option value="mvault">OpenKeylet · .mvault (v3–v8)</option></select></label>
           <p id="migration-help"></p>
-          <button class="button" id="migration-select" type="button">选择文件 / Choose file</button>
+          <div class="button-row migration-pick-actions">
+            <button class="button primary hidden" id="migration-scan-ssh" type="button">扫描本机 ~/.ssh/config / Scan ~/.ssh/config</button>
+            <button class="button" id="migration-select" type="button">选择文件 / Choose file</button>
+          </div>
           <div id="migration-preview" class="hidden" role="status"></div>
           <p id="migration-error" class="hidden" role="alert"></p>
           <button class="button primary hidden" id="migration-confirm" type="button">确认导入 / Import</button>
@@ -294,9 +407,41 @@
         </div>
       </div>
     </div>
+    <div class="modal-backdrop hidden" id="update-modal" role="dialog" aria-modal="true" aria-labelledby="update-modal-title">
+      <div class="modal-card update-modal-card">
+        <div class="modal-header"><h2 id="update-modal-title">Update Available</h2><button class="icon-button" id="update-modal-close" type="button" aria-label="Close">×</button></div>
+        <div class="update-modal-body">
+          <div class="update-version-row">
+            <span class="update-version-pill" id="update-modal-version"></span>
+            <span class="update-signature-badge" id="update-modal-signature"></span>
+          </div>
+          <p class="update-note" id="update-modal-meta"></p>
+          <pre class="update-notes-box" id="update-modal-notes"></pre>
+          <div class="update-inline-progress hidden" id="update-modal-progress">
+            <div class="update-inline-progress-bar"><span id="update-modal-progress-fill"></span></div>
+            <div class="update-inline-progress-meta"><span id="update-modal-progress-bytes"></span><span id="update-modal-progress-pct"></span></div>
+          </div>
+          <p class="update-error hidden" id="update-modal-error" role="alert"></p>
+        </div>
+        <div class="update-modal-footer">
+          <div class="update-modal-footer-left">
+            <button class="button quiet" id="update-modal-github" type="button">GitHub ↗</button>
+            <button class="button quiet" id="update-modal-skip" type="button">Skip version</button>
+          </div>
+          <div class="update-modal-footer-right">
+            <button class="button quiet" id="update-modal-later" type="button">Later</button>
+            <button class="button primary" id="update-modal-install" type="button">Download &amp; update</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <input type="file" id="totp-qr-file-input" accept="image/*" class="hidden" aria-hidden="true" tabindex="-1" />
     <div class="toast-region" id="toast-region" aria-live="polite"></div>
     <script src="lettering.js"></script>
+    <script src="i18n.js"></script>
+    <script src="qr-decode.js"></script>
     <script src="github-backup.js"></script>
+    <script src="updater.js"></script>
     <script src="app.js"></script>
   </body>
 </html>

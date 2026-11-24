@@ -173,10 +173,10 @@ try {
     assert.equal(measure.overflow, false);
     assert.ok(Math.max(...measure.centers) - Math.min(...measure.centers) <= 1, `Header icons and wordmark must share a centerline: ${JSON.stringify(measure.centers)}`);
     for (const card of measure.cards) {
-      assert.ok(card.height >= 86 && card.width < 150 && card.within && card.vertical);
+      assert.ok(card.height >= 50 && card.width > 300 && card.within, `Default list item must render as a full-width horizontal row: ${JSON.stringify(card)}`);
     }
-    assert.equal(new Set(measure.cards.map(card => card.y)).size, 1, 'The first three items share one grid row');
-    assert.equal(new Set(measure.cards.map(card => card.x)).size, 3, 'The three items occupy distinct columns');
+    assert.equal(new Set(measure.cards.map(card => card.y)).size, 3, 'The first three items occupy distinct list rows');
+    assert.equal(new Set(measure.cards.map(card => card.x)).size, 1, 'The three list rows align to one column');
     for (const well of measure.wells) {
       assert.equal(well.height, 32); assert.deepEqual(well.padding, ['4px', '4px', '4px', '4px']);
       if (well.cap) assert.deepEqual(well.cap, ['4px', '4px', '4px', '24px']);
@@ -275,9 +275,13 @@ try {
   assert.equal(await page.locator('#sound-toggle').getAttribute('aria-checked'), 'true');
   await dragSwitch('#sound-toggle', 1, 0);
   await dragSwitch('#theme-toggle', 0, 1);
-  await dragSwitch('#language-switch', 0, 1);
+  await dragSwitch('#language-switch', 1, 2, { count: 7 });
   assert.equal(await page.locator('html').getAttribute('lang'), 'zh-CN');
-  await dragSwitch('#language-switch', 1, 0);
+  await dragSwitch('#language-switch', 2, 4, { count: 7 });
+  assert.equal(await page.locator('html').getAttribute('lang'), 'ja');
+  await dragSwitch('#language-switch', 4, 0, { count: 7 });
+  assert.equal(await page.evaluate(() => fixture.state.settings.language), 'auto');
+  await dragSwitch('#language-switch', 0, 1, { count: 7 });
   assert.equal(await page.locator('html').getAttribute('lang'), 'en');
   assert.equal(await page.evaluate(() => fixture.state.settings.language), 'en');
   geometryMeasurements.push(await auditControlGeometry(page));
@@ -400,9 +404,14 @@ try {
     const handle = row(from).locator('.connection-name');
     await handle.scrollIntoViewIfNeeded();
     const start = await handle.boundingBox(), end = await row(target).boundingBox();
+    const isList = await page.evaluate(() => document.querySelector('#connections-list').dataset.view === 'list');
     await page.mouse.move(start.x + start.width / 2, start.y + start.height / 2);
     await page.mouse.down();
-    await page.mouse.move(after ? end.x + end.width * .8 : end.x + end.width * .2, end.y + end.height / 2, { steps: 8 });
+    await page.mouse.move(
+      isList ? end.x + end.width / 2 : (after ? end.x + end.width * .8 : end.x + end.width * .2),
+      isList ? (after ? end.y + end.height * .8 : end.y + end.height * .2) : end.y + end.height / 2,
+      { steps: 8 }
+    );
     if (release) await page.mouse.up();
   };
   await page.evaluate(() => {
@@ -452,6 +461,10 @@ try {
     await refresh();
     document.querySelector('#connections-list').scrollTop = 0;
   });
+  // Switch to card grid view to verify 4-column x 3-row viewport geometry and 4-column ArrowDown step.
+  assert.equal(await page.evaluate(() => document.querySelector('#connections-list').dataset.view), 'list', 'Default vault view is single-row list');
+  await page.locator('#vault-view-toggle').click();
+  assert.equal(await page.evaluate(() => document.querySelector('#connections-list').dataset.view), 'grid', 'Clicking toggle switches to 4-column card grid');
   const grid = await page.evaluate(() => {
     const list = document.querySelector('#connections-list'), bounds = list.getBoundingClientRect();
     const cards = [...list.querySelectorAll('.connection-card')].map(card => card.getBoundingClientRect());

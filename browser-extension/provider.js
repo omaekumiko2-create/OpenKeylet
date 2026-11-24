@@ -3,6 +3,141 @@ const bridgeRequests = new Map();
 const credentialRequests = new Map();
 const preparingCredentials = new Map();
 const agentPasskeyWaiters = [];
+const quickCaptures = new Map();
+const QUICK_CAPTURE_TTL = 5 * 60 * 1000;
+
+function clearQuickCapture(id) {
+  const draft = quickCaptures.get(id);
+  if (!draft) return;
+  clearTimeout(draft.timer);
+  quickCaptures.delete(id);
+}
+
+function clearQuickCaptures() {
+  for (const id of [...quickCaptures.keys()]) clearQuickCapture(id);
+}
+
+function createQuickCapture({ tabId, origin, text, source = "selection" }) {
+  while (quickCaptures.size >= 10) clearQuickCapture(quickCaptures.keys().next().value);
+  const id = crypto.randomUUID();
+  const draft = { id, tabId, origin, text, source, expiresAt: Date.now() + QUICK_CAPTURE_TTL };
+  draft.timer = setTimeout(() => clearQuickCapture(id), QUICK_CAPTURE_TTL);
+  quickCaptures.set(id, draft);
+  return draft;
+}
+
+function getQuickCapture(id) {
+  const draft = quickCaptures.get(id);
+  if (!draft) return null;
+  if (draft.expiresAt <= Date.now()) { clearQuickCapture(id); return null; }
+  return draft;
+}
+
+async function scanQrOnTab(tabId, targetSrcUrl = "") {
+  const [execution] = await chrome.scripting.executeScript({
+    target: { tabId, frameIds: [0] },
+    func: async (srcFilter) => {
+      if (typeof BarcodeDetector !== "function") {
+        return { error: "当前浏览器不支持二维码扫描 / BarcodeDetector unavailable" };
+      }
+      const detector = new BarcodeDetector({ formats: ["qr_code"] });
+      const candidates = [];
+      const imgs = [...document.querySelectorAll("img")].filter((el) => el.complete && el.naturalWidth > 20 && el.naturalHeight > 20);
+      if (srcFilter) {
+        const exact = imgs.find((el) => el.currentSrc === srcFilter || el.src === srcFilter);
+        if (exact) candidates.push(exact);
+      }
+      for (const el of imgs) {
+        if (!candidates.includes(el) && el.getClientRects().length) candidates.push(el);
+      }
+      for (const canvas of document.querySelectorAll("canvas")) {
+        if (canvas.width > 20 && canvas.height > 20 && canvas.getClientRects().length) candidates.push(canvas);
+      }
+      const svgs = [...document.querySelectorAll("svg")].filter((el) => {
+        const r = el.getBoundingClientRect();
+        return r.width >= 48 && r.height >= 48 && r.width <= 800 && r.height <= 800;
+      });
+      const found = [];
+      for (const el of candidates.slice(0, 24)) {
+        try {
+          const codes = await detector.detect(el);
+          for (const c of codes) if (c?.rawValue) found.push(String(c.rawValue).trim());
+        } catch {
+          // Cross-origin tainted images are skipped safely.
+        }
+      }
+      if (!found.some((v) => v.toLowerCase().startsWith("otpauth://"))) {
+        for (const svg of svgs.slice(0, 12)) {
+          try {
+            const xml = new XMLSerializer().serializeToString(svg);
+            const url = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(xml)}`;
+            const img = new Image();
+            await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = url; });
+            const codes = await detector.detect(img);
+            for (const c of codes) if (c?.rawValue) found.push(String(c.rawValue).trim());
+          } catch {}
+        }
+      }
+      if (!found.length) return { error: "未在当前网页检测到可读的 2FA 二维码 / No readable QR code found on this page" };
+      const totp = found.find((v) => v.toLowerCase().startsWith("otpauth://"));
+      return { value: totp || found[0] };
+    },
+    args: [targetSrcUrl || ""],
+  });
+  const res = execution?.result;
+  if (!res || res.error) throw new Error(res?.error || "扫描二维码失败 / Could not scan QR code");
+  return res.value;
+}
+
+function registerContextMenus() {
+  if (!chrome.contextMenus) return;
+  chrome.contextMenus.removeAll(() => {
+    chrome.contextMenus.create({
+      id: "openkeylet-save-selection",
+      title: "存到 OpenKeylet / Save to OpenKeylet",
+      contexts: ["selection"],
+    });
+    chrome.contextMenus.create({
+      id: "openkeylet-scan-qr-image",
+      title: "扫描 2FA 二维码到 OpenKeylet / Scan 2FA QR",
+      contexts: ["image"],
+    });
+  });
+}
+
+if (chrome.contextMenus) {
+  chrome.runtime.onInstalled.addListener(registerContextMenus);
+  chrome.runtime.onStartup.addListener(registerContextMenus);
+  registerContextMenus();
+  chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+    if (!tab?.id || !/^https?:\/\//.test(tab.url || "")) return;
+    const origin = new URL(tab.url).origin;
+    if (info.menuItemId === "openkeylet-save-selection") {
+      const text = String(info.selectionText || "").trim();
+      if (!text || text.length > 65536) return;
+      const draft = createQuickCapture({ tabId: tab.id, origin, text, source: "selection" });
+      await chrome.windows.create({
+        url: chrome.runtime.getURL(`popup.html?quick=${draft.id}&tab=${tab.id}`),
+        type: "popup", width: 420, height: 640,
+      }).catch(() => {});
+    } else if (info.menuItemId === "openkeylet-scan-qr-image") {
+      try {
+        const value = await scanQrOnTab(tab.id, info.srcUrl || "");
+        const draft = createQuickCapture({ tabId: tab.id, origin, text: value, source: "qr" });
+        await chrome.windows.create({
+          url: chrome.runtime.getURL(`popup.html?quick=${draft.id}&tab=${tab.id}`),
+          type: "popup", width: 420, height: 640,
+        }).catch(() => {});
+      } catch {
+        // Fallback: open popup anyway so user can see status or paste setup key.
+        await chrome.windows.create({
+          url: chrome.runtime.getURL(`popup.html?tab=${tab.id}`),
+          type: "popup", width: 420, height: 640,
+        }).catch(() => {});
+      }
+    }
+  });
+}
 function bridgeCall(method, params = {}) {
   if (socket?.readyState !== WebSocket.OPEN) return Promise.reject(new Error("Open OpenKeylet and connect Browser Bridge first"));
   if (bridgeRequests.size >= 32) return Promise.reject(new Error("Too many pending requests"));
@@ -21,6 +156,7 @@ function finishBridgeRequest(message) {
 }
 function failBridgeRequests() {
   clearLoginCaptures();
+  clearQuickCaptures();
   for (const p of bridgeRequests.values()) { clearTimeout(p.timer); p.reject(new Error("OpenKeylet disconnected")); }
   bridgeRequests.clear();
   preparingCredentials.clear();
@@ -70,17 +206,57 @@ async function popupAction(message) {
   if (Object.hasOwn(vaultMethods,message.action)) return bridgeCall(vaultMethods[message.action], {
     id:message.id, input:message.input, expectedUpdatedAt:message.expectedUpdatedAt, deletedAt:message.deletedAt });
   if (message.action === "unlock") return bridgeCall("unlock", { pin: message.pin });
-  if (message.action === "lock") { clearLoginCaptures(); return bridgeCall("lock"); }
+  if (message.action === "lock") { clearLoginCaptures(); clearQuickCaptures(); return bridgeCall("lock"); }
   if (message.action === "generate") return bridgeCall("password.generate", message.options);
+  if (message.action === "quick-capture-read") {
+    const draft = getQuickCapture(message.quickId);
+    if (!draft) throw new Error("待保存信息已过期 / Quick-save draft expired");
+    return { id: draft.id, origin: draft.origin, text: draft.text, source: draft.source };
+  }
+  if (message.action === "quick-capture-dismiss") {
+    if (message.quickId) clearQuickCapture(message.quickId);
+    return {};
+  }
+  if (message.action === "quick-parse") {
+    return bridgeCall("quick.parse", { text: message.text, origin: message.origin || "" });
+  }
+  if (message.action === "quick-save") {
+    const saved = await bridgeCall("quick.save", { input: message.input });
+    if (message.quickId) clearQuickCapture(message.quickId);
+    return saved;
+  }
+  if (message.action === "attach-totp") {
+    const saved = await bridgeCall("password.attachTotp", {
+      origin: message.origin,
+      id: message.id || null,
+      expectedUpdatedAt: message.expectedUpdatedAt,
+      name: message.name,
+      username: message.username,
+      totp: message.totp,
+    });
+    if (message.quickId) clearQuickCapture(message.quickId);
+    return saved;
+  }
+  if (message.action === "scan-page-qr") {
+    const page = await activePage();
+    const value = await scanQrOnTab(page.tab.id);
+    const parsed = await bridgeCall("quick.parse", { text: value, origin: page.origin });
+    return { text: value, parsed, origin: page.origin };
+  }
   if (message.action === "list") {
     const status = await bridgeCall("status");
     const captured = message.captureId ? await captureForUi(message).catch(() => null) : null;
-    const page = captured ? { tab: await chrome.tabs.get(captured.tabId), origin: captured.origin } : await activePage(false);
-    const target = page && !status.locked ? await loginPage(page.tab, page.origin).catch(()=>null) : null;
-    return { ...status, pageAvailable: Boolean(page), origin: page?.origin || "",
-      capture: captureSummary(captured || (page && getLoginCapture(page.tab.id))),
+    const quick = message.quickId ? getQuickCapture(message.quickId) : null;
+    const page = captured ? { tab: await chrome.tabs.get(captured.tabId), origin: captured.origin }
+      : quick ? { tab: await chrome.tabs.get(quick.tabId).catch(() => null), origin: quick.origin }
+      : await activePage(false);
+    const target = page?.tab && !status.locked ? await loginPage(page.tab, page.origin).catch(()=>null) : null;
+    const listOrigin = captured?.url || target?.url || quick?.origin || "";
+    return { ...status, pageAvailable: Boolean(page?.origin), origin: page?.origin || "",
+      capture: captureSummary(captured || (page?.tab && getLoginCapture(page.tab.id))),
       captureExpired: Boolean(message.captureId && !captured),
-      entries: status.locked || (!target && !captured) ? [] : await bridgeCall("password.list", { origin: captured?.url || target.url }),
+      quickExpired: Boolean(message.quickId && !quick),
+      entries: status.locked || !listOrigin ? [] : await bridgeCall("password.list", { origin: listOrigin }),
       personal: status.locked ? [] : await bridgeCall("personal.list"),
       vault: status.locked ? null : await bridgeCall("vault.list") };
   }
@@ -118,7 +294,7 @@ async function popupAction(message) {
   if (message.action === "read-form") return formAction(tab, origin, "read");
   if (message.action === "save") {
     const target = await loginPage(tab, origin);
-    if (message.sourceUrl !== target.url || message.sourceTabId !== tab.id)
+    if (!message.generatedDirect && (message.sourceUrl !== target.url || message.sourceTabId !== tab.id))
       throw new Error("网页已经变化，请重新读取 / The page changed; read the form again");
     return bridgeCall("password.save", { origin: target.url, id: message.id || null, expectedUpdatedAt: message.expectedUpdatedAt,
       name: message.name, username: message.username, password: message.password });
@@ -466,7 +642,10 @@ function cancelTabCredentials(tabId) {
   for (const key of preparingCredentials.keys()) if (key.startsWith(`${tabId}:`)) preparingCredentials.delete(key);
   for (const [id,p] of credentialRequests) if (p.tabId === tabId) finishCredentialRequest(id, { error: "Website closed or navigated", name: "NotAllowedError" });
 }
-chrome.tabs.onRemoved.addListener(cancelTabCredentials);
+chrome.tabs.onRemoved.addListener(tabId => {
+  cancelTabCredentials(tabId);
+  for (const [id, draft] of quickCaptures) if (draft.tabId === tabId) clearQuickCapture(id);
+});
 chrome.tabs.onUpdated.addListener((tabId, change) => { if (change.status === "loading") cancelTabCredentials(tabId); });
 chrome.runtime.onMessage.addListener((message, sender, respond) => {
   let work;

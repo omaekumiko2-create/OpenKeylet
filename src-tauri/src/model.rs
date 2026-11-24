@@ -30,6 +30,9 @@ pub struct Settings {
     pub browser_paired: bool,
     pub browser_agent_passkey: bool,
     pub owner_auto_lock_minutes: u32,
+    pub update_auto_check: bool,
+    pub update_auto_download: bool,
+    pub update_skipped_version: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -41,18 +44,24 @@ pub struct SettingsPatch {
     pub browser_port: Option<u16>,
     pub browser_agent_passkey: Option<bool>,
     pub owner_auto_lock_minutes: Option<u32>,
+    pub update_auto_check: Option<bool>,
+    pub update_auto_download: Option<bool>,
+    pub update_skipped_version: Option<String>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            language: "en".to_owned(),
+            language: "auto".to_owned(),
             close_behavior: "tray".to_owned(),
             browser_enabled: false,
             browser_port: 39_272,
             browser_paired: false,
             browser_agent_passkey: true,
             owner_auto_lock_minutes: 0,
+            update_auto_check: true,
+            update_auto_download: true,
+            update_skipped_version: String::new(),
         }
     }
 }
@@ -67,10 +76,13 @@ mod settings_tests {
             r#"{"httpEnabled":false,"httpPort":39271,"browserEnabled":false,"browserPort":39272,"browserPaired":false}"#,
         )
         .unwrap();
-        assert_eq!(settings.language, "en");
+        assert_eq!(settings.language, "auto");
         assert_eq!(settings.close_behavior, "tray");
         assert!(settings.browser_agent_passkey);
         assert_eq!(settings.owner_auto_lock_minutes, 0);
+        assert!(settings.update_auto_check);
+        assert!(settings.update_auto_download);
+        assert!(settings.update_skipped_version.is_empty());
     }
 }
 
@@ -785,6 +797,8 @@ pub struct OwnerLockState {
     pub pin_configured: bool,
     pub unlocked: bool,
     pub expires_in_seconds: u64,
+    pub strong_mode: bool,
+    pub mode: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -801,6 +815,7 @@ pub struct McpState {
 pub struct SecurityState {
     pub encrypted: bool,
     pub storage: String,
+    pub strong_mode: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -809,6 +824,8 @@ pub struct BrowserBridgeState {
     pub enabled: bool,
     pub paired: bool,
     pub connected: bool,
+    pub connected_count: usize,
+    pub pairing_active: bool,
     pub status: String,
     pub error: String,
     pub endpoint: String,

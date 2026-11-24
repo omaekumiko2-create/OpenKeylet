@@ -168,6 +168,7 @@ fn input(key: &str, mode: &str) -> ConnectInput {
         auto_sync: false,
         provider: String::new(),
         server_url: String::new(),
+        master_passphrase: String::new(),
     }
 }
 
@@ -180,6 +181,8 @@ async fn account_check_and_private_repository_creation_do_not_upload_secrets() {
         .account(AuthInput {
             auth_source: "token".into(),
             token: "test-token".into(),
+            provider: String::new(),
+            server_url: String::new(),
         })
         .await
         .unwrap();
@@ -835,7 +838,20 @@ async fn gitea_full_http_e2e_post_create_put_update_token_auth_and_public_reject
         auto_sync: true,
         provider: "gitea".into(),
         server_url: server_url.clone(),
+        master_passphrase: String::new(),
     };
+
+    // Verify Gitea account pre-check via /api/v1/user
+    let acct = dev_a
+        .account(AuthInput {
+            auth_source: "token".into(),
+            token: "gitea-secret-tok".into(),
+            provider: "gitea".into(),
+            server_url: server_url.clone(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(acct.login, "alice");
 
     // Reject public Gitea repository
     state.lock().unwrap().public = true;
@@ -874,8 +890,11 @@ async fn gitea_full_http_e2e_post_create_put_update_token_auth_and_public_reject
         auth_prefix: String::new(), api_auth_headers: vec![], test_path: String::new(),
         remove_secret_names: vec![], secrets: s2,
     }).unwrap();
+    assert!(dev_b.status().unwrap().pending_sync, "Local edit must mark status.pending_sync = true");
     let b_push = dev_b.sync().await.unwrap();
     assert_eq!(b_push.action, "pushed");
+    assert!(!b_push.status.pending_sync, "Successful sync clears pending_sync");
+    assert!(!dev_b.status().unwrap().pending_sync);
     assert_eq!(state.lock().unwrap().post_creates, 1);
     assert_eq!(state.lock().unwrap().put_updates, 1);
     assert!(state.lock().unwrap().auth_headers.iter().all(|h| h == "token gitea-secret-tok"));
@@ -933,4 +952,449 @@ async fn sync_recovers_from_409_conflict_storm_and_rejects_tampered_ciphertext()
     }
     assert!(dev_b.sync().await.is_err());
     assert_eq!(dev_b.vault.list_connections().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn discovers_private_openkeylet_repos_and_never_surfaces_public_repos() {
+    let valid_envelope = serde_json::to_vec(&json!({
+        "format": CLOUD_FORMAT,
+        "version": 1,
+        "cipher": "xchacha20poly1305",
+        "payload": { "version": 1, "nonce": "AAAA", "ciphertext": "BBBB" }
+    }))
+    .unwrap();
+    let envelope_b64 = STANDARD.encode(&valid_envelope);
+    let envelope_size = valid_envelope.len();
+    let envelope_sha = blob_sha(&valid_envelope);
+
+    let router = Router::new().fallback(move |method: Method, uri: Uri| {
+        let envelope_b64 = envelope_b64.clone();
+        let envelope_sha = envelope_sha.clone();
+        async move {
+            if method == Method::GET && uri.path() == "/user" {
+                return Json(json!({ "login": "alice" })).into_response();
+            }
+            if method == Method::GET && uri.path() == "/user/repos" {
+                return Json(json!([
+                    {
+                        "name": "openkeylet-public-decoy",
+                        "full_name": "alice/openkeylet-public-decoy",
+                        "owner": { "login": "alice" },
+                        "private": false,
+                        "archived": false,
+                        "disabled": false,
+                        "default_branch": "main",
+                        "topics": ["openkeylet-vault"],
+                        "updated_at": "2026-11-24T12:00:00Z"
+                    },
+                    {
+                        "name": "my-secret-safe",
+                        "full_name": "alice/my-secret-safe",
+                        "owner": { "login": "alice" },
+                        "private": true,
+                        "archived": false,
+                        "disabled": false,
+                        "default_branch": "main",
+                        "topics": [],
+                        "updated_at": "2026-11-24T11:00:00Z"
+                    },
+                    {
+                        "name": "openkeylet-vault",
+                        "full_name": "alice/openkeylet-vault",
+                        "owner": { "login": "alice" },
+                        "private": true,
+                        "archived": false,
+                        "disabled": false,
+                        "default_branch": "main",
+                        "topics": ["openkeylet-vault"],
+                        "updated_at": "2026-11-24T10:00:00Z"
+                    },
+                    {
+                        "name": "unrelated-private-notes",
+                        "full_name": "alice/unrelated-private-notes",
+                        "owner": { "login": "alice" },
+                        "private": true,
+                        "archived": false,
+                        "disabled": false,
+                        "default_branch": "main",
+                        "topics": [],
+                        "updated_at": "2026-11-24T09:00:00Z"
+                    }
+                ]))
+                .into_response();
+            }
+            if method == Method::GET
+                && uri.path() == format!("/repos/alice/my-secret-safe/contents/{CLOUD_FILE}")
+            {
+                return Json(json!({
+                    "type": "file",
+                    "sha": envelope_sha,
+                    "size": envelope_size,
+                    "encoding": "base64",
+                    "content": envelope_b64
+                }))
+                .into_response();
+            }
+            StatusCode::NOT_FOUND.into_response()
+        }
+    });
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+
+    let dir = tempfile::tempdir().unwrap();
+    let vault = Vault::open(dir.path().join("vault")).unwrap();
+    let mut manager = GithubBackup::new(vault).unwrap();
+    manager.api_base = base;
+
+    let account = manager
+        .account(AuthInput {
+            auth_source: "token".into(),
+            token: "test-token".into(),
+            provider: "github".into(),
+            server_url: String::new(),
+        })
+        .await
+        .unwrap();
+    server.abort();
+
+    assert_eq!(account.login, "alice");
+    // Public decoy MUST be excluded; renamed private repo with vault file comes first, then topic-tagged private repo.
+    assert_eq!(account.discovered_repos.len(), 2);
+    assert!(account.discovered_repos.iter().all(|r| r.private));
+    assert_eq!(account.discovered_repos[0].full_name, "alice/my-secret-safe");
+    assert!(account.discovered_repos[0].has_vault_file);
+    assert_eq!(account.discovered_repos[1].full_name, "alice/openkeylet-vault");
+    assert!(account.discovered_repos[1].has_topic);
+}
+
+#[tokio::test]
+async fn coupled_strong_mode_wipes_local_key_on_bind_and_reverts_on_disconnect() {
+    let mock = MockGithub::start().await;
+    let (dir, manager) = mock.manager();
+    let vault_dir = dir.path().join("vault");
+    assert!(vault_dir.join("master.key").is_file());
+    assert!(!vault_dir.join(crate::crypto::STRONG_KEY_FILE).exists());
+
+    // Save a secret before binding.
+    let item: ConnectionInput = serde_json::from_value(json!({
+        "name": "Prod SSH",
+        "modules": [{ "kind": "password" }],
+        "secrets": { "password": "top-secret-before-bind" }
+    }))
+    .unwrap();
+    manager.vault.save_connection(item).unwrap();
+
+    // Bind GitHub with a strong master passphrase -> enables Strong Cloud Vault mode together.
+    let key = generate_recovery_key().unwrap();
+    let mut cfg = input(&key, "new");
+    cfg.master_passphrase = "My-Super-Strong-Passphrase-2026!".to_owned();
+    let status = manager.connect(cfg).await.unwrap();
+    assert!(status.connected);
+    assert!(status.strong_mode);
+
+    // Local master.key MUST be completely wiped from disk; strong-key.json MUST exist.
+    assert!(!vault_dir.join("master.key").exists());
+    assert!(vault_dir.join(crate::crypto::STRONG_KEY_FILE).is_file());
+    manager.upload().await.unwrap();
+
+    // Reopening from disk starts LOCKED (zero plaintext secrets or GitHub config readable).
+    let reopened = Vault::open(vault_dir.clone()).unwrap();
+    assert!(reopened.is_strong_mode());
+    assert!(!reopened.is_strong_unlocked());
+    assert!(reopened.list_decrypted_connections().is_err());
+
+    // Wrong passphrase fails; correct master passphrase unlocks RAM key.
+    assert!(reopened.unlock_strong("wrong-passphrase-12345").is_err());
+    reopened
+        .unlock_strong("My-Super-Strong-Passphrase-2026!")
+        .unwrap();
+    assert!(reopened.is_strong_unlocked());
+    let items = reopened.list_decrypted_connections().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(
+        items[0].secrets.get("password"),
+        Some("top-secret-before-bind")
+    );
+
+    // Lock -> wipe RAM key -> unlock via okv1_ recovery key slot works too!
+    reopened.lock_strong();
+    assert!(!reopened.is_strong_unlocked());
+    reopened.unlock_strong(&key).unwrap();
+    assert_eq!(reopened.list_decrypted_connections().unwrap().len(), 1);
+
+    // Disconnecting GitHub atomically reverts local vault back to local-only mode!
+    let mut reopened_manager = GithubBackup::new(reopened.clone()).unwrap();
+    reopened_manager.api_base = mock.base.clone();
+    let disconnected = reopened_manager.disconnect().unwrap();
+    assert!(!disconnected.connected);
+    assert!(!disconnected.strong_mode);
+    assert!(!reopened.is_strong_mode());
+    assert!(vault_dir.join("master.key").is_file());
+    assert!(!vault_dir.join(crate::crypto::STRONG_KEY_FILE).exists());
+
+    // Reopening after disconnect works directly in local-only mode with all secrets intact.
+    let final_vault = Vault::open(vault_dir).unwrap();
+    assert!(!final_vault.is_strong_mode());
+    let final_items = final_vault.list_decrypted_connections().unwrap();
+    assert_eq!(
+        final_items[0].secrets.get("password"),
+        Some("top-secret-before-bind")
+    );
+}
+
+#[tokio::test]
+#[ignore = "Live end-to-end test against authenticated real GitHub account via gh CLI"]
+async fn live_github_private_vault_discovery_sync_strong_mode_e2e() {
+    use crate::session_broker::SessionBroker;
+
+    let dir_a = tempfile::tempdir().unwrap();
+    let dir_b = tempfile::tempdir().unwrap();
+    let vault_a_dir = dir_a.path().join("vault-a");
+    let vault_b_dir = dir_b.path().join("vault-b");
+
+    let vault_a = Vault::open(vault_a_dir.clone()).unwrap();
+    let dev_a = GithubBackup::new(vault_a.clone()).unwrap();
+
+    // 1. Authenticate via real local `gh` CLI and verify no public repos leak into discovery.
+    let acct_a = dev_a
+        .account(AuthInput {
+            auth_source: "cli".into(),
+            token: String::new(),
+            provider: "github".into(),
+            server_url: String::new(),
+        })
+        .await
+        .expect("gh CLI login must succeed");
+    println!("[LIVE] Authenticated GitHub account: {}", acct_a.login);
+    assert!(acct_a.discovered_repos.iter().all(|r| r.private));
+
+    let repo_full = format!("{}/openkeylet-vault", acct_a.login);
+    let already_exists = acct_a
+        .discovered_repos
+        .iter()
+        .any(|r| r.full_name.eq_ignore_ascii_case(&repo_full));
+
+    // Seed synthetic items on Device A before binding.
+    let ssh_item: ConnectionInput = serde_json::from_value(json!({
+        "name": "Live-Test-SSH",
+        "itemType": "ssh",
+        "modules": [
+            { "kind": "host", "value": "10.0.0.42" },
+            { "kind": "username", "value": "deploy" },
+            { "kind": "password" }
+        ],
+        "secrets": { "password": "live-ssh-pass-999-SECRET" }
+    }))
+    .unwrap();
+    let api_item: ConnectionInput = serde_json::from_value(json!({
+        "name": "Live-Test-API",
+        "itemType": "api",
+        "modules": [
+            { "kind": "url", "value": "https://api.example.invalid" },
+            { "kind": "apiCredential" }
+        ],
+        "secrets": { "apiKey": "live-api-token-888-SECRET" }
+    }))
+    .unwrap();
+    let saved_ssh = vault_a.save_connection(ssh_item).unwrap();
+    let saved_api = vault_a.save_connection(api_item).unwrap();
+
+    // 2. Bind Device A -> create private repo (if new) + enable coupled Strong Cloud Vault mode!
+    let recovery_key = generate_recovery_key().unwrap();
+    let pass_a = "Live-Strong-Passphrase-A-2026!";
+    let connect_status = dev_a
+        .connect(ConnectInput {
+            repository: repo_full.clone(),
+            token: String::new(),
+            recovery_key: recovery_key.clone(),
+            mode: "new".into(),
+            recovery_key_saved: true,
+            auth_source: "cli".into(),
+            create_repository: !already_exists,
+            auto_sync: true,
+            provider: "github".into(),
+            server_url: String::new(),
+            master_passphrase: pass_a.into(),
+        })
+        .await
+        .expect("connecting & creating private openkeylet-vault must succeed");
+    assert!(connect_status.connected);
+    assert!(connect_status.strong_mode);
+    assert!(!vault_a_dir.join("master.key").exists(), "master.key MUST be wiped");
+    assert!(vault_a_dir.join(crate::crypto::STRONG_KEY_FILE).is_file());
+    println!("[LIVE] Bound {repo_full} in Strong Cloud Vault mode (master.key wiped).");
+
+    // 3. Push encrypted snapshot to GitHub.
+    let push_res = dev_a.sync().await.expect("initial push must succeed");
+    assert_eq!(push_res.action, "pushed");
+    println!("[LIVE] Pushed encrypted snapshot to {repo_full}.");
+
+    // 4. Independently inspect raw GitHub remote file & verify zero plaintext + private=true.
+    let token = auth::token("cli", "").await.unwrap();
+    let repo_info = dev_a
+        .repository(&acct_a.login, "openkeylet-vault", &token, "github", "")
+        .await
+        .expect("repo must be private and readable");
+    assert!(repo_info.private, "Repository MUST be private");
+    let config_a = dev_a.connected().unwrap();
+    let remote = dev_a
+        .remote_file(&config_a)
+        .await
+        .unwrap()
+        .expect("openkeylet.vault.json must exist on GitHub");
+    let remote_text = String::from_utf8_lossy(&remote.bytes);
+    assert!(remote_text.contains(CLOUD_FORMAT));
+    assert!(!remote_text.contains("Live-Test-SSH"));
+    assert!(!remote_text.contains("live-ssh-pass-999-SECRET"));
+    assert!(!remote_text.contains("live-api-token-888-SECRET"));
+    assert!(!remote_text.contains("okv1_"));
+    println!(
+        "[LIVE] Verified remote file is {} bytes of pure XChaCha20-Poly1305 ciphertext (zero plaintext).",
+        remote.bytes.len()
+    );
+
+    // 5. Device B (brand-new machine) auto-discovers private openkeylet-vault with ZERO manual input!
+    let vault_b = Vault::open(vault_b_dir.clone()).unwrap();
+    let dev_b = GithubBackup::new(vault_b.clone()).unwrap();
+    let acct_b = dev_b
+        .account(AuthInput {
+            auth_source: "cli".into(),
+            token: String::new(),
+            provider: "github".into(),
+            server_url: String::new(),
+        })
+        .await
+        .expect("Device B gh login must succeed");
+    let found = acct_b
+        .discovered_repos
+        .iter()
+        .find(|r| r.full_name.eq_ignore_ascii_case(&repo_full))
+        .expect("Device B MUST auto-discover private openkeylet-vault");
+    assert!(found.private);
+    assert!(found.has_vault_file);
+    println!(
+        "[LIVE] Device B auto-discovered {} (private={}, has_vault_file={}, has_topic={})",
+        found.full_name, found.private, found.has_vault_file, found.has_topic
+    );
+
+    // 6. Device B connects using discovered repo + okv1_ recovery key + its own master passphrase, then syncs!
+    let pass_b = "Live-Strong-Passphrase-B-2026!";
+    dev_b
+        .connect(ConnectInput {
+            repository: found.full_name.clone(),
+            token: String::new(),
+            recovery_key: recovery_key.clone(),
+            mode: "existing".into(),
+            recovery_key_saved: true,
+            auth_source: "cli".into(),
+            create_repository: false,
+            auto_sync: true,
+            provider: "github".into(),
+            server_url: String::new(),
+            master_passphrase: pass_b.into(),
+        })
+        .await
+        .expect("Device B connect existing must succeed");
+    let b_sync = dev_b.sync().await.expect("Device B initial pull must succeed");
+    assert_eq!(b_sync.action, "pulled");
+    assert_eq!(b_sync.merge.added, 2);
+    let b_ssh = vault_b.get_connection(saved_ssh.id).unwrap();
+    assert_eq!(b_ssh.secrets.get("password"), Some("live-ssh-pass-999-SECRET"));
+    println!("[LIVE] Device B synced & decrypted all items from GitHub.");
+
+    // 7. Device B adds a new item, updates API item, deletes SSH item -> pushes -> Device A pulls!
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    let login_item: ConnectionInput = serde_json::from_value(json!({
+        "name": "Live-Test-Login",
+        "itemType": "login",
+        "modules": [{ "kind": "username", "value": "akko" }, { "kind": "password" }],
+        "secrets": { "password": "live-login-pass-777-SECRET" }
+    }))
+    .unwrap();
+    vault_b.save_connection(login_item).unwrap();
+    let updated_api: ConnectionInput = serde_json::from_value(json!({
+        "id": saved_api.id,
+        "name": "Live-Test-API",
+        "itemType": "api",
+        "modules": [
+            { "kind": "url", "value": "https://api.example.invalid" },
+            { "kind": "apiCredential" }
+        ],
+        "secrets": { "apiKey": "live-api-token-ROTATED" }
+    }))
+    .unwrap();
+    vault_b.save_connection(updated_api).unwrap();
+    vault_b.delete_connection(saved_ssh.id).unwrap();
+    let b_push = dev_b.sync().await.expect("Device B push edits must succeed");
+    assert_eq!(b_push.action, "pushed");
+
+    let a_pull = dev_a.sync().await.expect("Device A pull edits must succeed");
+    assert_eq!(a_pull.action, "pulled");
+    assert_eq!(
+        vault_a.get_connection(saved_api.id).unwrap().secrets.get("apiKey"),
+        Some("live-api-token-ROTATED")
+    );
+    assert!(vault_a.get_connection(saved_ssh.id).is_err(), "Deleted item must move to trash on Device A");
+    assert!(vault_a.list_connections().unwrap().iter().any(|c| c.name == "Live-Test-Login"));
+    println!("[LIVE] Bidirectional add + update + delete sync verified across Device A & B.");
+
+    // 8. Verify cold-start Strong Vault lock, passphrase/recovery unlock, and MCP SessionBroker!
+    let reopened_a = Vault::open(vault_a_dir.clone()).unwrap();
+    assert!(reopened_a.is_strong_mode());
+    assert!(!reopened_a.is_strong_unlocked());
+    assert!(reopened_a.list_decrypted_connections().is_err());
+
+    let mcp_child = Vault::open(vault_a_dir.clone()).unwrap();
+    assert!(mcp_child.list_decrypted_connections().is_err());
+
+    reopened_a.unlock_strong(pass_a).unwrap();
+    let broker = SessionBroker::new(vault_a_dir.clone());
+    broker.start(reopened_a.clone()).unwrap();
+    assert_eq!(mcp_child.list_decrypted_connections().unwrap().len(), 2);
+
+    reopened_a.lock_strong();
+    broker.stop();
+    assert!(mcp_child.list_decrypted_connections().is_err(), "MCP child MUST lose access immediately on lock");
+
+    // Unlock via okv1_ recovery slot and verify disconnect reverts cleanly to local mode!
+    reopened_a.unlock_strong(&recovery_key).unwrap();
+    let reopened_dev_a = GithubBackup::new(reopened_a.clone()).unwrap();
+    let disc = reopened_dev_a.disconnect().unwrap();
+    assert!(!disc.connected);
+    assert!(!disc.strong_mode);
+    assert!(vault_a_dir.join("master.key").is_file());
+    assert!(!vault_a_dir.join(crate::crypto::STRONG_KEY_FILE).exists());
+    println!("[LIVE] Strong lock/unlock, MCP SessionBroker revocation, okv1_ recovery & disconnect revert verified.");
+
+    // 9. Clean synthetic test openkeylet.vault.json from GitHub so user starts with a spotless private repo!
+    let latest_remote = dev_b
+        .remote_file(&dev_b.connected().unwrap())
+        .await
+        .unwrap()
+        .expect("latest remote file must exist");
+    let del_resp = dev_b
+        .request_for(
+            Method::DELETE,
+            &acct_a.login,
+            "openkeylet-vault",
+            &["contents", CLOUD_FILE],
+            &token,
+            "github",
+            "",
+        )
+        .unwrap()
+        .json(&json!({
+            "message": "Clean up live E2E test fixture",
+            "sha": latest_remote.sha,
+            "branch": repo_info.default_branch
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(del_resp.status().is_success(), "Cleaning synthetic test file must succeed");
+    println!("[LIVE] Cleaned synthetic test snapshot; {repo_full} is private, tagged, and ready for production use!");
 }

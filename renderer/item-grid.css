@@ -1,17 +1,17 @@
 /* Modern minimalist 4-column portrait item cards (3 complete rows fit in viewport). */
 .connections-grid {
-  --item-gap: 7px;
+  --item-gap: 8px;
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   grid-auto-rows: max-content;
   align-content: start;
   gap: var(--item-gap);
-  padding: 2px 4px 4px;
+  padding: 0;
   min-width: 0;
   background: transparent;
 }
 
-.connections-grid:has(> .empty-state) { display: flex; }
+.connections-grid:has(> .empty-state) { display: flex; min-height: 100%; }
 .connections-grid > .empty-state { width: 100%; }
 
 .connection-card {
@@ -45,7 +45,7 @@
   z-index: 3;
   top: 6px;
   bottom: 6px;
-  left: -4px;
+  left: 0;
   width: 2.5px;
   height: auto;
   right: auto;
@@ -58,7 +58,7 @@
 }
 .connections-grid.is-reordering > .connection-card.item-drop-after::before {
   left: auto;
-  right: -4px;
+  right: 0;
 }
 
 .connection-name {
@@ -250,6 +250,180 @@
   border-color: transparent;
 }
 .card-actions > :last-child:nth-child(odd) { grid-column: 1 / -1; }
+
+/* View mode toggle (List / Grid) in connections header */
+.view-mode-toggle {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-height, 32px);
+  height: var(--control-height, 32px);
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius);
+  background: var(--surface-1);
+  box-shadow: var(--shadow-track);
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 140ms ease, background-color 140ms ease, box-shadow 140ms ease;
+}
+.view-mode-toggle:hover {
+  color: var(--ink);
+  background: var(--surface-thumb);
+  box-shadow: var(--shadow-track), var(--shadow-thumb);
+}
+.view-mode-toggle svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.view-mode-toggle[data-view="list"] .view-icon-list { display: none; }
+.view-mode-toggle[data-view="grid"] .view-icon-grid { display: none; }
+
+/* Hide list-only subtitle in 4-column grid mode */
+.connections-grid[data-view="grid"] .connection-meta { display: none; }
+
+/* ===== Modern Single-Row List View (Default) ===== */
+.connections-grid[data-view="list"] {
+  --item-gap: 6px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--item-gap);
+  padding: 0;
+}
+
+.connections-grid[data-view="list"] > .connection-card {
+  display: grid;
+  grid-template-areas:
+    "type name toggle actions"
+    "type meta toggle actions";
+  grid-template-columns: 36px minmax(0, 1fr) 18px auto;
+  grid-template-rows: 20px 18px;
+  align-items: center;
+  column-gap: 9px;
+  row-gap: 1px;
+  height: auto;
+  min-height: 56px;
+  padding: 8px 9px;
+  border-radius: var(--radius-lg);
+}
+
+.connections-grid[data-view="list"] > .connection-card > .connection-type {
+  grid-area: type;
+  width: 36px;
+  height: 36px;
+  min-height: 36px;
+  padding: 0;
+  border-radius: var(--radius-sm);
+}
+.connections-grid[data-view="list"] > .connection-card > .connection-type svg {
+  width: 18px;
+  height: 18px;
+}
+.connections-grid[data-view="list"] > .connection-card > .connection-type small {
+  display: none;
+}
+
+.connections-grid[data-view="list"] > .connection-card > .connection-name {
+  grid-area: name;
+  height: 20px;
+  line-height: 20px;
+  padding: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.connections-grid[data-view="list"] > .connection-card > .connection-meta {
+  grid-area: meta;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 16px;
+  color: var(--muted);
+}
+.connections-grid[data-view="list"] .connection-sub {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.connections-grid[data-view="list"] .connection-badge {
+  flex: none;
+  padding: 0 4px;
+  border-radius: 3px;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-3);
+  color: var(--muted);
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 14px;
+  text-transform: uppercase;
+}
+
+.connections-grid[data-view="list"] > .connection-card > .item-toggle {
+  grid-area: toggle;
+  width: 18px;
+  height: 28px;
+  min-height: 28px;
+}
+
+.connections-grid[data-view="list"] > .connection-card > .card-actions {
+  grid-area: actions;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+  width: auto;
+  height: 28px;
+  padding: 0;
+  border-top: 0;
+}
+.connections-grid[data-view="list"] .card-actions .item-disclosure-well {
+  width: 26px;
+  height: 26px;
+  flex: none;
+}
+.connections-grid[data-view="list"] .card-actions .item-disclosure {
+  width: 26px;
+  height: 26px;
+}
+.connections-grid[data-view="list"] .card-actions .small-button,
+.connections-grid[data-view="list"] .card-actions .small-button[data-action="history"] {
+  flex: none;
+  height: 26px;
+  padding: 0 6px;
+  font-size: 9px;
+}
+.connections-grid[data-view="list"] .card-actions .small-button[data-action="test"]:disabled {
+  display: none;
+}
+.connections-grid[data-view="list"] .card-actions > :last-child:nth-child(odd) {
+  grid-column: auto;
+}
+
+/* Horizontal drop indicator for single-row list drag reorder */
+.connections-grid[data-view="list"].is-reordering > .connection-card:is(.item-drop-before, .item-drop-after)::before {
+  top: 0;
+  bottom: auto;
+  left: 6px;
+  right: 6px;
+  width: auto;
+  height: 2.5px;
+}
+.connections-grid[data-view="list"].is-reordering > .connection-card.item-drop-after::before {
+  top: auto;
+  bottom: 0;
+  left: 6px;
+  right: 6px;
+}
 
 /* Subtle modal entrance animation */
 @media (prefers-reduced-motion: no-preference) {

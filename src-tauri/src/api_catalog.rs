@@ -113,6 +113,182 @@ const PROFILES: &[ApiProfileEntry] = &[
             auth_prefix: "",
         },
     ),
+    (
+        &["api.deepseek.com"],
+        &["deepseek"],
+        &[],
+        ApiProfile {
+            display_name: "DeepSeek",
+            default_base_url: "https://api.deepseek.com/v1/",
+            ..UNKNOWN
+        },
+    ),
+    (
+        &["api.x.ai"],
+        &["xai", "grok"],
+        &["xai-"],
+        ApiProfile {
+            display_name: "xAI",
+            default_base_url: "https://api.x.ai/v1/",
+            ..UNKNOWN
+        },
+    ),
+    (
+        &["api-inference.huggingface.co", "huggingface.co"],
+        &["huggingface", "hugging face", "hf_token"],
+        &["hf_"],
+        ApiProfile {
+            display_name: "Hugging Face",
+            default_base_url: "https://huggingface.co/api/",
+            ..UNKNOWN
+        },
+    ),
+    (
+        &["api.resend.com"],
+        &["resend"],
+        &["re_"],
+        ApiProfile {
+            display_name: "Resend",
+            default_base_url: "https://api.resend.com/",
+            ..UNKNOWN
+        },
+    ),
+    (
+        &["slack.com"],
+        &["slack"],
+        &["xoxb-", "xoxp-", "xapp-"],
+        ApiProfile {
+            display_name: "Slack",
+            default_base_url: "https://slack.com/api/",
+            ..UNKNOWN
+        },
+    ),
+    (
+        &["api.linear.app"],
+        &["linear"],
+        &["lin_api_"],
+        ApiProfile {
+            display_name: "Linear",
+            default_base_url: "https://api.linear.app/graphql",
+            auth_type: "apiKey",
+            auth_header: "Authorization",
+            auth_location: "header",
+            auth_prefix: "",
+        },
+    ),
+    (
+        &["api.notion.com"],
+        &["notion"],
+        &["ntn_"],
+        ApiProfile {
+            display_name: "Notion",
+            default_base_url: "https://api.notion.com/v1/",
+            ..UNKNOWN
+        },
+    ),
+    (
+        &["gitlab.com"],
+        &["gitlab"],
+        &["glpat-"],
+        ApiProfile {
+            display_name: "GitLab",
+            default_base_url: "https://gitlab.com/api/v4/",
+            auth_type: "apiKey",
+            auth_header: "PRIVATE-TOKEN",
+            auth_location: "header",
+            auth_prefix: "",
+        },
+    ),
+    (
+        &["api.digitalocean.com"],
+        &["digitalocean"],
+        &["dop_v1_", "doo_v1_"],
+        ApiProfile {
+            display_name: "DigitalOcean",
+            default_base_url: "https://api.digitalocean.com/v2/",
+            ..UNKNOWN
+        },
+    ),
+    (
+        &["api.vercel.com"],
+        &["vercel"],
+        &["vercel_"],
+        ApiProfile {
+            display_name: "Vercel",
+            default_base_url: "https://api.vercel.com/",
+            ..UNKNOWN
+        },
+    ),
+    (
+        &["api.supabase.com", "supabase.co"],
+        &["supabase"],
+        &["sbp_"],
+        ApiProfile {
+            display_name: "Supabase",
+            default_base_url: "https://api.supabase.com/v1/",
+            ..UNKNOWN
+        },
+    ),
+    (
+        &["registry.npmjs.org"],
+        &["npm"],
+        &["npm_"],
+        ApiProfile {
+            display_name: "npm",
+            default_base_url: "https://registry.npmjs.org/",
+            ..UNKNOWN
+        },
+    ),
+    (
+        &["upload.pypi.org", "pypi.org"],
+        &["pypi"],
+        &["pypi-"],
+        ApiProfile {
+            display_name: "PyPI",
+            default_base_url: "https://upload.pypi.org/",
+            ..UNKNOWN
+        },
+    ),
+    (
+        &["api.tavily.com"],
+        &["tavily"],
+        &["tvly-"],
+        ApiProfile {
+            display_name: "Tavily",
+            default_base_url: "https://api.tavily.com/",
+            ..UNKNOWN
+        },
+    ),
+    (
+        &["api.firecrawl.dev"],
+        &["firecrawl"],
+        &["fc-"],
+        ApiProfile {
+            display_name: "Firecrawl",
+            default_base_url: "https://api.firecrawl.dev/v1/",
+            ..UNKNOWN
+        },
+    ),
+    (
+        &["api.perplexity.ai"],
+        &["perplexity"],
+        &["pplx-"],
+        ApiProfile {
+            display_name: "Perplexity",
+            default_base_url: "https://api.perplexity.ai/",
+            ..UNKNOWN
+        },
+    ),
+    (
+        &["sentry.io"],
+        &["sentry"],
+        &["sntrys_", "sntryu_"],
+        ApiProfile {
+            display_name: "Sentry",
+            default_base_url: "https://sentry.io/api/0/",
+            ..UNKNOWN
+        },
+    ),
 ];
 
 pub fn infer(name: &str, base_url: &str, secret: &str) -> ApiProfile {

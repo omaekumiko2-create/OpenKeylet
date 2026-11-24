@@ -249,6 +249,26 @@ try {
               return { language: lang, closeBehavior: args.patch?.closeBehavior || 'tray', browserEnabled: true, browserPort: 39272, browserAgentPasskey: true, ownerAutoLockMinutes: window.__stress.autoLockMinutes };
             }
             if (cmd === 'copy_owner_value') { window.__stress.copies.push({ value: args.value, sensitive: args.sensitive }); return null; }
+            if (cmd === 'pick_backup_import_file') return { fileName: 'legacy-v5.mvault', requiresPassword: false };
+            if (cmd === 'prepare_backup_import') return {
+              id: 'mvault-preview-1',
+              preview: {
+                formatLabel: 'Legacy self-unlocking .mvault (v5)',
+                version: 5,
+                protected: false,
+                totalItems: 3,
+                newItems: 2,
+                duplicateSkipped: 1,
+                nameConflicts: 1,
+                passkeyCount: 1,
+                trashCount: 0,
+                historyEntries: 2,
+                sampleNames: ['GitHub', 'Prod SSH'],
+                conflictRenames: ['GitHub → GitHub (2)'],
+              },
+            };
+            if (cmd === 'commit_backup_import') { window.__stress.mvaultCommits = (window.__stress.mvaultCommits || 0) + 1; return { added: 2, merged: 1 }; }
+            if (cmd === 'cancel_backup_import') return null;
             if (cmd === 'owner_secret_view') return { id: args.id, fields: [{ name: 'username', value: 'alice' }, { name: 'password', value: 'pw' }, { name: 'totp', value: 'JBSWY3DPEHPK3PXP' }] };
             if (cmd === 'copy_totp_code') { window.__stress.totpCopies++; return { remainingSeconds: 19, period: 30, clearAfterSeconds: 30 }; }
             if (cmd === 'reorder_connections') { window.__stress.reorders++; return items; }
@@ -291,12 +311,28 @@ try {
     await page.mouse.up();
     assert.ok(scrolledTop > 0, `${cfg.platform}: dragging near bottom edge auto-scrolls 55-item grid (scrollTop=${scrolledTop})`);
 
-    // Verify Auto-lock selector is visible when PIN is configured and persists ownerAutoLockMinutes
+    // Verify Auto-lock selector + unified SAFE/06 .mvault preview flow (legacy self-unlocking skips password!)
     await page.locator('.nav-item[data-page="settings"]').click();
     await page.locator('#owner-auto-lock-option').waitFor({ state: 'visible' });
     await page.locator('#owner-auto-lock-minutes').selectOption('15');
     await page.waitForFunction(() => window.__stress.autoLockMinutes === 15);
+    await page.locator('#safe-import-backup-button').click();
+    await page.locator('#migration-modal').waitFor({ state: 'visible' });
+    await page.locator('#migration-confirm').waitFor({ state: 'visible' });
+    const mvaultPreviewText = await page.locator('#migration-preview').innerText();
+    assert.match(mvaultPreviewText, /legacy-v5\.mvault/, 'Backup preview displays file name');
+    assert.match(mvaultPreviewText, /GitHub → GitHub \(2\)/, 'Backup preview lists conflict renames');
+    await page.locator('#migration-confirm').click();
+    await page.locator('#migration-modal').waitFor({ state: 'hidden' });
+    await page.waitForFunction(() => window.__stress.mvaultCommits === 1);
     await page.locator('.nav-item[data-page="connections"]').click();
+    // Toggle list <-> grid view and confirm zero overflow in both modes
+    assert.equal(await page.evaluate(() => document.querySelector('#connections-list').dataset.view), 'list');
+    await page.locator('#vault-view-toggle').click();
+    assert.equal(await page.evaluate(() => document.querySelector('#connections-list').dataset.view), 'grid');
+    assert.equal(await page.evaluate(() => document.querySelector('#connections-list').scrollWidth > document.querySelector('#connections-list').clientWidth + 1), false, 'Grid view zero horizontal overflow');
+    await page.locator('#vault-view-toggle').click();
+    assert.equal(await page.evaluate(() => document.querySelector('#connections-list').dataset.view), 'list');
 
     // Open item 0 (has username, password & TOTP):
     // - non-secret module copy passes sensitive=false

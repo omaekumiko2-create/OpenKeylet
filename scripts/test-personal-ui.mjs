@@ -22,8 +22,8 @@ try {
   const page = await browser.newPage({viewport:{width:690,height:1000}});
   const errors = []; page.on("pageerror",e=>errors.push(e.message));
   await page.addInitScript(() => {
-    const state = {settings:{language:"zh",closeBehavior:"tray",browserEnabled:true,browserPort:39272},connections:[],activities:[],mcp:{status:"ready",endpoint:"fixture",stdioCommand:"fixture"},browserBridge:{status:"listening",enabled:true,connected:true,paired:true,endpoint:"fixture"},security:{encrypted:true,storage:"fixture"}};
-    window.fixture = {saved:[],drafts:[],exports:[],copies:[],pairings:[],browserOpens:0,imports:[],trash:[],history:[{password:"synthetic-previous-password",changedAt:"2026-01-01T00:00:00Z"}],state};
+    const state = {settings:{language:"zh",closeBehavior:"tray",browserEnabled:true,browserPort:39272},connections:[],activities:[],mcp:{status:"ready",endpoint:"fixture",stdioCommand:"fixture"},browserBridge:{status:"listening",enabled:true,connected:true,connectedCount:2,pairingActive:false,paired:true,endpoint:"fixture"},security:{encrypted:true,storage:"fixture"}};
+    window.fixture = {saved:[],drafts:[],exports:[],copies:[],pairings:[],browserOpens:0,browserOpenProfiles:[],chromeProfiles:[{directory:"Default",name:"Personal",account:"me@example.com",isLastUsed:true},{directory:"Profile 1",name:"Work",account:"work@example.com",isLastUsed:false}],imports:[],trash:[],history:[{password:"synthetic-previous-password",changedAt:"2026-01-01T00:00:00Z"}],state};
     window.__TAURI__ = {event:{listen:async()=>()=>{}},core:{invoke:async(command,args={}) => {
       if(command==="get_state") return structuredClone(state);
       if(command==="owner_status") return {pinConfigured:false,unlocked:true};
@@ -44,8 +44,9 @@ try {
       }
       if(command==="generate_password") return "Aa1!".repeat(32).slice(0,args.options.length);
       if(command==="copy_owner_value") {if(fixture.failCopy)throw Error("Copy failed");fixture.copies.push(args.value);return;}
+      if(command==="list_chrome_profiles") return structuredClone(fixture.chromeProfiles);
       if(command==="quick_pair_browser") {fixture.pairings.push(args.port);if(fixture.failPairing)throw Error("Pairing failed");return;}
-      if(command==="open_chrome_browser") {fixture.browserOpens++;if(fixture.failBrowser)throw Error("Browser failed");return;}
+      if(command==="open_chrome_browser") {fixture.browserOpens++;fixture.browserOpenProfiles.push(args.profileDirectory||null);if(fixture.failBrowser)throw Error("Browser failed");return;}
       if(command==="export_backup") {fixture.exports.push(args.password);return "fixture.mvault";}
       if(command==="import_backup") return {added:0,merged:0};
       if(command==="prepare_import") return {id:"fixture-import",preview:{total:4,types:{login:1,card:1,identity:1,secureNote:1},passkeys:1,skippedDeleted:1,warnings:["defaultDomainMatch","passwordHistory"]}};
@@ -149,9 +150,16 @@ try {
   assert.deepEqual(await page.evaluate(()=>serializeItem(false).loginUris),[{uri:"https://example.com/login",matchType:"exact"}]);
   await page.evaluate(()=>closeEditor());
   await page.locator('[data-page="settings"]').click();
+  await page.locator('#chrome-profile-row:visible').waitFor();
+  assert.match(await page.locator('#browser-status-strip').textContent(),/2 个 Chrome 账号/);
+  await page.locator('#chrome-profile-select').click();
+  await page.locator('#custom-select-menu:visible').waitFor();
+  await page.locator('#custom-select-menu .custom-select-option[data-value="Profile 1"]').click();
+  assert.equal(await page.locator('#chrome-profile-select').inputValue(),'Profile 1');
   await page.locator('#quick-pairing-button').click();
   await page.locator('#browser-open-help:visible').waitFor();
   await page.waitForFunction(()=>fixture.browserOpens===1);
+  assert.equal(await page.evaluate(()=>fixture.browserOpenProfiles[0]),'Profile 1');
   assert.equal(await page.evaluate(()=>fixture.copies.at(-1)),'chrome://extensions/');
   assert.equal(await page.evaluate(()=>fixture.pairings[0]),39272);
   assert.match(await page.locator('#browser-open-help').textContent(),/粘贴.*地址栏/);
@@ -172,6 +180,13 @@ try {
   assert.equal(await page.evaluate(()=>fixture.pairings.length),4);
   assert.equal(await page.locator('#browser-open-help').isVisible(),false);
   await page.evaluate(()=>{fixture.failCopy=false;});
+  assert.equal(await page.locator('#browser-extensions-url').inputValue(),'chrome://extensions/');
+  const copyCountBefore=await page.evaluate(()=>fixture.copies.length);
+  const pairingCountBefore=await page.evaluate(()=>fixture.pairings.length);
+  await page.locator('#copy-extensions-url-button').click();
+  await page.waitForFunction((before)=>fixture.copies.length===before+1,copyCountBefore);
+  await page.waitForFunction((before)=>fixture.pairings.length===before+1,pairingCountBefore);
+  assert.equal(await page.evaluate(()=>fixture.copies.at(-1)),'chrome://extensions/');
   await page.locator("#header-export-backup-button").click();
   await page.locator("#backup-password").fill("synthetic-test-password");
   await page.locator("#backup-password-confirm").fill("synthetic-test-password");

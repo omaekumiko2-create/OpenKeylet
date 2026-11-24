@@ -8,6 +8,10 @@ OpenKeylet lets the user manage and use credentials from their local OpenKeylet 
 
 ## Permission justifications
 
+### contextMenus
+
+Adds two explicit user-triggered right-click actions: “Save to OpenKeylet” on user-selected text (such as a newly created API key) and “Scan 2FA QR” on an image element. Nothing is read unless the user clicks the menu item, and drafts stay in extension worker memory for at most 5 minutes until confirmed.
+
 ### scripting
 
 Used to read a login form when the user chooses “Save login,” verify the actual target frame URL, fill a selected login/card/identity, and execute a desktop-initiated credential fill in the focused control. Functions are included in the extension package; no downloaded code is evaluated. Frame and origin checks apply to vault form workflows.

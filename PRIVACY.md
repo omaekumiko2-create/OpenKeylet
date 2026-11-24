@@ -30,6 +30,8 @@ If you connect an AI agent through the desktop application's MCP integration, th
 
 The desktop application has optional GitHub backup. If you configure and use it, encrypted snapshots and necessary repository/account metadata are transferred to GitHub. Snapshots include saved vault data, trash and password history; the recovery key is not uploaded. Disconnecting does not remove existing remote snapshots or Git history. GitHub's own privacy policy applies to its service.
 
+The desktop application also checks GitHub Releases (`releases/latest/download/latest.json`) for signed software updates when automatic update checks are enabled (configurable under **System → UPDATE / 07**). Update requests are read-only HTTPS GET requests carrying only a generic `OpenKeylet/<version>` User-Agent; no vault data, account information, or unique device identifiers are sent. You can disable automatic update checks or background downloads at any time.
+
 OpenKeylet does not include advertising, sell personal data, or use vault data for profiling or model training. Data is used only for the disclosed credential-management features and their necessary operation, in accordance with the Chrome Web Store User Data Policy, including its Limited Use requirements.
 
 ## Storage, retention and deletion

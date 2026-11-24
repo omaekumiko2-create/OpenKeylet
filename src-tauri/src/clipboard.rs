@@ -119,6 +119,25 @@ pub fn clear_if_unchanged(
     clear_platform_clipboard(app)
 }
 
+pub fn read_text(app: &AppHandle) -> Result<String> {
+    app.clipboard()
+        .read_text()
+        .context("Unable to read text from clipboard")
+}
+
+pub fn clear_if_exact(app: &AppHandle, guard: &ClipboardGuard, expected_text: &str) -> bool {
+    if expected_text.is_empty() {
+        return false;
+    }
+    let expected_hash = sha256_bytes(expected_text);
+    let current = app.clipboard().read_text().ok();
+    if !should_clear_clipboard(current.as_deref(), expected_hash) {
+        return false;
+    }
+    guard.clear_tracking();
+    clear_platform_clipboard(app)
+}
+
 fn clear_platform_clipboard(app: &AppHandle) -> bool {
     #[cfg(windows)]
     {

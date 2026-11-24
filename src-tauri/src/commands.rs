@@ -3,6 +3,7 @@ use crate::{
     backup,
     browser::BrowserBridge,
     clipboard::{self, ClipboardGuard, SENSITIVE_CLIPBOARD_TTL_SECS},
+    edge_dock::EdgeDockController,
     executor,
     github_backup::{self, BackupStatus, ConnectInput, GithubBackup, RestoreResult, SyncResult},
     gui_instance::GuiInstance,
@@ -11,7 +12,9 @@ use crate::{
         AppState, ConnectionInput, ImportSummary, NewActivity, OwnerEditorDraft, OwnerLockState,
         OwnerSecretView, PublicConnection, SettingsPatch,
     },
+    session_broker::SessionBroker,
     storage::app_data_dir,
+    updater::{self, UpdateManager, UpdateStatus},
     vault::Vault,
 };
 use anyhow::{Context, Result};
@@ -42,8 +45,13 @@ pub struct AppRuntime {
     clipboard: Arc<ClipboardGuard>,
     pending_private_key: Mutex<Option<PathBuf>>,
     pending_import: Mutex<Option<PendingImport>>,
+    pending_backup_path: Mutex<Option<PathBuf>>,
+    pending_backup_import: Mutex<Option<PendingBackupImport>>,
     owner_session: Mutex<OwnerSession>,
     github_backup: Mutex<GithubBackup>,
+    session_broker: SessionBroker,
+    updater: Arc<UpdateManager>,
+    edge_dock: Arc<EdgeDockController>,
     auto_sync_generation: AtomicU64,
     agent_registry: AgentRegistry,
     tray_available: AtomicBool,
@@ -52,6 +60,13 @@ pub struct AppRuntime {
 struct PendingImport {
     id: String,
     created: Instant,
+    encrypted: crate::model::SecretEnvelope,
+}
+
+struct PendingBackupImport {
+    id: String,
+    created: Instant,
+    version: u8,
     encrypted: crate::model::SecretEnvelope,
 }
 
@@ -134,24 +149,71 @@ fn scrub_locked_app_state(mut state: AppState) -> AppState {
 
 const WINDOW_LOGICAL_WIDTH: f64 = 460.0;
 const WINDOW_LOGICAL_HEIGHT: f64 = 690.0;
+const WINDOW_MIN_LOGICAL_HEIGHT: f64 = 560.0;
+const WINDOW_MAX_LOGICAL_HEIGHT: f64 = 4000.0;
 
 async fn owner_lock_state(runtime: &AppRuntime) -> Result<OwnerLockState, String> {
-    let pin_configured = runtime
-        .vault
-        .owner_pin_configured()
-        .map_err(command_error)?;
+    let strong_mode = runtime.vault.is_strong_mode();
+    let pin_configured = if strong_mode {
+        true
+    } else {
+        runtime
+            .vault
+            .owner_pin_configured()
+            .map_err(command_error)?
+    };
     let auto_lock_minutes = runtime
         .vault
         .settings()
         .map(|settings| settings.owner_auto_lock_minutes)
         .unwrap_or(0);
     let mut session = runtime.owner_session.lock().await;
+    if strong_mode {
+        if !runtime.vault.is_strong_unlocked() {
+            session.lock();
+            drop(session);
+            runtime.session_broker.stop();
+            return Ok(OwnerLockState {
+                pin_configured: true,
+                unlocked: false,
+                expires_in_seconds: 0,
+                strong_mode: true,
+                mode: "strong".to_owned(),
+            });
+        }
+        let (unlocked, expires_in_seconds, expired_now) =
+            session.is_unlocked_at(Instant::now(), auto_lock_minutes);
+        drop(session);
+        if expired_now || !unlocked {
+            runtime.vault.lock_strong();
+            runtime.session_broker.stop();
+            *runtime.pending_import.lock().await = None;
+            *runtime.pending_backup_path.lock().await = None;
+            *runtime.pending_backup_import.lock().await = None;
+            return Ok(OwnerLockState {
+                pin_configured: true,
+                unlocked: false,
+                expires_in_seconds: 0,
+                strong_mode: true,
+                mode: "strong".to_owned(),
+            });
+        }
+        return Ok(OwnerLockState {
+            pin_configured: true,
+            unlocked: true,
+            expires_in_seconds,
+            strong_mode: true,
+            mode: "strong".to_owned(),
+        });
+    }
     if !pin_configured {
         session.lock();
         return Ok(OwnerLockState {
-            pin_configured,
+            pin_configured: false,
             unlocked: true,
             expires_in_seconds: 0,
+            strong_mode: false,
+            mode: "none".to_owned(),
         });
     }
     let (unlocked, expires_in_seconds, expired_now) =
@@ -159,18 +221,25 @@ async fn owner_lock_state(runtime: &AppRuntime) -> Result<OwnerLockState, String
     drop(session);
     if expired_now {
         *runtime.pending_import.lock().await = None;
+        *runtime.pending_backup_path.lock().await = None;
+        *runtime.pending_backup_import.lock().await = None;
     }
     Ok(OwnerLockState {
         pin_configured,
         unlocked,
         expires_in_seconds,
+        strong_mode: false,
+        mode: "pin".to_owned(),
     })
 }
 
 async fn require_owner_unlocked(runtime: &AppRuntime) -> Result<(), String> {
-    if owner_lock_state(runtime).await?.unlocked {
+    let state = owner_lock_state(runtime).await?;
+    if state.unlocked {
         runtime.owner_session.lock().await.touch(Instant::now());
         Ok(())
+    } else if state.strong_mode {
+        Err("Strong Cloud Vault is locked; enter your master passphrase or recovery key".to_owned())
     } else {
         Err("GUI is locked; enter the six-digit PIN".to_owned())
     }
@@ -188,11 +257,59 @@ fn emit_changed(app: &AppHandle) {
     let _ = app.emit("state-changed", ());
 }
 
+fn emit_update_status(app: &AppHandle, status: &UpdateStatus) {
+    let _ = app.emit("update-state-changed", status);
+}
+
+fn schedule_auto_update_check(app: &AppHandle, delay_ms: u64) {
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if delay_ms > 0 {
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        }
+        let runtime = handle.state::<AppRuntime>();
+        let settings = runtime.vault.settings().unwrap_or_default();
+        if !settings.update_auto_check {
+            return;
+        }
+        let updater = runtime.updater.clone();
+        let emit_handle = handle.clone();
+        let Ok(outcome) = updater
+            .check_for_updates(false, move |status| {
+                emit_update_status(&emit_handle, status);
+            })
+            .await
+        else {
+            return;
+        };
+        if outcome.update_available
+            && !outcome.is_skipped
+            && outcome.status.phase == "available"
+            && settings.update_auto_download
+            && outcome.status.can_auto_install
+        {
+            let emit_handle = handle.clone();
+            let _ = updater
+                .download_and_stage(move |status| {
+                    emit_update_status(&emit_handle, status);
+                })
+                .await;
+        }
+    });
+}
+
 fn schedule_auto_sync(app: &AppHandle, delay_ms: u64) {
     let runtime = app.state::<AppRuntime>();
     let generation = runtime.auto_sync_generation.fetch_add(1, Ordering::AcqRel) + 1;
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
+        {
+            let runtime = handle.state::<AppRuntime>();
+            let backup = runtime.github_backup.lock().await;
+            if let Ok(Some(status)) = backup.mark_pending_sync() {
+                let _ = handle.emit("cloud-sync-updated", status);
+            }
+        }
         if delay_ms > 0 {
             tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
         }
@@ -212,7 +329,11 @@ fn schedule_auto_sync(app: &AppHandle, delay_ms: u64) {
                 let _ = handle.emit("cloud-sync-updated", result.status);
             }
             Err(error) => {
-                let _ = handle.emit("cloud-sync-error", error.to_string());
+                let message = error.to_string();
+                if let Ok(Some(status)) = backup.record_sync_error(&message) {
+                    let _ = handle.emit("cloud-sync-updated", status);
+                }
+                let _ = handle.emit("cloud-sync-error", message);
             }
         }
     });
@@ -261,6 +382,9 @@ async fn owner_set_pin(
     runtime: State<'_, AppRuntime>,
     pin: String,
 ) -> Result<OwnerLockState, String> {
+    if runtime.vault.is_strong_mode() {
+        return Err("Strong Cloud Vault mode is active; lock and unlock use your master passphrase".to_owned());
+    }
     runtime.vault.set_owner_pin(&pin).map_err(command_error)?;
     keep_owner_unlocked(&runtime).await;
     owner_lock_state(&runtime).await
@@ -269,6 +393,9 @@ async fn owner_set_pin(
 #[tauri::command]
 async fn owner_disable_pin(runtime: State<'_, AppRuntime>) -> Result<OwnerLockState, String> {
     require_owner_unlocked(&runtime).await?;
+    if runtime.vault.is_strong_mode() {
+        return Err("Disconnect your GitHub Strong Cloud Vault to revert to local-only mode".to_owned());
+    }
     runtime.vault.disable_owner_pin().map_err(command_error)?;
     runtime.owner_session.lock().await.lock();
     owner_lock_state(&runtime).await
@@ -276,14 +403,42 @@ async fn owner_disable_pin(runtime: State<'_, AppRuntime>) -> Result<OwnerLockSt
 
 #[tauri::command]
 async fn owner_unlock(
+    app: AppHandle,
     runtime: State<'_, AppRuntime>,
     pin: String,
 ) -> Result<OwnerLockState, String> {
     let now = Instant::now();
     if let Some(wait_secs) = runtime.owner_session.lock().await.cooldown_remaining(now) {
         return Err(format!(
-            "Too many incorrect PIN attempts; wait {wait_secs}s"
+            "Too many incorrect attempts; wait {wait_secs}s"
         ));
+    }
+    if runtime.vault.is_strong_mode() {
+        if let Err(error) = runtime.vault.unlock_strong(&pin) {
+            let delay = runtime
+                .owner_session
+                .lock()
+                .await
+                .record_failed_attempt(Instant::now());
+            let base = if pin.trim().starts_with("okv1_") {
+                "Incorrect recovery key"
+            } else {
+                "Incorrect master passphrase"
+            };
+            if delay > 0 {
+                return Err(format!("{base}; wait {delay}s before trying again"));
+            }
+            let _ = error;
+            return Err(base.to_owned());
+        }
+        keep_owner_unlocked(&runtime).await;
+        if let Err(error) = runtime.session_broker.start(runtime.vault.clone()) {
+            eprintln!("OpenKeylet: failed to start Strong Vault MCP session broker: {error:#}");
+        }
+        runtime.browser.sync().await;
+        schedule_auto_sync(&app, 400);
+        emit_changed(&app);
+        return owner_lock_state(&runtime).await;
     }
     if !runtime
         .vault
@@ -305,12 +460,30 @@ async fn owner_unlock(
 }
 
 #[tauri::command]
+async fn owner_change_master_passphrase(
+    runtime: State<'_, AppRuntime>,
+    new_passphrase: String,
+) -> Result<(), String> {
+    require_owner_unlocked(&runtime).await?;
+    runtime
+        .vault
+        .change_strong_passphrase(&new_passphrase)
+        .map_err(command_error)
+}
+
+#[tauri::command]
 async fn owner_lock(
     app: AppHandle,
     runtime: State<'_, AppRuntime>,
 ) -> Result<OwnerLockState, String> {
     runtime.owner_session.lock().await.lock();
+    if runtime.vault.is_strong_mode() {
+        runtime.vault.lock_strong();
+        runtime.session_broker.stop();
+    }
     *runtime.pending_import.lock().await = None;
+    *runtime.pending_backup_path.lock().await = None;
+    *runtime.pending_backup_import.lock().await = None;
     clipboard::clear_if_unchanged(&app, &runtime.clipboard, None);
     owner_lock_state(&runtime).await
 }
@@ -612,11 +785,33 @@ async fn update_settings(
     patch: SettingsPatch,
 ) -> Result<crate::model::Settings, String> {
     require_owner_unlocked(&runtime).await?;
+    let enabling_browser = patch.browser_enabled == Some(true);
+    let enabling_auto_download = patch.update_auto_download == Some(true);
     let settings = runtime
         .vault
         .update_settings_patch(patch)
         .map_err(command_error)?;
     runtime.browser.sync().await;
+    if enabling_browser && settings.browser_enabled {
+        let _ = runtime.browser.start_quick_pairing().await;
+    }
+    let update_status = runtime.updater.refresh_settings().await;
+    emit_update_status(&app, &update_status);
+    if enabling_auto_download
+        && update_status.phase == "available"
+        && update_status.can_auto_install
+    {
+        let updater = runtime.updater.clone();
+        let handle = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let emit_handle = handle.clone();
+            let _ = updater
+                .download_and_stage(move |status| {
+                    emit_update_status(&emit_handle, status);
+                })
+                .await;
+        });
+    }
     emit_changed(&app);
     Ok(settings)
 }
@@ -733,6 +928,138 @@ async fn choose_private_key(
     Ok(Some(name))
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ChromeProfile {
+    directory: String,
+    name: String,
+    account: String,
+    is_last_used: bool,
+}
+
+fn is_valid_chrome_profile_dir(value: &str) -> bool {
+    let trimmed = value.trim();
+    if trimmed.is_empty()
+        || trimmed.len() > 128
+        || trimmed != value
+        || trimmed.starts_with('-')
+        || trimmed.eq_ignore_ascii_case("System Profile")
+        || trimmed.eq_ignore_ascii_case("Guest Profile")
+        || trimmed.chars().any(|ch| ch.is_control() || matches!(ch, '/' | '\\'))
+    {
+        return false;
+    }
+    let mut components = Path::new(trimmed).components();
+    matches!(components.next(), Some(std::path::Component::Normal(_)))
+        && components.next().is_none()
+}
+
+fn chrome_user_data_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        std::env::var_os("LOCALAPPDATA")
+            .map(|root| PathBuf::from(root).join("Google/Chrome/User Data"))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::env::var_os("HOME")
+            .map(|home| PathBuf::from(home).join("Library/Application Support/Google/Chrome"))
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        std::env::var_os("XDG_CONFIG_HOME")
+            .filter(|v| !v.is_empty())
+            .map(|config| PathBuf::from(config).join("google-chrome"))
+            .or_else(|| {
+                std::env::var_os("HOME")
+                    .map(|home| PathBuf::from(home).join(".config/google-chrome"))
+            })
+    }
+}
+
+fn parse_chrome_profiles_from_local_state(
+    user_data_dir: &Path,
+    raw: &str,
+) -> Vec<ChromeProfile> {
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return Vec::new();
+    };
+    let last_used = json
+        .pointer("/profile/last_used")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let Some(cache) = json
+        .pointer("/profile/info_cache")
+        .and_then(|value| value.as_object())
+    else {
+        return Vec::new();
+    };
+    let mut profiles = Vec::new();
+    for (directory, entry) in cache {
+        if !is_valid_chrome_profile_dir(directory) || !user_data_dir.join(directory).is_dir() {
+            continue;
+        }
+        let str_field = |key: &str| {
+            entry
+                .get(key)
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .unwrap_or("")
+        };
+        let name = [
+            str_field("name"),
+            str_field("shortcut_name"),
+            str_field("gaia_name"),
+            directory.as_str(),
+        ]
+        .into_iter()
+        .find(|v| !v.is_empty())
+        .unwrap_or(directory.as_str())
+        .to_owned();
+        let account = str_field("user_name").to_owned();
+        profiles.push(ChromeProfile {
+            directory: directory.clone(),
+            name,
+            account,
+            is_last_used: directory == last_used,
+        });
+    }
+    profiles.sort_by(|a, b| {
+        b.is_last_used
+            .cmp(&a.is_last_used)
+            .then_with(|| (b.directory == "Default").cmp(&(a.directory == "Default")))
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+            .then_with(|| a.directory.cmp(&b.directory))
+    });
+    profiles
+}
+
+#[tauri::command]
+fn list_chrome_profiles() -> Vec<ChromeProfile> {
+    let Some(user_data_dir) = chrome_user_data_dir() else {
+        return Vec::new();
+    };
+    let Ok(raw) = std::fs::read_to_string(user_data_dir.join("Local State")) else {
+        return Vec::new();
+    };
+    parse_chrome_profiles_from_local_state(&user_data_dir, &raw)
+}
+
+async fn arm_browser_pairing(app: &AppHandle, runtime: &AppRuntime) {
+    if let Ok(settings) = runtime.vault.settings()
+        && !settings.browser_enabled
+    {
+        let _ = runtime.vault.update_settings_patch(SettingsPatch {
+            browser_enabled: Some(true),
+            ..SettingsPatch::default()
+        });
+    }
+    runtime.browser.sync().await;
+    let _ = runtime.browser.start_quick_pairing().await;
+    emit_changed(app);
+}
+
 #[tauri::command]
 async fn quick_pair_browser(
     app: AppHandle,
@@ -761,7 +1088,16 @@ async fn quick_pair_browser(
 }
 
 #[tauri::command]
-fn open_chrome_browser() -> Result<(), String> {
+fn open_chrome_browser(profile_directory: Option<String>) -> Result<(), String> {
+    let profile = match profile_directory {
+        Some(dir) if !dir.trim().is_empty() => {
+            if !is_valid_chrome_profile_dir(&dir) {
+                return Err("Invalid Chrome profile directory".to_owned());
+            }
+            Some(dir)
+        }
+        _ => None,
+    };
     #[cfg(windows)]
     {
         let mut candidates = Vec::new();
@@ -769,50 +1105,104 @@ fn open_chrome_browser() -> Result<(), String> {
             if let Some(root) = std::env::var_os(root) {
                 let base = PathBuf::from(root);
                 candidates.push(base.join("Google/Chrome/Application/chrome.exe"));
-                candidates.push(base.join("Microsoft/Edge/Application/msedge.exe"));
-                candidates.push(base.join("BraveSoftware/Brave-Browser/Application/brave.exe"));
-                candidates.push(base.join("Chromium/Application/chrome.exe"));
+                if profile.is_none() {
+                    candidates.push(base.join("Microsoft/Edge/Application/msedge.exe"));
+                    candidates
+                        .push(base.join("BraveSoftware/Brave-Browser/Application/brave.exe"));
+                    candidates.push(base.join("Chromium/Application/chrome.exe"));
+                }
             }
         }
         candidates.push(PathBuf::from("chrome.exe"));
-        candidates.push(PathBuf::from("msedge.exe"));
-        candidates.push(PathBuf::from("brave.exe"));
+        if profile.is_none() {
+            candidates.push(PathBuf::from("msedge.exe"));
+            candidates.push(PathBuf::from("brave.exe"));
+        }
         if candidates.into_iter().any(|candidate| {
-            (candidate.components().count() == 1 || candidate.is_file())
-                && Command::new(candidate).arg("--new-tab").spawn().is_ok()
+            if candidate.components().count() != 1 && !candidate.is_file() {
+                return false;
+            }
+            let mut command = Command::new(candidate);
+            if let Some(ref dir) = profile {
+                command.arg(format!("--profile-directory={dir}"));
+            }
+            command.arg("--new-tab").spawn().is_ok()
         }) {
             return Ok(());
         }
     }
     #[cfg(target_os = "macos")]
     {
-        for app in ["Google Chrome", "Microsoft Edge", "Brave Browser", "Arc", "Chromium"] {
+        if let Some(ref dir) = profile {
+            let mut binaries = vec![PathBuf::from(
+                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            )];
+            if let Some(home) = std::env::var_os("HOME") {
+                binaries.push(
+                    PathBuf::from(home)
+                        .join("Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+                );
+            }
+            if binaries.into_iter().any(|binary| {
+                binary.is_file()
+                    && Command::new(binary)
+                        .arg(format!("--profile-directory={dir}"))
+                        .arg("--new-tab")
+                        .spawn()
+                        .is_ok()
+            }) {
+                return Ok(());
+            }
             if Command::new("open")
-                .args(["-a", app])
+                .args([
+                    "-a",
+                    "Google Chrome",
+                    "--args",
+                    &format!("--profile-directory={dir}"),
+                    "--new-tab",
+                ])
                 .status()
                 .is_ok_and(|status| status.success())
             {
                 return Ok(());
             }
+        } else {
+            for app in ["Google Chrome", "Microsoft Edge", "Brave Browser", "Arc", "Chromium"] {
+                if Command::new("open")
+                    .args(["-a", app])
+                    .status()
+                    .is_ok_and(|status| status.success())
+                {
+                    return Ok(());
+                }
+            }
         }
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        if [
-            "google-chrome",
-            "google-chrome-stable",
-            "microsoft-edge",
-            "brave-browser",
-            "chromium",
-            "chromium-browser",
-        ]
-        .into_iter()
-        .any(|browser| Command::new(browser).arg("--new-tab").spawn().is_ok())
-        {
+        let browsers: &[&str] = if profile.is_some() {
+            &["google-chrome", "google-chrome-stable"]
+        } else {
+            &[
+                "google-chrome",
+                "google-chrome-stable",
+                "microsoft-edge",
+                "brave-browser",
+                "chromium",
+                "chromium-browser",
+            ]
+        };
+        if browsers.iter().any(|browser| {
+            let mut command = Command::new(browser);
+            if let Some(ref dir) = profile {
+                command.arg(format!("--profile-directory={dir}"));
+            }
+            command.arg("--new-tab").spawn().is_ok()
+        }) {
             return Ok(());
         }
     }
-    Err("Unable to open a Chromium browser; open it manually and paste the copied address".to_owned())
+    Err("Unable to open Chrome; open it manually and paste the copied address".to_owned())
 }
 
 #[tauri::command]
@@ -849,6 +1239,7 @@ async fn open_browser_extension_folder(
     runtime: State<'_, AppRuntime>,
 ) -> Result<(), String> {
     require_owner_unlocked(&runtime).await?;
+    arm_browser_pairing(&app, &runtime).await;
     let path = browser_extension_path(&app)?;
     app.opener()
         .open_path(path.to_string_lossy(), None::<&str>)
@@ -863,6 +1254,11 @@ async fn drag_browser_extension(
 ) -> Result<(), String> {
     require_owner_unlocked(&runtime).await?;
     let path = browser_extension_path(&app)?;
+    let pair_app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let runtime = pair_app.state::<AppRuntime>();
+        arm_browser_pairing(&pair_app, &runtime).await;
+    });
     let (sender, receiver) = tokio::sync::oneshot::channel();
     let drag_window = window.clone();
     window
@@ -987,17 +1383,29 @@ async fn github_backup_recovery_key(runtime: State<'_, AppRuntime>) -> Result<St
 
 #[tauri::command]
 async fn github_backup_connect(
+    app: AppHandle,
     runtime: State<'_, AppRuntime>,
     input: ConnectInput,
 ) -> Result<BackupStatus, String> {
     require_owner_unlocked(&runtime).await?;
-    runtime
+    if !runtime.vault.is_strong_mode() && input.master_passphrase.trim().is_empty() {
+        return Err("STRONG_PASSPHRASE_SHORT: Set a master passphrase (at least 12 characters) to enable Strong Cloud Vault mode".to_owned());
+    }
+    let status = runtime
         .github_backup
         .lock()
         .await
         .connect(input)
         .await
-        .map_err(command_error)
+        .map_err(command_error)?;
+    if runtime.vault.is_strong_mode() {
+        keep_owner_unlocked(&runtime).await;
+        if let Err(error) = runtime.session_broker.start(runtime.vault.clone()) {
+            eprintln!("OpenKeylet: failed to start Strong Vault MCP session broker: {error:#}");
+        }
+    }
+    emit_changed(&app);
+    Ok(status)
 }
 
 #[tauri::command]
@@ -1068,14 +1476,20 @@ async fn github_backup_set_auto_sync(
 }
 
 #[tauri::command]
-async fn github_backup_disconnect(runtime: State<'_, AppRuntime>) -> Result<BackupStatus, String> {
+async fn github_backup_disconnect(
+    app: AppHandle,
+    runtime: State<'_, AppRuntime>,
+) -> Result<BackupStatus, String> {
     require_owner_unlocked(&runtime).await?;
-    runtime
+    let status = runtime
         .github_backup
         .lock()
         .await
         .disconnect()
-        .map_err(command_error)
+        .map_err(command_error)?;
+    runtime.session_broker.stop();
+    emit_changed(&app);
+    Ok(status)
 }
 
 #[tauri::command]
@@ -1111,7 +1525,111 @@ async fn import_backup(
     let summary =
         backup::import_with_password(&runtime.vault, &path, &password).map_err(command_error)?;
     emit_changed(&app);
+    schedule_auto_sync(&app, 3000);
     Ok(Some(summary))
+}
+
+#[tauri::command]
+async fn pick_backup_import_file(
+    app: AppHandle,
+    runtime: State<'_, AppRuntime>,
+) -> Result<Option<serde_json::Value>, String> {
+    require_owner_unlocked(&runtime).await?;
+    *runtime.pending_backup_path.lock().await = None;
+    *runtime.pending_backup_import.lock().await = None;
+    let selected = app
+        .dialog()
+        .file()
+        .add_filter("OpenKeylet backup", &["mvault"])
+        .blocking_pick_file();
+    let Some(path) = selected else {
+        return Ok(None);
+    };
+    require_owner_unlocked(&runtime).await?;
+    let path = path.into_path().map_err(command_error)?;
+    let requires_password =
+        backup::inspect_file_requires_password(&path).map_err(command_error)?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("backup.mvault")
+        .to_owned();
+    *runtime.pending_backup_path.lock().await = Some(path);
+    Ok(Some(serde_json::json!({
+        "fileName": file_name,
+        "requiresPassword": requires_password,
+    })))
+}
+
+#[tauri::command]
+async fn prepare_backup_import(
+    runtime: State<'_, AppRuntime>,
+    password: String,
+) -> Result<serde_json::Value, String> {
+    require_owner_unlocked(&runtime).await?;
+    let password = zeroize::Zeroizing::new(password);
+    let path = runtime
+        .pending_backup_path
+        .lock()
+        .await
+        .clone()
+        .ok_or_else(|| "Choose a .mvault backup file first".to_owned())?;
+    let prepared =
+        backup::prepare_import_with_password(&runtime.vault, &path, &password)
+            .map_err(command_error)?;
+    let id = Uuid::new_v4().to_string();
+    let encrypted = runtime
+        .vault
+        .protect_local_state(&*prepared.raw_payload)
+        .map_err(command_error)?;
+    let result = serde_json::json!({
+        "id": id,
+        "preview": prepared.preview,
+    });
+    *runtime.pending_backup_path.lock().await = None;
+    *runtime.pending_backup_import.lock().await = Some(PendingBackupImport {
+        id,
+        created: Instant::now(),
+        version: prepared.version,
+        encrypted,
+    });
+    Ok(result)
+}
+
+#[tauri::command]
+async fn commit_backup_import(
+    app: AppHandle,
+    runtime: State<'_, AppRuntime>,
+    id: String,
+) -> Result<ImportSummary, String> {
+    require_owner_unlocked(&runtime).await?;
+    let mut slot = runtime.pending_backup_import.lock().await;
+    let pending = slot.as_ref().ok_or("Choose a .mvault backup file first")?;
+    if pending.id != id {
+        return Err("Backup preview changed; choose the file again".into());
+    }
+    if pending.created.elapsed().as_secs() > 300 {
+        *slot = None;
+        return Err("Backup preview expired; choose the file again".into());
+    }
+    let raw_payload: Vec<u8> = runtime
+        .vault
+        .unprotect_local_state(&pending.encrypted)
+        .map_err(command_error)?;
+    let raw_payload = zeroize::Zeroizing::new(raw_payload);
+    let summary = backup::commit_prepared_import(&runtime.vault, &raw_payload, pending.version)
+        .map_err(command_error)?;
+    *slot = None;
+    emit_changed(&app);
+    schedule_auto_sync(&app, 3000);
+    Ok(summary)
+}
+
+#[tauri::command]
+async fn cancel_backup_import(runtime: State<'_, AppRuntime>) -> Result<(), String> {
+    *runtime.pending_backup_path.lock().await = None;
+    *runtime.pending_backup_import.lock().await = None;
+    Ok(())
 }
 
 #[tauri::command]
@@ -1122,16 +1640,20 @@ async fn prepare_import(
 ) -> Result<Option<serde_json::Value>, String> {
     require_owner_unlocked(&runtime).await?;
     *runtime.pending_import.lock().await = None;
-    let extension = match format.as_str() {
-        "bitwarden" => "json",
-        "chrome" => "csv",
+    let selected = match format.as_str() {
+        "bitwarden" => app
+            .dialog()
+            .file()
+            .add_filter("Bitwarden JSON", &["json"])
+            .blocking_pick_file(),
+        "chrome" => app
+            .dialog()
+            .file()
+            .add_filter("Password CSV", &["csv"])
+            .blocking_pick_file(),
+        "env" | "ssh_config" => app.dialog().file().blocking_pick_file(),
         _ => return Err("Unsupported import format".into()),
     };
-    let selected = app
-        .dialog()
-        .file()
-        .add_filter("Vault export", &[extension])
-        .blocking_pick_file();
     let Some(path) = selected else {
         return Ok(None);
     };
@@ -1150,6 +1672,138 @@ async fn prepare_import(
         encrypted,
     });
     Ok(Some(result))
+}
+
+#[tauri::command]
+async fn prepare_ssh_config_import(
+    app: AppHandle,
+    runtime: State<'_, AppRuntime>,
+    use_default: bool,
+) -> Result<Option<serde_json::Value>, String> {
+    require_owner_unlocked(&runtime).await?;
+    *runtime.pending_import.lock().await = None;
+    let path = if use_default {
+        let Some(default_path) = crate::smart_ingest::default_ssh_config_path() else {
+            return Err("Could not locate your home directory for ~/.ssh/config".into());
+        };
+        if !default_path.exists() {
+            return Err(format!(
+                "Default SSH config not found at {}",
+                default_path.display()
+            ));
+        }
+        default_path
+    } else {
+        let Some(picked) = app.dialog().file().blocking_pick_file() else {
+            return Ok(None);
+        };
+        require_owner_unlocked(&runtime).await?;
+        picked.into_path().map_err(command_error)?
+    };
+    let parsed = crate::migration::read(&path, "ssh_config").map_err(command_error)?;
+    let id = Uuid::new_v4().to_string();
+    let encrypted = runtime
+        .vault
+        .protect_local_state(&parsed.entries)
+        .map_err(command_error)?;
+    let result = serde_json::json!({
+        "id": id,
+        "preview": parsed.preview,
+        "sourcePath": path.to_string_lossy(),
+    });
+    *runtime.pending_import.lock().await = Some(PendingImport {
+        id,
+        created: Instant::now(),
+        encrypted,
+    });
+    Ok(Some(result))
+}
+
+#[tauri::command]
+async fn smart_parse_text(
+    runtime: State<'_, AppRuntime>,
+    text: String,
+    filename: Option<String>,
+    url: Option<String>,
+) -> Result<crate::smart_ingest::SmartParseResult, String> {
+    require_owner_unlocked(&runtime).await?;
+    crate::smart_ingest::smart_parse(&text, filename.as_deref(), url.as_deref())
+        .map_err(command_error)
+}
+
+#[tauri::command]
+async fn read_owner_clipboard(
+    app: AppHandle,
+    runtime: State<'_, AppRuntime>,
+) -> Result<String, String> {
+    require_owner_unlocked(&runtime).await?;
+    Ok(clipboard::read_text(&app).unwrap_or_default())
+}
+
+#[tauri::command]
+async fn clear_clipboard_if_matches(
+    app: AppHandle,
+    runtime: State<'_, AppRuntime>,
+    text: String,
+) -> Result<bool, String> {
+    require_owner_unlocked(&runtime).await?;
+    Ok(clipboard::clear_if_exact(&app, &runtime.clipboard, &text))
+}
+
+#[tauri::command]
+async fn attach_totp_to_item(
+    app: AppHandle,
+    runtime: State<'_, AppRuntime>,
+    id: String,
+    totp: String,
+    expected_updated_at: String,
+) -> Result<PublicConnection, String> {
+    require_owner_unlocked(&runtime).await?;
+    let trimmed = totp.trim();
+    crate::browser::current_totp(trimmed).map_err(command_error)?;
+    let uuid = Uuid::parse_str(id.trim()).map_err(|_| "Invalid item ID".to_owned())?;
+    let existing = runtime.vault.get_connection(uuid).map_err(command_error)?;
+    let mut modules = existing.stored.modules.clone();
+    if !modules.iter().any(|m| m.kind == "totp") {
+        modules.push(crate::model::ItemModule {
+            kind: "totp".to_owned(),
+            name: "totp".to_owned(),
+            value: String::new(),
+            agent_visible: Some(false),
+        });
+    }
+    let mut secrets = crate::model::SecretBundle::default();
+    secrets
+        .named_secrets
+        .insert("totp".to_owned(), trimmed.to_owned());
+    let item_type = existing.stored.item_type().to_owned();
+    let input = ConnectionInput {
+        login_uris: existing.stored.login_uris,
+        item_type,
+        folder: existing.stored.folder,
+        favorite: existing.stored.favorite,
+        id: Some(uuid),
+        modules,
+        name: existing.stored.name,
+        enabled: existing.stored.enabled,
+        description: existing.stored.description,
+        http_auth_type: existing.stored.http_auth_type,
+        private_key_import_path: String::new(),
+        auth_header: existing.stored.auth_header,
+        auth_location: existing.stored.auth_location,
+        auth_prefix: existing.stored.auth_prefix,
+        api_auth_headers: existing.stored.api_auth_headers,
+        test_path: existing.stored.test_path,
+        remove_secret_names: Vec::new(),
+        secrets,
+    };
+    let saved = runtime
+        .vault
+        .save_connection_checked(input, Some(expected_updated_at.as_str()))
+        .map_err(command_error)?;
+    emit_changed(&app);
+    schedule_auto_sync(&app, 3000);
+    Ok(saved)
 }
 
 #[tauri::command]
@@ -1178,6 +1832,7 @@ async fn commit_import(
         .map_err(command_error)?;
     *slot = None;
     emit_changed(&app);
+    schedule_auto_sync(&app, 3000);
     Ok(summary)
 }
 
@@ -1185,6 +1840,127 @@ async fn commit_import(
 async fn cancel_import(runtime: State<'_, AppRuntime>) -> Result<(), String> {
     *runtime.pending_import.lock().await = None;
     Ok(())
+}
+
+#[tauri::command]
+async fn update_status(runtime: State<'_, AppRuntime>) -> Result<UpdateStatus, String> {
+    Ok(runtime.updater.status().await)
+}
+
+#[tauri::command]
+async fn update_check(
+    app: AppHandle,
+    runtime: State<'_, AppRuntime>,
+) -> Result<UpdateStatus, String> {
+    let emit_handle = app.clone();
+    let outcome = runtime
+        .updater
+        .check_for_updates(true, move |status| {
+            emit_update_status(&emit_handle, status);
+        })
+        .await
+        .map_err(command_error)?;
+    let settings = runtime.vault.settings().unwrap_or_default();
+    if outcome.update_available
+        && outcome.status.phase == "available"
+        && settings.update_auto_download
+        && outcome.status.can_auto_install
+    {
+        let updater = runtime.updater.clone();
+        let handle = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let emit_handle = handle.clone();
+            let _ = updater
+                .download_and_stage(move |status| {
+                    emit_update_status(&emit_handle, status);
+                })
+                .await;
+        });
+    }
+    Ok(outcome.status)
+}
+
+#[tauri::command]
+async fn update_download(
+    app: AppHandle,
+    runtime: State<'_, AppRuntime>,
+) -> Result<UpdateStatus, String> {
+    require_owner_unlocked(&runtime).await?;
+    let emit_handle = app.clone();
+    runtime
+        .updater
+        .download_and_stage(move |status| {
+            emit_update_status(&emit_handle, status);
+        })
+        .await
+        .map_err(command_error)
+}
+
+#[tauri::command]
+async fn update_install_and_restart(
+    app: AppHandle,
+    runtime: State<'_, AppRuntime>,
+) -> Result<(), String> {
+    require_owner_unlocked(&runtime).await?;
+    let current_status = runtime.updater.status().await;
+    if current_status.phase != "ready" {
+        let emit_handle = app.clone();
+        runtime
+            .updater
+            .download_and_stage(move |status| {
+                emit_update_status(&emit_handle, status);
+            })
+            .await
+            .map_err(command_error)?;
+    }
+    let emit_handle = app.clone();
+    runtime
+        .updater
+        .apply_and_relaunch(true, move |status| {
+            emit_update_status(&emit_handle, status);
+        })
+        .await
+        .map_err(command_error)?;
+    clipboard::clear_if_unchanged(&app, &runtime.clipboard, None);
+    let exit_handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        exit_handle.exit(0);
+    });
+    Ok(())
+}
+
+#[tauri::command]
+async fn update_skip_version(
+    app: AppHandle,
+    runtime: State<'_, AppRuntime>,
+    version: String,
+) -> Result<UpdateStatus, String> {
+    require_owner_unlocked(&runtime).await?;
+    let status = runtime
+        .updater
+        .skip_version(&version)
+        .await
+        .map_err(command_error)?;
+    emit_update_status(&app, &status);
+    emit_changed(&app);
+    Ok(status)
+}
+
+#[tauri::command]
+async fn update_open_release_page(
+    app: AppHandle,
+    runtime: State<'_, AppRuntime>,
+) -> Result<(), String> {
+    let status = runtime.updater.status().await;
+    let url = if status.release_url.starts_with("https://github.com/") {
+        status.release_url
+    } else {
+        updater::DEFAULT_RELEASES_URL.to_owned()
+    };
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(command_error)
 }
 
 #[tauri::command]
@@ -1206,6 +1982,8 @@ async fn window_action(
         "close" => {
             let tray_available = runtime.tray_available.load(Ordering::Acquire);
             if !tray_available {
+                runtime.vault.lock_strong();
+                runtime.session_broker.stop();
                 clipboard::clear_if_unchanged(window.app_handle(), &runtime.clipboard, None);
                 window.app_handle().exit(0);
                 return Ok(());
@@ -1216,6 +1994,8 @@ async fn window_action(
                 .map_err(command_error)?
                 .close_behavior;
             if !should_hide_on_close(&close_behavior, tray_available) {
+                runtime.vault.lock_strong();
+                runtime.session_broker.stop();
                 clipboard::clear_if_unchanged(window.app_handle(), &runtime.clipboard, None);
                 window.app_handle().exit(0);
                 Ok(())
@@ -1225,6 +2005,65 @@ async fn window_action(
         }
         _ => Err("Unknown window operation".to_owned()),
     }
+}
+
+#[tauri::command]
+async fn start_vertical_resize(window: WebviewWindow, direction: String) -> Result<(), String> {
+    let is_north = match direction.as_str() {
+        "north" | "top" => true,
+        "south" | "bottom" => false,
+        _ => return Err("Only vertical resizing is supported".to_owned()),
+    };
+    #[cfg(windows)]
+    {
+        use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+        use windows::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
+        use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, SC_SIZE, WM_SYSCOMMAND};
+        const WMSZ_TOP: usize = 3;
+        const WMSZ_BOTTOM: usize = 6;
+
+        let hwnd = window.hwnd().map_err(command_error)?;
+        let cmd = SC_SIZE as usize + if is_north { WMSZ_TOP } else { WMSZ_BOTTOM };
+        unsafe {
+            let _ = ReleaseCapture();
+            PostMessageW(Some(HWND(hwnd.0)), WM_SYSCOMMAND, WPARAM(cmd), LPARAM(0))
+                .map_err(command_error)?;
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (window, is_north);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn set_edge_dock_enabled(
+    window: WebviewWindow,
+    runtime: State<'_, AppRuntime>,
+    enabled: bool,
+) -> Result<(), String> {
+    runtime.edge_dock.set_enabled(&window, enabled);
+    Ok(())
+}
+
+#[tauri::command]
+async fn edge_dock_expand(
+    window: WebviewWindow,
+    runtime: State<'_, AppRuntime>,
+) -> Result<(), String> {
+    runtime.edge_dock.expand(&window);
+    Ok(())
+}
+
+#[tauri::command]
+async fn edge_dock_hover(
+    window: WebviewWindow,
+    runtime: State<'_, AppRuntime>,
+    entered: bool,
+) -> Result<(), String> {
+    runtime.edge_dock.on_frontend_hover(&window, entered);
+    Ok(())
 }
 
 fn should_hide_on_close(close_behavior: &str, tray_available: bool) -> bool {
@@ -1237,6 +2076,9 @@ fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.unminimize();
         let _ = window.show();
+        if let Some(runtime) = app.try_state::<AppRuntime>() {
+            runtime.edge_dock.expand(&window);
+        }
         let _ = window.set_focus();
     }
 }
@@ -1277,12 +2119,17 @@ fn install_tray(app: &tauri::App) -> Result<()> {
                 let handle = app.clone();
                 tauri::async_runtime::spawn(async move {
                     let runtime = handle.state::<AppRuntime>();
+                    let strong_mode = runtime.vault.is_strong_mode();
                     let pin_configured = runtime.vault.owner_pin_configured();
                     runtime.owner_session.lock().await.lock();
+                    if strong_mode {
+                        runtime.vault.lock_strong();
+                        runtime.session_broker.stop();
+                    }
                     *runtime.pending_import.lock().await = None;
                     clipboard::clear_if_unchanged(&handle, &runtime.clipboard, None);
                     show_main_window(&handle);
-                    if matches!(pin_configured, Ok(false)) {
+                    if !strong_mode && matches!(pin_configured, Ok(false)) {
                         let _ = handle.emit("pin-setup-requested", ());
                     } else {
                         emit_changed(&handle);
@@ -1290,6 +2137,8 @@ fn install_tray(app: &tauri::App) -> Result<()> {
                 });
             } else if event.id() == "tray-quit" {
                 let runtime = app.state::<AppRuntime>();
+                runtime.vault.lock_strong();
+                runtime.session_broker.stop();
                 clipboard::clear_if_unchanged(app, &runtime.clipboard, None);
                 if let Err(error) = crate::runtime_epoch::invalidate(runtime.vault.data_dir()) {
                     eprintln!("OpenKeylet: failed to stop MCP sessions: {error:#}");
@@ -1373,6 +2222,15 @@ pub fn run_gui() -> Result<()> {
         context
     };
     let data_dir = app_data_dir()?;
+    if let Ok(executable) = mcp::launcher_executable() {
+        match updater::try_apply_pending_on_startup(&executable, &data_dir) {
+            Ok(true) => return Ok(()),
+            Ok(false) => {}
+            Err(error) => {
+                eprintln!("OpenKeylet: deferred startup update skipped: {error:#}");
+            }
+        }
+    }
     let mut gui_instance = GuiInstance::acquire(&data_dir)?;
     #[cfg(target_os = "linux")]
     if let Err(error) =
@@ -1392,18 +2250,33 @@ pub fn run_gui() -> Result<()> {
             if let Err(error) = crate::system_integration::migrate_legacy_entries(Path::new(&executable)) {
                 eprintln!("OpenKeylet: failed to migrate legacy system shortcuts: {error:#}");
             }
-            let browser = BrowserBridge::new(vault.clone());
+            let bridge_handle = app.handle().clone();
+            let browser = BrowserBridge::with_on_change(vault.clone(), move || {
+                emit_changed(&bridge_handle);
+            });
             let agent_registry = AgentRegistry::new(PathBuf::from(&executable))?;
             agent_registry.refresh_managed_instructions();
+            let session_broker = SessionBroker::new(data_dir.clone());
+            let updater = Arc::new(UpdateManager::new(
+                vault.clone(),
+                PathBuf::from(&executable),
+            ));
+            let edge_dock = Arc::new(EdgeDockController::new());
+            edge_dock.spawn_monitor(app.handle().clone());
             app.manage(AppRuntime {
                 _gui_instance: gui_instance,
                 github_backup: Mutex::new(GithubBackup::new(vault.clone())?),
+                session_broker,
+                updater,
+                edge_dock,
                 vault,
                 executable,
                 browser,
                 clipboard: Arc::new(ClipboardGuard::new()),
                 pending_private_key: Mutex::new(None),
                 pending_import: Mutex::new(None),
+                pending_backup_path: Mutex::new(None),
+                pending_backup_import: Mutex::new(None),
                 owner_session: Mutex::new(OwnerSession::default()),
                 auto_sync_generation: AtomicU64::new(0),
                 agent_registry,
@@ -1413,11 +2286,19 @@ pub fn run_gui() -> Result<()> {
             let window = app.get_webview_window("main").context("Main window not found")?;
             #[cfg(debug_assertions)]
             window.set_title("OpenKeylet · DEV")?;
-            let fixed_size = LogicalSize::new(WINDOW_LOGICAL_WIDTH, WINDOW_LOGICAL_HEIGHT);
-            window.set_min_size(Some(fixed_size))?;
-            window.set_max_size(Some(fixed_size))?;
-            window.set_size(fixed_size)?;
-            window.set_resizable(false)?;
+            window.set_min_size(Some(LogicalSize::new(
+                WINDOW_LOGICAL_WIDTH,
+                WINDOW_MIN_LOGICAL_HEIGHT,
+            )))?;
+            window.set_max_size(Some(LogicalSize::new(
+                WINDOW_LOGICAL_WIDTH,
+                WINDOW_MAX_LOGICAL_HEIGHT,
+            )))?;
+            window.set_size(LogicalSize::new(
+                WINDOW_LOGICAL_WIDTH,
+                WINDOW_LOGICAL_HEIGHT,
+            ))?;
+            window.set_resizable(true)?;
             window.set_maximizable(false)?;
             if let Err(error) = request_rounded_corners(&window) {
                 // DWMWA_WINDOW_CORNER_PREFERENCE is Windows 11+; Windows 10 returns E_INVALIDARG.
@@ -1444,14 +2325,29 @@ pub fn run_gui() -> Result<()> {
                 });
             }
             schedule_auto_sync(app.handle(), 1500);
+            schedule_auto_update_check(app.handle(), 3500);
             Ok(())
         })
         .on_window_event(|window, event| {
-            if matches!(event, tauri::WindowEvent::ScaleFactorChanged { .. }) {
-                let _ = window.set_size(LogicalSize::new(
-                    WINDOW_LOGICAL_WIDTH,
-                    WINDOW_LOGICAL_HEIGHT,
-                ));
+            if matches!(event, tauri::WindowEvent::Moved(_)) {
+                window.state::<AppRuntime>().edge_dock.on_window_moved();
+            }
+            if let tauri::WindowEvent::Resized(size) = event {
+                let scale = window.scale_factor().unwrap_or(1.0);
+                let logical_w = size.width as f64 / scale;
+                let logical_h = (size.height as f64 / scale)
+                    .clamp(WINDOW_MIN_LOGICAL_HEIGHT, WINDOW_MAX_LOGICAL_HEIGHT);
+                if (logical_w - WINDOW_LOGICAL_WIDTH).abs() > 1.5 {
+                    let _ = window.set_size(LogicalSize::new(WINDOW_LOGICAL_WIDTH, logical_h));
+                }
+            }
+            if let tauri::WindowEvent::ScaleFactorChanged { scale_factor, .. } = event {
+                let current_h = window
+                    .inner_size()
+                    .map(|s| s.height as f64 / *scale_factor)
+                    .unwrap_or(WINDOW_LOGICAL_HEIGHT)
+                    .clamp(WINDOW_MIN_LOGICAL_HEIGHT, WINDOW_MAX_LOGICAL_HEIGHT);
+                let _ = window.set_size(LogicalSize::new(WINDOW_LOGICAL_WIDTH, current_h));
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let runtime = window.state::<AppRuntime>();
@@ -1467,6 +2363,8 @@ pub fn run_gui() -> Result<()> {
                     api.prevent_close();
                     let _ = window.hide();
                 } else {
+                    runtime.vault.lock_strong();
+                    runtime.session_broker.stop();
                     clipboard::clear_if_unchanged(window.app_handle(), &runtime.clipboard, None);
                     if let Err(error) =
                         crate::runtime_epoch::invalidate(runtime.vault.data_dir())
@@ -1484,6 +2382,7 @@ pub fn run_gui() -> Result<()> {
             owner_disable_pin,
             owner_unlock,
             owner_lock,
+            owner_change_master_passphrase,
             owner_secret_view,
             owner_editor_drafts,
             save_editor_draft,
@@ -1511,6 +2410,7 @@ pub fn run_gui() -> Result<()> {
             agent_mcp_repair,
             agent_mcp_remove,
             choose_private_key,
+            list_chrome_profiles,
             quick_pair_browser,
             open_chrome_browser,
             test_browser_bridge,
@@ -1520,7 +2420,16 @@ pub fn run_gui() -> Result<()> {
             export_backup,
             generate_password,
             import_backup,
+            pick_backup_import_file,
+            prepare_backup_import,
+            commit_backup_import,
+            cancel_backup_import,
             prepare_import,
+            prepare_ssh_config_import,
+            smart_parse_text,
+            read_owner_clipboard,
+            clear_clipboard_if_matches,
+            attach_totp_to_item,
             commit_import,
             cancel_import,
             github_backup_status,
@@ -1534,8 +2443,18 @@ pub fn run_gui() -> Result<()> {
             github_backup_set_auto_sync,
             github_backup_disconnect,
             github_backup_help,
+            update_status,
+            update_check,
+            update_download,
+            update_install_and_restart,
+            update_skip_version,
+            update_open_release_page,
             open_data_folder,
             window_action,
+            start_vertical_resize,
+            set_edge_dock_enabled,
+            edge_dock_expand,
+            edge_dock_hover,
         ])
         .build(context)
         .context("OpenKeylet GUI startup failed")?;
@@ -1561,7 +2480,10 @@ pub fn run_gui() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{OwnerSession, scrub_locked_app_state, should_hide_on_close};
+    use super::{
+        OwnerSession, is_valid_chrome_profile_dir, parse_chrome_profiles_from_local_state,
+        scrub_locked_app_state, should_hide_on_close,
+    };
     use crate::{
         model::{BrowserBridgeState, ConnectionInput, NewActivity, SettingsPatch},
         vault::Vault,
@@ -1672,6 +2594,8 @@ mod tests {
                     enabled: false,
                     paired: false,
                     connected: false,
+                    connected_count: 0,
+                    pairing_active: false,
                     status: "off".to_owned(),
                     error: String::new(),
                     endpoint: String::new(),
@@ -1686,5 +2610,36 @@ mod tests {
         assert!(scrubbed.activities.is_empty());
         assert_eq!(scrubbed.settings.language, "zh");
         assert_eq!(scrubbed.settings.owner_auto_lock_minutes, 15);
+    }
+
+    #[test]
+    fn chrome_profile_parser_filters_invalid_and_sorts_last_used_first() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("Default")).unwrap();
+        std::fs::create_dir(dir.path().join("Profile 1")).unwrap();
+        std::fs::create_dir(dir.path().join("System Profile")).unwrap();
+        let raw = r#"{
+            "profile": {
+                "last_used": "Profile 1",
+                "info_cache": {
+                    "Default": { "name": "Personal", "user_name": "me@example.com" },
+                    "Profile 1": { "name": "Work", "user_name": "work@example.com" },
+                    "Profile 2": { "name": "Missing On Disk" },
+                    "System Profile": { "name": "System" },
+                    "../evil": { "name": "Traversal" }
+                }
+            }
+        }"#;
+        let profiles = parse_chrome_profiles_from_local_state(dir.path(), raw);
+        assert_eq!(profiles.len(), 2);
+        assert_eq!(profiles[0].directory, "Profile 1");
+        assert_eq!(profiles[0].name, "Work");
+        assert_eq!(profiles[0].account, "work@example.com");
+        assert!(profiles[0].is_last_used);
+        assert_eq!(profiles[1].directory, "Default");
+        assert_eq!(profiles[1].name, "Personal");
+        assert!(!is_valid_chrome_profile_dir("--evil"));
+        assert!(!is_valid_chrome_profile_dir("../Profile 1"));
+        assert!(!is_valid_chrome_profile_dir("System Profile"));
     }
 }

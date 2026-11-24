@@ -10,24 +10,74 @@ pub struct AuthInput {
     pub auth_source: String,
     #[serde(default)]
     pub token: String,
+    #[serde(default)]
+    pub provider: String,
+    #[serde(default)]
+    pub server_url: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveredVaultRepo {
+    pub full_name: String,
+    pub owner: String,
+    pub name: String,
+    pub default_branch: String,
+    pub has_vault_file: bool,
+    pub has_topic: bool,
+    pub updated_at: String,
+    pub private: bool,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountStatus {
     pub login: String,
+    pub discovered_repos: Vec<DiscoveredVaultRepo>,
 }
 
 fn cli_path() -> Result<PathBuf> {
-    // Resolve absolute PATH entries ourselves; never search the working directory.
+    // Resolve absolute PATH entries first, then standard OS install locations; never search cwd.
     let name = if cfg!(windows) { "gh.exe" } else { "gh" };
-    std::env::var_os("PATH")
+    if let Some(found) = std::env::var_os("PATH")
         .into_iter()
         .flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
         .filter(|path| path.is_absolute())
         .map(|path| path.join(name))
         .find(|path| path.is_file())
-        .context("GITHUB_CLI_MISSING")
+    {
+        return Ok(found);
+    }
+    #[cfg(windows)]
+    {
+        for candidate in [
+            std::env::var_os("ProgramFiles")
+                .map(|p| PathBuf::from(p).join("GitHub CLI").join("gh.exe")),
+            std::env::var_os("LOCALAPPDATA")
+                .map(|p| PathBuf::from(p).join("Programs").join("GitHub CLI").join("gh.exe")),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if candidate.is_file() {
+                return Ok(candidate);
+            }
+        }
+    }
+    #[cfg(unix)]
+    {
+        for candidate in [
+            "/opt/homebrew/bin/gh",
+            "/usr/local/bin/gh",
+            "/usr/bin/gh",
+        ] {
+            let path = PathBuf::from(candidate);
+            if path.is_file() {
+                return Ok(path);
+            }
+        }
+    }
+    bail!("GITHUB_CLI_MISSING")
 }
 
 async fn read_cli_token(mut command: tokio::process::Command) -> Result<Zeroizing<String>> {
@@ -101,7 +151,8 @@ mod tests {
         assert!(token("token", "line\nbreak").await.is_err());
         assert!(
             !serde_json::to_string(&AccountStatus {
-                login: "alice".into()
+                login: "alice".into(),
+                discovered_repos: Vec::new(),
             })
             .unwrap()
             .contains("token")

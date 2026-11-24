@@ -64,7 +64,45 @@ pub fn export_protected(vault: &Vault, path: &Path, password: &str) -> Result<()
     Ok(())
 }
 
-pub fn import_with_password(vault: &Vault, path: &Path, password: &str) -> Result<ImportSummary> {
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupMergeStats {
+    pub total_items: usize,
+    pub new_items: usize,
+    pub duplicate_skipped: usize,
+    pub name_conflicts: usize,
+    pub passkey_count: usize,
+    pub trash_count: usize,
+    pub history_entries: usize,
+    pub sample_names: Vec<String>,
+    pub conflict_renames: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupPreview {
+    pub format_label: String,
+    pub version: u8,
+    pub protected: bool,
+    pub created_at: Option<String>,
+    pub total_items: usize,
+    pub new_items: usize,
+    pub duplicate_skipped: usize,
+    pub name_conflicts: usize,
+    pub passkey_count: usize,
+    pub trash_count: usize,
+    pub history_entries: usize,
+    pub sample_names: Vec<String>,
+    pub conflict_renames: Vec<String>,
+}
+
+pub struct PreparedBackup {
+    pub preview: BackupPreview,
+    pub version: u8,
+    pub raw_payload: Zeroizing<Vec<u8>>,
+}
+
+pub fn inspect_file_requires_password(path: &Path) -> Result<bool> {
     ensure!(
         fs::metadata(path)?.len() <= 64 * 1024 * 1024,
         "Backup exceeds 64 MiB"
@@ -72,23 +110,93 @@ pub fn import_with_password(vault: &Vault, path: &Path, password: &str) -> Resul
     let bytes = fs::read(path).context("Unable to read backup")?;
     let value: serde_json::Value =
         serde_json::from_slice(&bytes).context("Invalid backup format")?;
-    if value["format"] != "openkeylet-password-backup" {
-        return import_from_file(vault, path);
+    if value["format"] == "openkeylet-password-backup" {
+        return Ok(true);
     }
-    let file: PasswordBackupFile = serde_json::from_value(value)?;
+    let file: BackupFile = serde_json::from_value(value).context("Invalid backup file format")?;
+    validate_backup_file(&file)?;
+    Ok(false)
+}
+
+pub fn prepare_import_with_password(
+    vault: &Vault,
+    path: &Path,
+    password: &str,
+) -> Result<PreparedBackup> {
     ensure!(
-        file.version == 1 && file.kdf == "argon2id-64m-t3-p1" && file.cipher == "xchacha20poly1305",
-        "Unsupported protected backup format"
+        fs::metadata(path)?.len() <= 64 * 1024 * 1024,
+        "Backup exceeds 64 MiB"
     );
-    let salt = STANDARD_NO_PAD
-        .decode(&file.salt)
-        .context("Invalid backup salt")?;
-    let key = password_backup_key(password, &salt)?;
-    let plain = Zeroizing::new(
-        decrypt_bytes(&key, &file.payload, PASSWORD_BACKUP_AAD)
-            .context("Incorrect backup password or damaged backup")?,
-    );
-    restore_cloud_snapshot(vault, &plain)
+    let bytes = fs::read(path).context("Unable to read backup")?;
+    let value: serde_json::Value =
+        serde_json::from_slice(&bytes).context("Invalid backup format")?;
+    let (plain, version, protected) = if value["format"] == "openkeylet-password-backup" {
+        let file: PasswordBackupFile = serde_json::from_value(value)?;
+        ensure!(
+            file.version == 1
+                && file.kdf == "argon2id-64m-t3-p1"
+                && file.cipher == "xchacha20poly1305",
+            "Unsupported protected backup format"
+        );
+        let salt = STANDARD_NO_PAD
+            .decode(&file.salt)
+            .context("Invalid backup salt")?;
+        let key = password_backup_key(password, &salt)?;
+        let plain = Zeroizing::new(
+            decrypt_bytes(&key, &file.payload, PASSWORD_BACKUP_AAD)
+                .context("Incorrect backup password or damaged backup")?,
+        );
+        let payload: BackupPayload =
+            serde_json::from_slice(&plain).context("Backup contents are corrupted")?;
+        let v = payload.version;
+        (plain, v, true)
+    } else {
+        let file: BackupFile =
+            serde_json::from_value(value).context("Invalid backup file format")?;
+        validate_backup_file(&file)?;
+        let plain = Zeroizing::new(decrypt_automatic_backup(&file)?);
+        (plain, file.version, false)
+    };
+
+    let (entries, trash, created_at) = parse_backup_payload(&plain, version)?;
+    let stats = vault.preview_merge_backup_entries(&entries, &trash)?;
+    let format_label = if protected {
+        format!("Protected .mvault (v{version})")
+    } else {
+        format!("Legacy self-unlocking .mvault (v{version})")
+    };
+    Ok(PreparedBackup {
+        preview: BackupPreview {
+            format_label,
+            version,
+            protected,
+            created_at,
+            total_items: stats.total_items,
+            new_items: stats.new_items,
+            duplicate_skipped: stats.duplicate_skipped,
+            name_conflicts: stats.name_conflicts,
+            passkey_count: stats.passkey_count,
+            trash_count: stats.trash_count,
+            history_entries: stats.history_entries,
+            sample_names: stats.sample_names,
+            conflict_renames: stats.conflict_renames,
+        },
+        version,
+        raw_payload: plain,
+    })
+}
+
+pub fn commit_prepared_import(
+    vault: &Vault,
+    raw_payload: &[u8],
+    version: u8,
+) -> Result<ImportSummary> {
+    merge_backup_payload(vault, raw_payload, version)
+}
+
+pub fn import_with_password(vault: &Vault, path: &Path, password: &str) -> Result<ImportSummary> {
+    let prepared = prepare_import_with_password(vault, path, password)?;
+    commit_prepared_import(vault, &prepared.raw_payload, prepared.version)
 }
 
 fn backup_aad(version: u8) -> Result<&'static [u8]> {
@@ -312,7 +420,13 @@ fn decrypt_automatic_backup(file: &BackupFile) -> Result<Vec<u8>> {
     result
 }
 
-fn merge_backup_payload(vault: &Vault, plain: &[u8], version: u8) -> Result<ImportSummary> {
+type ParsedBackup = (
+    Vec<(PortableConnection, SecretBundle)>,
+    Vec<crate::model::PortableTrashItem>,
+    Option<String>,
+);
+
+fn parse_backup_payload(plain: &[u8], version: u8) -> Result<ParsedBackup> {
     if version == 3 {
         let payload: V3BackupPayload =
             serde_json::from_slice(plain).context("Backup contents are corrupted")?;
@@ -336,7 +450,7 @@ fn merge_backup_payload(vault: &Vault, plain: &[u8], version: u8) -> Result<Impo
                 serde_json::from_value(item.connection).context("Invalid backup item format")?;
             connections.push((connection, item.secrets));
         }
-        return vault.merge_connections(connections);
+        return Ok((connections, Vec::new(), None));
     }
     let payload: BackupPayload =
         serde_json::from_slice(plain).context("Backup contents are corrupted")?;
@@ -346,14 +460,20 @@ fn merge_backup_payload(vault: &Vault, plain: &[u8], version: u8) -> Result<Impo
     {
         bail!("Unsupported backup content version");
     }
-    vault.merge_backup_entries(
-        payload
-            .connections
-            .into_iter()
-            .map(|item| (item.connection, item.secrets))
-            .collect(),
-        payload.trash,
-    )
+    let connections = payload
+        .connections
+        .into_iter()
+        .map(|item| (item.connection, item.secrets))
+        .collect();
+    Ok((connections, payload.trash, Some(payload.created_at)))
+}
+
+fn merge_backup_payload(vault: &Vault, plain: &[u8], version: u8) -> Result<ImportSummary> {
+    let (connections, trash, _) = parse_backup_payload(plain, version)?;
+    if version == 3 {
+        return vault.merge_connections(connections);
+    }
+    vault.merge_backup_entries(connections, trash)
 }
 
 #[cfg(test)]
@@ -945,5 +1065,60 @@ mod tests {
         let items = dst.list_connections().unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].name, "Existing Local");
+    }
+
+    #[test]
+    fn preview_detects_protected_vs_legacy_and_reports_duplicates_and_conflicts_without_mutating() {
+        let dir = tempdir().unwrap();
+        let src = Vault::open(dir.path().join("src")).unwrap();
+        let dst = Vault::open(dir.path().join("dst")).unwrap();
+
+        src.save_connection(input(Uuid::new_v4(), "Identical Item", "same-secret"))
+            .unwrap();
+        src.save_connection(input(Uuid::new_v4(), "Conflict Item", "new-secret"))
+            .unwrap();
+        src.save_connection(input(Uuid::new_v4(), "Brand New", "fresh-secret"))
+            .unwrap();
+
+        dst.save_connection(input(Uuid::new_v4(), "Identical Item", "same-secret"))
+            .unwrap();
+        dst.save_connection(input(Uuid::new_v4(), "Conflict Item", "old-secret"))
+            .unwrap();
+
+        let protected_path = dir.path().join("protected.mvault");
+        export_protected(&src, &protected_path, "valid-twelve-char-password").unwrap();
+        let legacy_path = dir.path().join("legacy.mvault");
+        export_to_file(&src, &legacy_path).unwrap();
+
+        assert!(inspect_file_requires_password(&protected_path).unwrap());
+        assert!(!inspect_file_requires_password(&legacy_path).unwrap());
+
+        let prepared =
+            prepare_import_with_password(&dst, &protected_path, "valid-twelve-char-password")
+                .unwrap();
+        assert!(prepared.preview.protected);
+        assert_eq!(prepared.preview.total_items, 3);
+        assert_eq!(prepared.preview.duplicate_skipped, 1);
+        assert_eq!(prepared.preview.new_items, 2);
+        assert_eq!(prepared.preview.name_conflicts, 1);
+        assert_eq!(
+            prepared.preview.conflict_renames,
+            vec!["Conflict Item → Conflict Item(2)".to_owned()]
+        );
+
+        // Preview must not have modified dst
+        assert_eq!(dst.list_connections().unwrap().len(), 2);
+
+        // Legacy self-unlocking preview works with empty password
+        let legacy_prepared = prepare_import_with_password(&dst, &legacy_path, "").unwrap();
+        assert!(!legacy_prepared.preview.protected);
+        assert_eq!(legacy_prepared.preview.new_items, 2);
+
+        // Commit applies the exact previewed changes
+        let summary =
+            commit_prepared_import(&dst, &prepared.raw_payload, prepared.version).unwrap();
+        assert_eq!(summary.added, 2);
+        assert_eq!(summary.merged, 1);
+        assert_eq!(dst.list_connections().unwrap().len(), 4);
     }
 }
