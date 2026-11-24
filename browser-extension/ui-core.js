@@ -82,9 +82,6 @@ const OpenKeyletUI = (() => {
       "status.checking": "CHECKING",
       "status.connected": "CONNECTED",
       "status.unavailable": "UNAVAILABLE",
-      "header.themeToLight": "Switch to light mode",
-      "header.themeToDark": "Switch to dark mode",
-      "header.themeLabel": "Light mode",
       "header.githubTitle": "OpenKeylet on GitHub",
       "header.lock": "LOCK",
       "header.lockTitle": "Lock quick autofill",
@@ -177,15 +174,6 @@ const OpenKeyletUI = (() => {
       "settings.invalidPort": "Invalid port (1024–65535)",
       "settings.switchedRemote": "Switched to {host}:{port}. Run openkeylet browser pair {port} on the server.",
       "settings.switchedLocal": "Bridge updated. Use OpenKeylet desktop to pair if needed.",
-      "settings.appearanceTitle": "Appearance & language",
-      "settings.language": "Language",
-      "settings.langAuto": "AUTO",
-      "settings.langEn": "EN",
-      "settings.langZh": "简中",
-      "settings.langZhTw": "繁中",
-      "settings.langJa": "日本語",
-      "settings.langKo": "한국어",
-      "settings.langEs": "ES",
       "settings.footerVault": "Agent bridge",
       "settings.privacy": "Privacy",
 
@@ -203,9 +191,6 @@ const OpenKeyletUI = (() => {
       "status.checking": "正在连接",
       "status.connected": "已连接",
       "status.unavailable": "未连接",
-      "header.themeToLight": "切换为浅色模式",
-      "header.themeToDark": "切换为深色模式",
-      "header.themeLabel": "浅色模式",
       "header.githubTitle": "访问 OpenKeylet GitHub",
       "header.lock": "锁定",
       "header.lockTitle": "锁定快捷填充",
@@ -298,15 +283,6 @@ const OpenKeyletUI = (() => {
       "settings.invalidPort": "端口无效 (1024–65535)",
       "settings.switchedRemote": "已切换远程 Bridge ({host}:{port})，请在服务端运行 openkeylet browser pair {port}",
       "settings.switchedLocal": "连接配置已更新，如未配对请在桌面端完成配对",
-      "settings.appearanceTitle": "外观与语言",
-      "settings.language": "界面语言",
-      "settings.langAuto": "自动",
-      "settings.langEn": "EN",
-      "settings.langZh": "简中",
-      "settings.langZhTw": "繁中",
-      "settings.langJa": "日本語",
-      "settings.langKo": "한국어",
-      "settings.langEs": "ES",
       "settings.footerVault": "Agent 浏览器桥接",
       "settings.privacy": "隐私政策",
 
@@ -324,9 +300,6 @@ const OpenKeyletUI = (() => {
       "status.checking": "連線中",
       "status.connected": "已連線",
       "status.unavailable": "未連線",
-      "header.themeToLight": "切換為淺色模式",
-      "header.themeToDark": "切換為深色模式",
-      "header.themeLabel": "淺色模式",
       "header.githubTitle": "造訪 OpenKeylet GitHub",
       "header.lock": "鎖定",
       "header.lockTitle": "鎖定快捷填寫",
@@ -419,15 +392,6 @@ const OpenKeyletUI = (() => {
       "settings.invalidPort": "連接埠無效 (1024–65535)",
       "settings.switchedRemote": "已切換遠端 Bridge ({host}:{port})，請在伺服器端執行 openkeylet browser pair {port}",
       "settings.switchedLocal": "連線設定已更新，若未配對請在桌面端完成配對",
-      "settings.appearanceTitle": "外觀與語言",
-      "settings.language": "介面語言",
-      "settings.langAuto": "自動",
-      "settings.langEn": "EN",
-      "settings.langZh": "简中",
-      "settings.langZhTw": "繁中",
-      "settings.langJa": "日本語",
-      "settings.langKo": "한국어",
-      "settings.langEs": "ES",
       "settings.footerVault": "Agent 瀏覽器橋接",
       "settings.privacy": "隱私權政策",
 
@@ -445,9 +409,6 @@ const OpenKeyletUI = (() => {
       "status.checking": "確認中",
       "status.connected": "接続済み",
       "status.unavailable": "未接続",
-      "header.themeToLight": "ライトモードに切替",
-      "header.themeToDark": "ダークモードに切替",
-      "header.themeLabel": "ライトモード",
       "header.githubTitle": "OpenKeylet の GitHub を開く",
       "header.lock": "ロック",
       "header.lockTitle": "クイック入力をロック",
@@ -540,15 +501,6 @@ const OpenKeyletUI = (() => {
       "settings.invalidPort": "無効なポートです (1024–65535)",
       "settings.switchedRemote": "{host}:{port} に切り替えました。サーバーで openkeylet browser pair {port} を実行してください。",
       "settings.switchedLocal": "ブリッジを更新しました。必要に応じてデスクトップ側でペアリングしてください。",
-      "settings.appearanceTitle": "外観と言語",
-      "settings.language": "表示言語",
-      "settings.langAuto": "自動",
-      "settings.langEn": "EN",
-      "settings.langZh": "简中",
-      "settings.langZhTw": "繁中",
-      "settings.langJa": "日本語",
-      "settings.langKo": "한국어",
-      "settings.langEs": "ES",
       "settings.footerVault": "Agent ブリッジ",
       "settings.privacy": "プライバシー",
 
@@ -566,9 +518,6 @@ const OpenKeyletUI = (() => {
       "status.checking": "확인 중",
       "status.connected": "연결됨",
       "status.unavailable": "연결 안 됨",
-      "header.themeToLight": "라이트 모드로 전환",
-      "header.themeToDark": "다크 모드로 전환",
-      "header.themeLabel": "라이트 모드",
       "header.githubTitle": "OpenKeylet GitHub 열기",
       "header.lock": "잠금",
       "header.lockTitle": "빠른 입력 잠금",
@@ -661,15 +610,6 @@ const OpenKeyletUI = (() => {
       "settings.invalidPort": "유효하지 않은 포트 (1024–65535)",
       "settings.switchedRemote": "{host}:{port}로 전환했습니다. 서버에서 openkeylet browser pair {port}를 실행하세요.",
       "settings.switchedLocal": "브리지가 업데이트되었습니다. 필요 시 데스크톱에서 페어링하세요.",
-      "settings.appearanceTitle": "외관 및 언어",
-      "settings.language": "언어",
-      "settings.langAuto": "자동",
-      "settings.langEn": "EN",
-      "settings.langZh": "简中",
-      "settings.langZhTw": "繁中",
-      "settings.langJa": "日本語",
-      "settings.langKo": "한국어",
-      "settings.langEs": "ES",
       "settings.footerVault": "Agent 브리지",
       "settings.privacy": "개인정보",
 
@@ -687,9 +627,6 @@ const OpenKeyletUI = (() => {
       "status.checking": "COMPROBANDO",
       "status.connected": "CONECTADO",
       "status.unavailable": "NO DISPONIBLE",
-      "header.themeToLight": "Cambiar a modo claro",
-      "header.themeToDark": "Cambiar a modo oscuro",
-      "header.themeLabel": "Modo claro",
       "header.githubTitle": "OpenKeylet en GitHub",
       "header.lock": "BLOQUEAR",
       "header.lockTitle": "Bloquear autocompletado",
@@ -782,15 +719,6 @@ const OpenKeyletUI = (() => {
       "settings.invalidPort": "Puerto inválido (1024–65535)",
       "settings.switchedRemote": "Cambiado a {host}:{port}. Ejecuta openkeylet browser pair {port} en el servidor.",
       "settings.switchedLocal": "Puente actualizado. Empareja desde OpenKeylet si hace falta.",
-      "settings.appearanceTitle": "Apariencia e idioma",
-      "settings.language": "Idioma",
-      "settings.langAuto": "AUTO",
-      "settings.langEn": "EN",
-      "settings.langZh": "简中",
-      "settings.langZhTw": "繁中",
-      "settings.langJa": "日本語",
-      "settings.langKo": "한국어",
-      "settings.langEs": "ES",
       "settings.footerVault": "Puente para Agents",
       "settings.privacy": "Privacidad",
 
@@ -844,16 +772,6 @@ const OpenKeyletUI = (() => {
     }
     for (const el of root.querySelectorAll("[data-i18n-aria]")) {
       el.setAttribute("aria-label", t(el.dataset.i18nAria));
-    }
-    const themeToggle = document.getElementById("theme-toggle");
-    if (themeToggle) {
-      themeToggle.setAttribute("aria-checked", String(theme === "light"));
-      themeToggle.title = t(theme === "dark" ? "header.themeToLight" : "header.themeToDark");
-      themeToggle.setAttribute("aria-label", t("header.themeLabel"));
-    }
-    for (const btn of root.querySelectorAll("[data-lang-option]")) {
-      btn.classList.toggle("active", btn.dataset.langOption === langSetting);
-      btn.setAttribute("aria-pressed", String(btn.dataset.langOption === langSetting));
     }
   }
 

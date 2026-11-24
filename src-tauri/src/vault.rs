@@ -30,6 +30,7 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 
 const MAX_ACTIVITIES: usize = 3_000;
+const MAX_EDITOR_DRAFTS: usize = 10;
 const VAULT_VERSION: u8 = 12;
 #[cfg(test)]
 #[path = "vault_lifecycle_tests.rs"]
@@ -496,7 +497,7 @@ impl Vault {
                 .collect::<Result<Vec<_>>>()
         })?;
         drafts.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
-        drafts.truncate(1);
+        drafts.truncate(MAX_EDITOR_DRAFTS);
         Ok(drafts)
     }
 
@@ -511,12 +512,21 @@ impl Vault {
         let updated_at = Utc::now().to_rfc3339();
         let payload = self.with_key(|key| key.encrypt(&input))?;
         self.update_document(|document| {
-            document.editor_drafts.clear();
-            document.editor_drafts.push(StoredEditorDraft {
-                id,
-                updated_at: updated_at.clone(),
-                payload,
-            });
+            if let Some(pos) = document.editor_drafts.iter().position(|draft| draft.id == id) {
+                document.editor_drafts.remove(pos);
+            }
+            document.editor_drafts.insert(
+                0,
+                StoredEditorDraft {
+                    id,
+                    updated_at: updated_at.clone(),
+                    payload,
+                },
+            );
+            document
+                .editor_drafts
+                .sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+            document.editor_drafts.truncate(MAX_EDITOR_DRAFTS);
             Ok(())
         })?;
         Ok(OwnerEditorDraft {
@@ -701,6 +711,44 @@ impl Vault {
             .context("This secret field has not been configured")?
             .to_owned();
         Ok((connection.stored.name, metadata.kind, value))
+    }
+
+    pub fn get_module_value(
+        &self,
+        id: Uuid,
+        field: &str,
+    ) -> Result<(String, String, String, bool)> {
+        let connection = self.get_connection(id)?;
+        if !connection.stored.enabled {
+            bail!("This project is disabled");
+        }
+        let field = field.trim();
+        if let Some(metadata) = connection
+            .secrets
+            .available_fields(connection.stored.secret.as_ref())
+            .into_iter()
+            .find(|candidate| candidate.name == field)
+        {
+            let value = connection
+                .secrets
+                .get(field)
+                .context("This secret field has not been configured")?
+                .to_owned();
+            return Ok((connection.stored.name, metadata.kind, value, true));
+        }
+        if let Some(module) = connection
+            .stored
+            .modules
+            .iter()
+            .find(|module| !module.is_secret() && module.kind == field)
+        {
+            let value = module.value.trim().to_owned();
+            if value.is_empty() {
+                bail!("This module has not been configured");
+            }
+            return Ok((connection.stored.name, module.kind.clone(), value, false));
+        }
+        bail!("This project does not have this module or secret field")
     }
 
     pub fn save_connection(&self, input: ConnectionInput) -> Result<PublicConnection> {
@@ -2138,10 +2186,10 @@ pub(crate) fn normalize_connection(
     } else {
         String::new()
     };
-    let ssh_auth_type = if module_secret_configured(&modules, secrets, "password") {
-        "password"
-    } else if module_secret_configured(&modules, secrets, "privateKey") {
+    let ssh_auth_type = if module_secret_configured(&modules, secrets, "privateKey") {
         "privateKey"
+    } else if module_secret_configured(&modules, secrets, "password") {
+        "password"
     } else {
         ""
     }
@@ -2820,18 +2868,50 @@ mod tests {
         );
 
         let existing_item_id = Uuid::new_v4();
-        let mut replacement = ssh_input(Some(existing_item_id));
-        replacement.name = "replacement-draft".to_owned();
-        let replacement = vault.save_editor_draft(None, replacement).unwrap();
+        let mut second = ssh_input(Some(existing_item_id));
+        second.name = "second-draft".to_owned();
+        let second = vault.save_editor_draft(None, second).unwrap();
+        let drafts = vault.list_editor_drafts().unwrap();
+        assert_eq!(drafts.len(), 2);
+        assert_eq!(drafts[0].id, second.id);
+        assert_eq!(drafts[0].input.id, Some(existing_item_id));
+        assert_eq!(drafts[1].id, saved.id);
+        assert_ne!(second.id, saved.id);
+
+        // Updating an existing draft refreshes it in place without duplicating or wiping others.
+        let mut updated_first = ssh_input(None);
+        updated_first.name = "updated-first-draft".to_owned();
+        let updated = vault.save_editor_draft(Some(saved.id), updated_first).unwrap();
+        assert_eq!(updated.id, saved.id);
+        let drafts = vault.list_editor_drafts().unwrap();
+        assert_eq!(drafts.len(), 2);
+        assert_eq!(drafts[0].id, saved.id);
+        assert_eq!(drafts[0].input.name, "updated-first-draft");
+        assert_eq!(drafts[1].id, second.id);
+
+        vault.delete_editor_draft(second.id).unwrap();
         let drafts = vault.list_editor_drafts().unwrap();
         assert_eq!(drafts.len(), 1);
-        assert_eq!(drafts[0].id, replacement.id);
-        assert_eq!(drafts[0].input.id, Some(existing_item_id));
-        assert_ne!(replacement.id, saved.id);
+        assert_eq!(drafts[0].id, saved.id);
 
-        vault.delete_editor_draft(replacement.id).unwrap();
+        vault.delete_editor_draft(saved.id).unwrap();
         let drafts = vault.list_editor_drafts().unwrap();
         assert!(drafts.is_empty());
+
+        // Queue caps at MAX_EDITOR_DRAFTS (10), evicting only the oldest drafts.
+        let mut ids = Vec::new();
+        for idx in 1..=12 {
+            let mut item = ssh_input(None);
+            item.name = format!("queued-draft-{idx}");
+            ids.push(vault.save_editor_draft(None, item).unwrap().id);
+        }
+        let queued = vault.list_editor_drafts().unwrap();
+        assert_eq!(queued.len(), MAX_EDITOR_DRAFTS);
+        assert_eq!(queued[0].id, ids[11]);
+        assert_eq!(queued[0].input.name, "queued-draft-12");
+        assert_eq!(queued[9].id, ids[2]);
+        assert_eq!(queued[9].input.name, "queued-draft-3");
+        assert!(!queued.iter().any(|d| d.id == ids[0] || d.id == ids[1]));
     }
 
     #[test]
@@ -3005,8 +3085,59 @@ mod tests {
             },
         ];
         let saved_draft = vault.save_connection(draft).unwrap();
-        assert!(saved_draft.capabilities.is_empty());
+        assert_eq!(saved_draft.capabilities, vec!["note"]);
+        assert!(!saved_draft.can_test);
         assert_eq!(saved_draft.name, "Draft host");
+
+        let mut hidden_draft = ssh_input(None);
+        hidden_draft.name = "Hidden draft".to_owned();
+        hidden_draft.secrets = SecretBundle::default();
+        hidden_draft.modules = vec![ItemModule {
+            kind: "username".into(),
+            name: String::new(),
+            value: String::new(),
+            agent_visible: None,
+        }];
+        let saved_hidden = vault.save_connection(hidden_draft).unwrap();
+        assert!(saved_hidden.capabilities.is_empty());
+    }
+
+    #[test]
+    fn ssh_auth_prefers_private_key_over_password_when_both_are_stored() {
+        let directory = tempdir().unwrap();
+        let vault = Vault::open(directory.path().join("vault")).unwrap();
+
+        let mut dual = ssh_input(None);
+        dual.name = "Dual auth host".to_owned();
+        dual.modules.push(ItemModule {
+            kind: "privateKey".into(),
+            ..Default::default()
+        });
+        dual.secrets.private_key = Some(
+            "-----BEGIN OPENSSH PRIVATE KEY-----\ntest-key\n-----END OPENSSH PRIVATE KEY-----"
+                .to_owned(),
+        );
+        let saved_dual = vault.save_connection(dual).unwrap();
+        assert_eq!(saved_dual.ssh_auth_type, "privateKey");
+
+        let mut pw_only = ssh_input(None);
+        pw_only.name = "Password host".to_owned();
+        let saved_pw = vault.save_connection(pw_only).unwrap();
+        assert_eq!(saved_pw.ssh_auth_type, "password");
+
+        let (item_name, host_kind, host_val, host_secret) =
+            vault.get_module_value(saved_dual.id, "host").unwrap();
+        assert_eq!(item_name, "Dual auth host");
+        assert_eq!(host_kind, "host");
+        assert_eq!(host_val, "127.0.0.1");
+        assert!(!host_secret);
+
+        let (_, pw_kind, pw_val, pw_secret) =
+            vault.get_module_value(saved_dual.id, "password").unwrap();
+        assert_eq!(pw_kind, "text");
+        assert_eq!(pw_val, "test-password");
+        assert!(pw_secret);
+        assert!(vault.get_module_value(saved_dual.id, "nonexistent").is_err());
     }
 
     #[test]

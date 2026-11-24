@@ -31,17 +31,33 @@ pub struct TerminalReadResult {
     pub truncated: bool,
 }
 
+const MAX_UNREAD_BUFFER_BYTES: usize = 8 * 1024 * 1024;
+
 #[derive(Default)]
 struct OutputBuffer {
     bytes: VecDeque<u8>,
+    truncated: bool,
 }
 
 impl OutputBuffer {
     fn push(&mut self, bytes: &[u8]) {
+        if bytes.len() >= MAX_UNREAD_BUFFER_BYTES {
+            self.bytes.clear();
+            let start = bytes.len() - MAX_UNREAD_BUFFER_BYTES;
+            self.bytes.extend(&bytes[start..]);
+            self.truncated = true;
+            return;
+        }
+        let overflow = (self.bytes.len() + bytes.len()).saturating_sub(MAX_UNREAD_BUFFER_BYTES);
+        if overflow > 0 {
+            self.bytes.drain(..overflow);
+            self.truncated = true;
+        }
         self.bytes.extend(bytes);
     }
 
     fn take_redacted(&mut self, candidates: &[String], running: bool) -> (String, bool) {
+        let was_truncated = std::mem::take(&mut self.truncated);
         let source = self.bytes.drain(..).collect::<Vec<u8>>();
         let candidates = candidates.iter().map(String::as_bytes).collect::<Vec<_>>();
         let mut output = Vec::with_capacity(source.len());
@@ -66,7 +82,7 @@ impl OutputBuffer {
             cursor += 1;
         }
         self.bytes.extend(&source[cursor..]);
-        (String::from_utf8_lossy(&output).into_owned(), false)
+        (String::from_utf8_lossy(&output).into_owned(), was_truncated)
     }
 }
 
@@ -556,6 +572,22 @@ mod tests {
         let (output, truncated) = large.take_redacted(&[], false);
         assert_eq!(output.len(), 2 * 1_048_576);
         assert!(!truncated);
+    }
+
+    #[test]
+    fn output_buffer_caps_runaway_output_and_sets_truncated() {
+        let mut buffer = OutputBuffer::default();
+        buffer.push(&vec![b'A'; MAX_UNREAD_BUFFER_BYTES]);
+        buffer.push(b"TAIL_MARKER");
+        let (output, truncated) = buffer.take_redacted(&[], false);
+        assert!(truncated);
+        assert_eq!(output.len(), MAX_UNREAD_BUFFER_BYTES);
+        assert!(output.ends_with("TAIL_MARKER"));
+
+        buffer.push(b"fresh");
+        let (next, next_truncated) = buffer.take_redacted(&[], false);
+        assert_eq!(next, "fresh");
+        assert!(!next_truncated);
     }
 
     #[test]

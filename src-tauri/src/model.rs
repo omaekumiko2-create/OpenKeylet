@@ -574,6 +574,31 @@ impl StoredConnection {
         if !secrets.passkeys.is_empty() {
             capabilities.push("passkey".to_owned());
         }
+        let has_personal = matches!(self.item_type(), "card" | "identity")
+            && self.modules.iter().any(|module| {
+                (crate::item_types::CARD_FIELDS.contains(&module.kind.as_str())
+                    || crate::item_types::IDENTITY_FIELDS.contains(&module.kind.as_str()))
+                    && module
+                        .secret_name()
+                        .and_then(|name| secrets.get(name))
+                        .is_some()
+            });
+        if has_personal {
+            capabilities.push("personal".to_owned());
+        }
+        let has_configured_visible_module = self.modules.iter().any(|module| {
+            module.agent_visible()
+                && if let Some(name) = module.secret_name() {
+                    secrets.get(name).is_some()
+                } else {
+                    !module.value.trim().is_empty()
+                }
+        });
+        if (self.item_type() == "secureNote" && self.module_configured(secrets, "secureNote"))
+            || (capabilities.is_empty() && has_configured_visible_module)
+        {
+            capabilities.push("note".to_owned());
+        }
         capabilities
     }
 
@@ -969,5 +994,117 @@ mod tests {
 
         assert!(visible_secret.agent_visible());
         assert!(!hidden_public_value.agent_visible());
+    }
+
+    fn stored_with(item_type: &str, modules: Vec<ItemModule>) -> super::StoredConnection {
+        super::StoredConnection {
+            login_uris: Vec::new(),
+            item_type: item_type.to_owned(),
+            folder: String::new(),
+            favorite: false,
+            id: uuid::Uuid::new_v4(),
+            modules,
+            name: "test".to_owned(),
+            enabled: true,
+            created_at: String::new(),
+            updated_at: String::new(),
+            description: String::new(),
+            host: String::new(),
+            port: 22,
+            ssh_auth_type: String::new(),
+            http_auth_type: String::new(),
+            private_key_name: String::new(),
+            base_url: String::new(),
+            auth_header: String::new(),
+            auth_location: String::new(),
+            auth_prefix: String::new(),
+            api_auth_headers: Vec::new(),
+            test_path: String::new(),
+            secret: None,
+            encrypted_secrets: super::SecretEnvelope {
+                version: 0,
+                nonce: String::new(),
+                ciphertext: String::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn card_identity_and_secure_note_expose_agent_capabilities_without_credential_actions() {
+        let mut card_secrets = super::SecretBundle::default();
+        card_secrets
+            .named_secrets
+            .insert("cardNumber".into(), "4111111111111111".into());
+        let card = stored_with(
+            "card",
+            vec![ItemModule {
+                kind: "cardNumber".into(),
+                name: "cardNumber".into(),
+                value: String::new(),
+                agent_visible: Some(false),
+            }],
+        );
+        assert_eq!(card.capabilities(&card_secrets), vec!["personal"]);
+        assert!(card.capabilities(&super::SecretBundle::default()).is_empty());
+
+        let mut identity_secrets = super::SecretBundle::default();
+        identity_secrets
+            .named_secrets
+            .insert("firstName".into(), "Alice".into());
+        let identity = stored_with(
+            "identity",
+            vec![ItemModule {
+                kind: "firstName".into(),
+                name: "firstName".into(),
+                value: String::new(),
+                agent_visible: Some(false),
+            }],
+        );
+        assert_eq!(identity.capabilities(&identity_secrets), vec!["personal"]);
+
+        let mut note_secrets = super::SecretBundle::default();
+        note_secrets
+            .named_secrets
+            .insert("secureNote".into(), "Recovery instructions".into());
+        let note = stored_with(
+            "secureNote",
+            vec![ItemModule {
+                kind: "secureNote".into(),
+                name: "secureNote".into(),
+                value: String::new(),
+                agent_visible: Some(false),
+            }],
+        );
+        assert_eq!(note.capabilities(&note_secrets), vec!["note"]);
+        assert!(note.capabilities(&super::SecretBundle::default()).is_empty());
+
+        let visible_only = stored_with(
+            "custom",
+            vec![ItemModule {
+                kind: "url".into(),
+                name: String::new(),
+                value: "https://internal.example.test".into(),
+                agent_visible: Some(true),
+            }],
+        );
+        assert_eq!(
+            visible_only.capabilities(&super::SecretBundle::default()),
+            vec!["note"]
+        );
+
+        let hidden_only = stored_with(
+            "custom",
+            vec![ItemModule {
+                kind: "url".into(),
+                name: String::new(),
+                value: "https://internal.example.test".into(),
+                agent_visible: Some(false),
+            }],
+        );
+        assert!(
+            hidden_only
+                .capabilities(&super::SecretBundle::default())
+                .is_empty()
+        );
     }
 }

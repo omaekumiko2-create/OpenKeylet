@@ -10,11 +10,9 @@
 | 中文商店文案 | [listing.zh-CN.md](listing.zh-CN.md) |
 | 单一用途、权限理由、隐私字段填写指南 | [privacy-practices.md](privacy-practices.md) |
 | 审核测试指引 | [reviewer-instructions.md](reviewer-instructions.md) |
-| 代码与权限审查、验证记录 | [audit.md](audit.md) |
 | 英文隐私政策 | [PRIVACY.md](../../PRIVACY.md) |
 | 中文隐私政策 | [PRIVACY.zh-CN.md](../../PRIVACY.zh-CN.md) |
 | 随包离线隐私说明 | [privacy.html](../../browser-extension/privacy.html) |
-| 图标、宣传图、功能截图 | [assets](assets/) |
 
 ## 提交前需要确定
 
@@ -31,21 +29,11 @@
 在 Windows PowerShell 中先加载项目环境，再运行：
 
 ```powershell
-& 'C:\Users\malou\Documents\myenv\config\Use-ProjectEnvironment.ps1' -ProjectPath (Get-Location).Path -Quiet
+& "$env:MYENV_ROOT\config\Use-ProjectEnvironment.ps1" -ProjectPath (Get-Location).Path -Quiet
 & .\scripts\package-chrome-store.ps1
 ```
 
 ZIP 与校验值输出到 `dist/chrome-web-store/`。临时打包目录必须在 `MYENV_ROOT` 内。脚本只包含扩展运行文件，不包含桌面 EXE、测试密码库、源码仓库元数据或上架文档。它删除上传副本中的开发用 `key`，保留源码中的固定开发 ID；正式 ID 仍须按上面的流程确认。
-
-重新生成截图和宣传图：
-
-```powershell
-& 'C:\Users\malou\Documents\myenv\config\Use-ProjectEnvironment.ps1' -ProjectPath (Get-Location).Path -Quiet
-cargo build --manifest-path src-tauri/Cargo.toml --example browser_fixture
-node scripts/prepare-store-assets.mjs
-```
-
-截图使用真实扩展和真实 Rust 测试后端，账号与网站均为虚构示例。临时浏览器配置和密码库在项目环境的临时目录中；不会读取个人 Chrome 配置或真实密码库。
 
 ## 发布顺序
 

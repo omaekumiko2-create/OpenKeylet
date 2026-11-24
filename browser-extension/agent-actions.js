@@ -55,6 +55,59 @@ async function listHttpTabs() {
     });
 }
 
+function isSecureOrigin(originStr) {
+  try {
+    const u = new URL(originStr);
+    return u.protocol === "https:" || ["localhost", "127.0.0.1", "[::1]"].includes(u.hostname);
+  } catch {
+    return false;
+  }
+}
+
+async function listEligibleFrames(tabId, topOrigin) {
+  const topSecure = isSecureOrigin(topOrigin);
+  let probes = [];
+  try {
+    probes = await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      func: () => ({ origin: location.origin, href: location.href }),
+    });
+  } catch {
+    return [{ frameId: 0, origin: topOrigin, href: "" }];
+  }
+  const frames = [];
+  for (const entry of probes || []) {
+    const info = entry?.result;
+    if (!info?.origin || !/^https?:\/\//.test(info.href || "")) continue;
+    const sameOrigin = info.origin === topOrigin;
+    const allowedCrossOrigin = !sameOrigin && topSecure && isSecureOrigin(info.origin);
+    if (entry.frameId === 0 || sameOrigin || allowedCrossOrigin) {
+      frames.push({ frameId: entry.frameId, origin: info.origin, href: info.href });
+    }
+  }
+  frames.sort((a, b) => a.frameId - b.frameId);
+  return frames.length ? frames : [{ frameId: 0, origin: topOrigin, href: "" }];
+}
+
+async function orderedFramesForTab(tab, topOrigin, explicitFrameId = null) {
+  const eligible = await listEligibleFrames(tab.id, topOrigin);
+  if (Number.isInteger(explicitFrameId)) {
+    const picked = eligible.find(f => f.frameId === explicitFrameId);
+    if (picked) return [picked];
+  }
+  const preferred = focusedFrameByTab.get(tab.id);
+  const ordered = [];
+  const pushUnique = (frame) => {
+    if (frame && !ordered.some(f => f.frameId === frame.frameId)) ordered.push(frame);
+  };
+  if (Number.isInteger(preferred)) {
+    pushUnique(eligible.find(f => f.frameId === preferred));
+  }
+  pushUnique(eligible.find(f => f.frameId === 0));
+  for (const frame of eligible) pushUnique(frame);
+  return ordered;
+}
+
 async function targetFrameForTab(tab, origin) {
   const preferred = focusedFrameByTab.get(tab.id) ?? 0;
   if (preferred === 0) return { frameId: 0, url: tab.url };
@@ -63,16 +116,33 @@ async function targetFrameForTab(tab, origin) {
       target: { tabId: tab.id, frameIds: [preferred] },
       func: () => location.href,
     });
-    if (result?.result && new URL(result.result).origin === origin) {
-      return { frameId: preferred, url: result.result };
+    if (result?.result) {
+      const frameOrigin = new URL(result.result).origin;
+      if (frameOrigin === origin || (isSecureOrigin(origin) && isSecureOrigin(frameOrigin))) {
+        return { frameId: preferred, url: result.result };
+      }
     }
   } catch {}
   return { frameId: 0, url: tab.url };
 }
 
 function inspectPageDom(expectedOrigin) {
+  const isSecure = (originStr) => {
+    try {
+      const u = new URL(originStr);
+      return u.protocol === "https:" || ["localhost", "127.0.0.1", "[::1]"].includes(u.hostname);
+    } catch {
+      return false;
+    }
+  };
+  const isTopFrame = window === window.top;
   if (location.origin !== expectedOrigin) {
-    throw new Error("The website changed during inspection");
+    if (isTopFrame) {
+      throw new Error("The website changed during inspection");
+    }
+    if (!isSecure(expectedOrigin) || !isSecure(location.origin)) {
+      return null;
+    }
   }
   const isVisible = (el) => {
     if (!el || el.disabled) return false;
@@ -98,19 +168,37 @@ function inspectPageDom(expectedOrigin) {
   const selectorHintFor = (el) => {
     const tag = el.tagName.toLowerCase();
     if (el.id && /^[a-zA-Z_][\w-]*$/.test(el.id)) return `#${el.id}`;
-    if (el.name && /^[a-zA-Z0-9_.-]+$/.test(el.name)) return `${tag}[name="${el.name}"]`;
+    if (el.name && /^[a-zA-Z0-9_.-]+$/.test(el.name)) {
+      if (tag === "input" && ["checkbox", "radio"].includes(el.type)) {
+        return `input[type="${el.type}"][name="${el.name}"]`;
+      }
+      return `${tag}[name="${el.name}"]`;
+    }
     if (el.autocomplete && el.autocomplete !== "off" && el.autocomplete !== "on") {
       return `${tag}[autocomplete="${el.autocomplete}"]`;
     }
     if (el.type && tag === "input") return `input[type="${el.type}"]`;
     return tag;
   };
+  // Collect entered values from sensitive inputs so sanitized page text can never echo them.
+  const sensitiveValues = [];
   const allInputs = [];
   const allButtons = [];
+  const alertElements = [];
+  const summaryElements = [];
+  const ALERT_SELECTOR = '[role="alert"], [role="status"], [aria-live="assertive"], [aria-live="polite"], .alert, .error, .error-message, .form-error, .flash-error, .flash-warn, .flash-notice, .notification, .toast, [data-error], [data-testid*="error" i], [data-testid*="alert" i]';
+  const SUMMARY_SELECTOR = 'h1, h2, h3, [role="heading"], dialog[open], [role="dialog"], [role="alertdialog"], form legend, form p, main p';
+
   function collect(root) {
     for (const el of root.querySelectorAll("*")) {
+      if (el.matches("input, textarea") && typeof el.value === "string") {
+        const v = el.value.trim();
+        if ((el.type === "password" && v.length >= 3) || v.length >= 6) {
+          if (sensitiveValues.length < 40) sensitiveValues.push(v);
+        }
+      }
       if (allInputs.length < 200 && el.matches("input, select, textarea") && isVisible(el)) {
-        if (!el.matches("input") || !["hidden", "submit", "button", "image", "reset", "file", "checkbox", "radio"].includes(el.type)) {
+        if (!el.matches("input") || !["hidden", "submit", "button", "image", "reset", "file"].includes(el.type)) {
           allInputs.push(el);
         }
       }
@@ -119,10 +207,79 @@ function inspectPageDom(expectedOrigin) {
         const aria = (el.getAttribute("aria-label") || "").trim();
         if (text || aria) allButtons.push(el);
       }
+      if (alertElements.length < 24 && el.matches(ALERT_SELECTOR) && isVisible(el)) {
+        alertElements.push(el);
+      }
+      if (summaryElements.length < 40 && el.matches(SUMMARY_SELECTOR) && isVisible(el)) {
+        summaryElements.push(el);
+      }
       if (el.shadowRoot) collect(el.shadowRoot);
     }
   }
   collect(document);
+
+  const safeTextOf = (rootEl, maxLen = 280) => {
+    const chunks = [];
+    let len = 0;
+    const walk = (node) => {
+      if (!node || len >= maxLen) return;
+      if (node.nodeType === Node.TEXT_NODE) {
+        const t = (node.nodeValue || "").replace(/\s+/g, " ").trim();
+        if (t) {
+          chunks.push(t);
+          len += t.length + 1;
+        }
+        return;
+      }
+      if (node.nodeType !== Node.ELEMENT_NODE) return;
+      const tag = node.tagName?.toLowerCase() || "";
+      if (["input", "textarea", "select", "script", "style", "noscript", "template"].includes(tag)) return;
+      if (node.isContentEditable) return;
+      if (node.shadowRoot) {
+        for (const child of node.shadowRoot.childNodes) walk(child);
+      }
+      for (const child of node.childNodes) walk(child);
+    };
+    walk(rootEl);
+    let text = chunks.join(" ").replace(/\s+/g, " ").trim().slice(0, maxLen);
+    if (text && sensitiveValues.some(sv => text.includes(sv))) {
+      for (const sv of sensitiveValues) {
+        if (sv) text = text.split(sv).join("[REDACTED]");
+      }
+    }
+    return text;
+  };
+
+  const alerts = [];
+  const pushAlert = (text) => {
+    const clean = (text || "").replace(/\s+/g, " ").trim().slice(0, 240);
+    if (!clean || alerts.length >= 10) return;
+    if (!alerts.some(existing => existing === clean || existing.includes(clean))) {
+      alerts.push(clean);
+    }
+  };
+  for (const el of alertElements) pushAlert(safeTextOf(el, 240));
+  for (const el of allInputs) {
+    if (el.validity && !el.validity.valid && el.validationMessage) {
+      const msg = String(el.validationMessage).trim();
+      if (msg && !sensitiveValues.some(sv => sv.length >= 3 && msg.includes(sv))) {
+        pushAlert(msg);
+      }
+    }
+  }
+
+  const summaryParts = [...alerts];
+  const pushSummary = (text) => {
+    const clean = (text || "").replace(/\s+/g, " ").trim().slice(0, 320);
+    if (!clean) return;
+    if (summaryParts.some(existing => existing === clean || existing.includes(clean))) return;
+    summaryParts.push(clean);
+  };
+  for (const el of summaryElements) {
+    pushSummary(safeTextOf(el, 320));
+    if (summaryParts.join(" | ").length >= 1500) break;
+  }
+  const pageTextSummary = summaryParts.join(" | ").slice(0, 1500);
 
   let active = document.activeElement;
   while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
@@ -142,12 +299,23 @@ function inspectPageDom(expectedOrigin) {
     const meta = [el.name, el.id, el.placeholder, labelTextFor(el)].join(" ").toLowerCase();
     return /(?:^|[\s_.-])(?:otp|totp|2fa|mfa|passcode|verification.?code|one.?time)(?:$|[\s_.-])|验证码|驗證碼|动态码|動態碼/.test(meta);
   };
-  const otpInputs = allInputs.filter(el => el.matches("input") && isOtpInput(el));
+  let otpInputs = allInputs.filter(el => el.matches("input") && !["checkbox", "radio"].includes(el.type) && isOtpInput(el));
+  if (!otpInputs.length) {
+    const singleBoxes = allInputs.filter(el =>
+      el.matches("input")
+      && ["text", "tel", "number"].includes(el.type)
+      && (el.maxLength === 1 || el.getAttribute("maxlength") === "1")
+      && (el.inputMode === "numeric" || /(?:code|digit|otp|pin|token|char|box)/i.test([el.name, el.id, el.placeholder, labelTextFor(el)].join(" ")))
+    );
+    if (singleBoxes.length >= 4 && singleBoxes.length <= 8) {
+      otpInputs = singleBoxes;
+    }
+  }
 
   let loginForms = [];
   if (typeof useLoginForm === "function") {
     try {
-      const read = useLoginForm("read", expectedOrigin, null, location.href);
+      const read = useLoginForm("read", location.origin, null, location.href);
       loginForms = (read.forms || []).map((f, index) => ({
         index,
         kind: f.kind,
@@ -176,20 +344,25 @@ function inspectPageDom(expectedOrigin) {
     } catch {}
   }
 
-  const fields = allInputs.slice(0, 40).map((el, index) => ({
-    index,
-    tag: el.tagName.toLowerCase(),
-    type: el.type || "",
-    name: (el.name || "").slice(0, 80),
-    id: (el.id || "").slice(0, 80),
-    autocomplete: (el.autocomplete || "").slice(0, 80),
-    placeholder: (el.placeholder || "").slice(0, 80),
-    label: labelTextFor(el),
-    selectorHint: selectorHintFor(el),
-    hasValue: Boolean(el.value),
-    focused: el === active,
-    readOnly: Boolean(el.readOnly),
-  }));
+  const fields = allInputs.slice(0, 40).map((el, index) => {
+    const isCheckable = el.matches("input") && (el.type === "checkbox" || el.type === "radio");
+    const entry = {
+      index,
+      tag: el.tagName.toLowerCase(),
+      type: el.type || "",
+      name: (el.name || "").slice(0, 80),
+      id: (el.id || "").slice(0, 80),
+      autocomplete: (el.autocomplete || "").slice(0, 80),
+      placeholder: (el.placeholder || "").slice(0, 80),
+      label: labelTextFor(el),
+      selectorHint: selectorHintFor(el),
+      hasValue: isCheckable ? Boolean(el.checked) : Boolean(el.value),
+      focused: el === active,
+      readOnly: Boolean(el.readOnly),
+    };
+    if (isCheckable) entry.checked = Boolean(el.checked);
+    return entry;
+  });
 
   const buttons = allButtons.slice(0, 25).map((el, index) => ({
     index,
@@ -210,6 +383,8 @@ function inspectPageDom(expectedOrigin) {
     otpFieldCount: otpInputs.length,
     fields,
     buttons,
+    alerts,
+    pageTextSummary,
   };
 }
 
@@ -579,15 +754,35 @@ function clickElementDom(payload, expiresAt) {
     }
     return null;
   };
+  const CLICKABLE_SELECTOR = "button, input[type=submit], input[type=button], input[type=checkbox], input[type=radio], label, a[href], [role=button], [role=checkbox], [role=radio], [role=switch]";
   const collectClickables = (root, out = []) => {
     for (const el of root.querySelectorAll("*")) {
-      if (out.length >= 200) return out;
-      if (el.matches("button, input[type=submit], input[type=button], a[href], [role=button]") && isVisible(el)) {
+      if (out.length >= 250) return out;
+      if (el.matches(CLICKABLE_SELECTOR) && isVisible(el)) {
         out.push(el);
       }
       if (el.shadowRoot) collectClickables(el.shadowRoot, out);
     }
     return out;
+  };
+  const labelForClickable = (el) => {
+    if (el.tagName === "INPUT" && ["checkbox", "radio"].includes(el.type)) {
+      const parts = [];
+      if (el.getAttribute("aria-label")) parts.push(el.getAttribute("aria-label"));
+      for (const lbl of Array.from(el.labels || [])) {
+        if (lbl.textContent) parts.push(lbl.textContent.trim());
+      }
+      const labelledBy = (el.getAttribute("aria-labelledby") || "").split(/\s+/).filter(Boolean).slice(0, 4);
+      for (const id of labelledBy) {
+        const text = el.getRootNode().getElementById?.(id)?.textContent?.trim();
+        if (text) parts.push(text);
+      }
+      return parts.join(" ").replace(/\s+/g, " ").trim();
+    }
+    if (el.tagName === "INPUT") {
+      return (el.value || el.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim();
+    }
+    return (el.textContent || el.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim();
   };
 
   let target = null;
@@ -601,10 +796,8 @@ function clickElementDom(payload, expiresAt) {
     }
   } else if (text) {
     const clickables = collectClickables(document);
-    const labelOf = (el) => ((el.tagName === "INPUT" ? el.value : el.textContent) || el.getAttribute("aria-label") || "")
-      .replace(/\s+/g, " ").trim().toLowerCase();
-    target = clickables.find(el => labelOf(el) === text)
-      || clickables.find(el => labelOf(el).includes(text))
+    target = clickables.find(el => labelForClickable(el).toLowerCase() === text)
+      || clickables.find(el => labelForClickable(el).toLowerCase().includes(text))
       || null;
     if (!target) {
       return { ok: false, message: `No visible clickable element matched text: ${payload.text}` };
@@ -613,19 +806,115 @@ function clickElementDom(payload, expiresAt) {
     return { ok: false, message: "Provide selector or text to click" };
   }
 
-  const clickedText = ((target.tagName === "INPUT" ? target.value : target.textContent) || target.getAttribute("aria-label") || "")
-    .replace(/\s+/g, " ").trim().slice(0, 120);
+  const clickedText = labelForClickable(target).slice(0, 120);
   target.scrollIntoView?.({ block: "center", inline: "center" });
   target.focus?.();
   target.click();
+  const data = {
+    clickedText,
+    tag: target.tagName.toLowerCase(),
+    url: location.href,
+    origin: location.origin,
+  };
+  if (target.tagName === "INPUT" && ["checkbox", "radio"].includes(target.type)) {
+    data.checked = Boolean(target.checked);
+  }
   return {
     ok: true,
     message: `Clicked ${clickedText || target.tagName.toLowerCase()}`,
+    data,
+  };
+}
+
+async function openTabJob(payload = {}, expiresAt) {
+  if (Number.isFinite(expiresAt) && Date.now() >= expiresAt) {
+    return { ok: false, message: "The open tab task has expired" };
+  }
+  const rawUrl = typeof payload?.url === "string" ? payload.url.trim() : "";
+  if (!rawUrl) {
+    return { ok: false, message: "A valid HTTP or HTTPS url is required" };
+  }
+  let parsed;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return { ok: false, message: `Invalid URL: ${rawUrl}` };
+  }
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    return { ok: false, message: "browser_open only supports http:// and https:// URLs" };
+  }
+
+  const explicitTabId = Number.isInteger(payload?.tabId) ? payload.tabId : null;
+  const openNewTab = typeof payload?.newTab === "boolean"
+    ? payload.newTab
+    : explicitTabId === null;
+
+  let tab;
+  try {
+    if (openNewTab) {
+      tab = await chrome.tabs.create({ url: parsed.href, active: true });
+    } else if (explicitTabId !== null) {
+      tab = await chrome.tabs.update(explicitTabId, { url: parsed.href, active: true });
+    } else {
+      const existing = await resolveTargetTab({}).catch(() => null);
+      if (existing?.id) {
+        tab = await chrome.tabs.update(existing.id, { url: parsed.href, active: true });
+      } else {
+        tab = await chrome.tabs.create({ url: parsed.href, active: true });
+      }
+    }
+  } catch (error) {
+    return { ok: false, message: `Unable to open browser tab: ${error?.message || error}` };
+  }
+
+  if (!tab?.id) {
+    return { ok: false, message: "Browser did not return a tab ID" };
+  }
+
+  const maxRemaining = Number.isFinite(expiresAt) ? Math.max(0, expiresAt - Date.now() - 500) : 15000;
+  const requestedWait = Number.isFinite(Number(payload?.waitMs)) ? Number(payload.waitMs) : 15000;
+  const waitMs = Math.min(Math.max(requestedWait, 0), maxRemaining, 25000);
+
+  if (waitMs > 0) {
+    await new Promise((resolve) => {
+      let settled = false;
+      const done = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        chrome.tabs.onUpdated.removeListener(onUpdated);
+        chrome.tabs.onRemoved.removeListener(onRemoved);
+        resolve();
+      };
+      const onUpdated = (updatedId, changeInfo) => {
+        if (updatedId === tab.id && changeInfo.status === "complete") done();
+      };
+      const onRemoved = (removedId) => {
+        if (removedId === tab.id) done();
+      };
+      const timer = setTimeout(done, waitMs);
+      chrome.tabs.onUpdated.addListener(onUpdated);
+      chrome.tabs.onRemoved.addListener(onRemoved);
+      chrome.tabs.get(tab.id).then((latest) => {
+        if (latest?.status === "complete" && latest.url && latest.url !== "about:blank") {
+          done();
+        }
+      }).catch(done);
+    });
+  }
+
+  const finalTab = await chrome.tabs.get(tab.id).catch(() => tab);
+  const finalUrl = finalTab?.url || parsed.href;
+  let finalOrigin = parsed.origin;
+  try { finalOrigin = new URL(finalUrl).origin; } catch {}
+  return {
+    ok: true,
+    message: `Opened ${finalOrigin}`,
     data: {
-      clickedText,
-      tag: target.tagName.toLowerCase(),
-      url: location.href,
-      origin: location.origin,
+      tabId: tab.id,
+      url: finalUrl,
+      origin: finalOrigin,
+      title: (finalTab?.title || "").slice(0, 160),
     },
   };
 }
@@ -649,25 +938,122 @@ async function inspectPageJob(payload = {}) {
         otpFieldCount: 0,
         fields: [],
         buttons: [],
+        alerts: [],
+        pageTextSummary: "",
+        frames: [],
         pendingPasskeys,
       },
     };
   }
   const origin = new URL(tab.url).origin;
-  const target = await targetFrameForTab(tab, origin);
   try {
-    const [execution] = await chrome.scripting.executeScript({
-      target: { tabId: tab.id, frameIds: [target.frameId] },
+    const executions = await chrome.scripting.executeScript({
+      target: { tabId: tab.id, allFrames: true },
       func: inspectPageDom,
       args: [origin],
     });
-    const dom = execution?.result || {};
+    const topExec = executions.find(e => e.frameId === 0);
+    const dom = topExec?.result || {
+      url: tab.url,
+      origin,
+      title: (tab.title || "").slice(0, 160),
+      focused: null,
+      loginForms: [],
+      otpFieldCount: 0,
+      fields: [],
+      buttons: [],
+      alerts: [],
+      pageTextSummary: "",
+    };
+
+    const mergedFields = [...(dom.fields || [])];
+    const mergedButtons = [...(dom.buttons || [])];
+    const mergedLoginForms = [...(dom.loginForms || [])];
+    const mergedAlerts = [...(dom.alerts || [])];
+    const summaryChunks = dom.pageTextSummary ? [dom.pageTextSummary] : [];
+    let totalOtp = dom.otpFieldCount || 0;
+    let focused = dom.focused || null;
+    const frames = [];
+
+    for (const exec of executions) {
+      if (exec.frameId === 0 || !exec.result) continue;
+      const child = exec.result;
+      const childFields = child.fields || [];
+      const childButtons = child.buttons || [];
+      const childForms = child.loginForms || [];
+      const childAlerts = child.alerts || [];
+      const childOtp = child.otpFieldCount || 0;
+      if (!childFields.length && !childButtons.length && !childForms.length && !childAlerts.length && !child.focused) {
+        continue;
+      }
+      frames.push({
+        frameId: exec.frameId,
+        frameOrigin: child.origin || "",
+        url: child.url || "",
+        fieldCount: childFields.length,
+        buttonCount: childButtons.length,
+        otpFieldCount: childOtp,
+        hasLoginForm: childForms.length > 0,
+      });
+      totalOtp += childOtp;
+      for (const f of childFields) {
+        if (mergedFields.length >= 60) break;
+        mergedFields.push({
+          ...f,
+          index: mergedFields.length,
+          frameId: exec.frameId,
+          frameOrigin: child.origin || "",
+        });
+      }
+      for (const b of childButtons) {
+        if (mergedButtons.length >= 35) break;
+        mergedButtons.push({
+          ...b,
+          index: mergedButtons.length,
+          frameId: exec.frameId,
+          frameOrigin: child.origin || "",
+        });
+      }
+      for (const lf of childForms) {
+        mergedLoginForms.push({
+          ...lf,
+          index: mergedLoginForms.length,
+          frameId: exec.frameId,
+          frameOrigin: child.origin || "",
+        });
+      }
+      for (const alert of childAlerts) {
+        if (mergedAlerts.length >= 12) break;
+        if (!mergedAlerts.includes(alert)) mergedAlerts.push(alert);
+      }
+      if (child.pageTextSummary && summaryChunks.join(" | ").length < 1500) {
+        summaryChunks.push(child.pageTextSummary);
+      }
+      if (child.focused && (!focused || focused.tag === "iframe")) {
+        focused = {
+          ...child.focused,
+          frameId: exec.frameId,
+          frameOrigin: child.origin || "",
+        };
+      }
+    }
+
     return {
       ok: true,
       message: `Inspected ${origin}`,
       data: {
         tabId: tab.id,
-        ...dom,
+        url: dom.url || tab.url,
+        origin: dom.origin || origin,
+        title: dom.title || (tab.title || "").slice(0, 160),
+        focused,
+        loginForms: mergedLoginForms,
+        otpFieldCount: totalOtp,
+        fields: mergedFields,
+        buttons: mergedButtons,
+        alerts: mergedAlerts,
+        pageTextSummary: summaryChunks.join(" | ").slice(0, 1500),
+        frames,
         tabs,
         pendingPasskeys,
       },
@@ -690,17 +1076,44 @@ async function fillLoginJob(payload = {}, expiresAt) {
   if (payload.expectedOrigin && payload.expectedOrigin !== origin) {
     return { ok: false, message: `Active tab origin (${origin}) does not match expected origin (${payload.expectedOrigin})` };
   }
-  const target = await targetFrameForTab(tab, origin);
-  try {
-    const [execution] = await chrome.scripting.executeScript({
-      target: { tabId: tab.id, frameIds: [target.frameId] },
-      func: fillLoginDom,
-      args: [origin, payload, expiresAt],
-    });
-    return execution?.result || { ok: false, message: "The page did not return a login fill result" };
-  } catch (error) {
-    return { ok: false, message: `Cannot fill login form: ${error?.message || error}` };
+  const explicitFrameId = Number.isInteger(payload.frameId) ? payload.frameId : null;
+  const allowedOrigins = Array.isArray(payload.allowedFrameOrigins) && payload.allowedFrameOrigins.length
+    ? new Set(payload.allowedFrameOrigins.filter(x => typeof x === "string" && x.trim()))
+    : new Set([origin]);
+  const frames = (await orderedFramesForTab(tab, origin, explicitFrameId))
+    .filter(frame => allowedOrigins.has(frame.origin));
+  if (!frames.length) {
+    return { ok: false, message: "No browser frame matched this item's allowed website origins" };
   }
+  let lastError = "No matching login or OTP fields were found on this page";
+  for (const frame of frames) {
+    try {
+      const [execution] = await chrome.scripting.executeScript({
+        target: { tabId: tab.id, frameIds: [frame.frameId] },
+        func: fillLoginDom,
+        args: [frame.origin, payload, expiresAt],
+      });
+      const result = execution?.result;
+      if (result?.ok) {
+        if (frame.frameId !== 0 && result.data) {
+          result.data.frameId = frame.frameId;
+          result.data.frameOrigin = frame.origin;
+        }
+        return result;
+      }
+      if (result?.message) {
+        lastError = result.message;
+        if (/expired|read-only account|origin changed/i.test(result.message)) {
+          return result;
+        }
+      }
+    } catch (error) {
+      if (frame.frameId === 0) {
+        lastError = `Cannot fill login form: ${error?.message || error}`;
+      }
+    }
+  }
+  return { ok: false, message: lastError };
 }
 
 async function fillFieldJob(value, submit, payload = {}, expiresAt) {
@@ -717,17 +1130,39 @@ async function fillFieldJob(value, submit, payload = {}, expiresAt) {
   if (payload.expectedOrigin && payload.expectedOrigin !== origin) {
     return { ok: false, message: `Active tab origin (${origin}) does not match expected origin (${payload.expectedOrigin})` };
   }
-  const target = await targetFrameForTab(tab, origin);
-  try {
-    const [execution] = await chrome.scripting.executeScript({
-      target: { tabId: tab.id, frameIds: [target.frameId] },
-      func: fillFieldDom,
-      args: [value, Boolean(submit), { ...payload, expectedOrigin: origin }, expiresAt],
-    });
-    return execution?.result || { ok: false, message: "The page did not return a fill result" };
-  } catch (error) {
-    return { ok: false, message: `Cannot fill target field: ${error?.message || error}` };
+  const explicitFrameId = Number.isInteger(payload.frameId) ? payload.frameId : null;
+  const focusedFrameId = focusedFrameByTab.get(tab.id);
+  const frames = (await orderedFramesForTab(tab, origin, explicitFrameId))
+    .filter(frame => frame.origin === origin
+      || (explicitFrameId !== null && frame.frameId === explicitFrameId)
+      || (Number.isInteger(focusedFrameId) && frame.frameId === focusedFrameId));
+  let lastError = "No focused or matching input control found on this page";
+  for (const frame of frames) {
+    try {
+      const [execution] = await chrome.scripting.executeScript({
+        target: { tabId: tab.id, frameIds: [frame.frameId] },
+        func: fillFieldDom,
+        args: [value, Boolean(submit), { ...payload, expectedOrigin: frame.origin }, expiresAt],
+      });
+      const result = execution?.result;
+      if (result?.ok) {
+        if (frame.frameId !== 0 && result.data) {
+          result.data.frameId = frame.frameId;
+          result.data.frameOrigin = frame.origin;
+        }
+        return result;
+      }
+      if (result?.message) {
+        lastError = result.message;
+        if (/expired/i.test(result.message)) return result;
+      }
+    } catch (error) {
+      if (frame.frameId === 0) {
+        lastError = `Cannot fill target field: ${error?.message || error}`;
+      }
+    }
   }
+  return { ok: false, message: lastError };
 }
 
 async function fillPersonalJob(payload = {}, expiresAt) {
@@ -740,7 +1175,7 @@ async function fillPersonalJob(payload = {}, expiresAt) {
     return { ok: false, message: "No active HTTP/HTTPS browser tab to fill" };
   }
   const url = new URL(tab.url);
-  if (url.protocol !== "https:" && !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) {
+  if (!isSecureOrigin(url.origin)) {
     return { ok: false, message: "Card and identity autofill requires HTTPS or localhost" };
   }
   if (!["card", "identity"].includes(payload.itemType)) {
@@ -748,23 +1183,33 @@ async function fillPersonalJob(payload = {}, expiresAt) {
   }
   const fillFields = { ...(payload.fields || {}) };
   for (const field of ["passportNumber", "licenseNumber", "nationalId"]) delete fillFields[field];
-  const target = await targetFrameForTab(tab, url.origin);
-  try {
-    const [execution] = await chrome.scripting.executeScript({
-      target: { tabId: tab.id, frameIds: [target.frameId] },
-      func: usePersonalForm,
-      args: [url.origin, payload.itemType, fillFields],
-    });
-    const filled = execution?.result?.filled || 0;
-    if (!filled) return { ok: false, message: "No matching card or identity fields were found on this page" };
-    return {
-      ok: true,
-      message: `Filled ${filled} ${payload.itemType} field(s)`,
-      data: { filled, itemType: payload.itemType, url: tab.url, origin: url.origin },
-    };
-  } catch (error) {
-    return { ok: false, message: `Cannot autofill personal fields: ${error?.message || error}` };
+  const frames = await listEligibleFrames(tab.id, url.origin);
+  let totalFilled = 0;
+  let lastError = null;
+  for (const frame of frames) {
+    if (!isSecureOrigin(frame.origin)) continue;
+    try {
+      const [execution] = await chrome.scripting.executeScript({
+        target: { tabId: tab.id, frameIds: [frame.frameId] },
+        func: usePersonalForm,
+        args: [frame.origin, payload.itemType, fillFields],
+      });
+      totalFilled += execution?.result?.filled || 0;
+    } catch (error) {
+      if (frame.frameId === 0) lastError = error;
+    }
   }
+  if (!totalFilled) {
+    if (lastError) {
+      return { ok: false, message: `Cannot autofill personal fields: ${lastError?.message || lastError}` };
+    }
+    return { ok: false, message: "No matching card or identity fields were found on this page" };
+  }
+  return {
+    ok: true,
+    message: `Filled ${totalFilled} ${payload.itemType} field(s)`,
+    data: { filled: totalFilled, itemType: payload.itemType, url: tab.url, origin: url.origin },
+  };
 }
 
 async function clickJob(payload = {}, expiresAt) {
@@ -777,17 +1222,34 @@ async function clickJob(payload = {}, expiresAt) {
     return { ok: false, message: "No active HTTP/HTTPS browser tab to click" };
   }
   const origin = new URL(tab.url).origin;
-  const target = await targetFrameForTab(tab, origin);
-  try {
-    const [execution] = await chrome.scripting.executeScript({
-      target: { tabId: tab.id, frameIds: [target.frameId] },
-      func: clickElementDom,
-      args: [payload, expiresAt],
-    });
-    return execution?.result || { ok: false, message: "The page did not return a click result" };
-  } catch (error) {
-    return { ok: false, message: `Cannot click target element: ${error?.message || error}` };
+  const frames = await orderedFramesForTab(tab, origin, Number.isInteger(payload.frameId) ? payload.frameId : null);
+  let lastError = "No visible clickable element matched on this page";
+  for (const frame of frames) {
+    try {
+      const [execution] = await chrome.scripting.executeScript({
+        target: { tabId: tab.id, frameIds: [frame.frameId] },
+        func: clickElementDom,
+        args: [payload, expiresAt],
+      });
+      const result = execution?.result;
+      if (result?.ok) {
+        if (frame.frameId !== 0 && result.data) {
+          result.data.frameId = frame.frameId;
+          result.data.frameOrigin = frame.origin;
+        }
+        return result;
+      }
+      if (result?.message) {
+        lastError = result.message;
+        if (/expired|Provide selector or text/i.test(result.message)) return result;
+      }
+    } catch (error) {
+      if (frame.frameId === 0) {
+        lastError = `Cannot click target element: ${error?.message || error}`;
+      }
+    }
   }
+  return { ok: false, message: lastError };
 }
 
 async function passkeyCaptureJob(payload = {}, expiresAt) {
@@ -817,6 +1279,8 @@ async function handleBrowserJob(job) {
   switch (kind) {
     case "fill_focused":
       return fillFocused(job?.value, expiresAt, Boolean(job?.submit));
+    case "open_tab":
+      return openTabJob(job?.payload || {}, expiresAt);
     case "inspect_page":
       return inspectPageJob(job?.payload || {});
     case "fill_login":

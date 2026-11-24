@@ -1190,6 +1190,11 @@ impl BrowserBridge {
             .await
     }
 
+    pub async fn open_tab(&self, payload: serde_json::Value) -> Result<BrowserFillResult> {
+        self.execute_job("open_tab", String::new(), false, payload)
+            .await
+    }
+
     pub async fn passkey_capture(&self, payload: serde_json::Value) -> Result<serde_json::Value> {
         let result = self
             .execute_job("passkey_capture", String::new(), false, payload)

@@ -10,21 +10,21 @@ Local passwords, passkeys and autofill with your OpenKeylet desktop vault. Requi
 
 ## Detailed description
 
-OpenKeylet brings your local desktop vault to Chrome. Save and fill logins, use passkeys, and manage cards, identities and secure notes from the browser.
+OpenKeylet brings your local desktop vault to Chrome as a least-privilege Agent Browser Bridge & Current-Site Autofill companion: save and fill logins, use WebAuthn passkeys, copy live 2FA codes, and fill supported card and identity forms on the active tab.
 
-Requires the free OpenKeylet desktop application with Browser Bridge running. This extension is a companion to the desktop vault; it does not run a separate cloud vault or require an OpenKeylet account.
+Requires the free OpenKeylet desktop application with Browser Bridge running. This extension is a companion to the desktop vault; full vault management, trash, history, and backup stay inside the desktop app. It does not run a separate cloud vault or require an OpenKeylet account.
 
 PASSWORDS WHERE YOU NEED THEM
 
-Choose a matching login to fill its username and password. Save a website's login after reviewing the detected fields. Optionally enable save suggestions for sign-in, registration and password changes. Suggestions stay in temporary memory and require your confirmation before being saved.
+Choose a matching login to fill its username and password, or copy a live 2FA TOTP code. Save a website's login after reviewing the detected fields. Optionally enable save suggestions for sign-in, registration and password changes. Suggestions stay in temporary memory and require your confirmation before being saved.
 
 PASSKEYS WITH CONFIRMATION
 
 Create and use supported passkeys through a dedicated confirmation window. Private keys remain in the local desktop vault. Choose “Use device” to return to the browser's provider. Some websites and advanced WebAuthn options use the native browser flow.
 
-YOUR VAULT IN THE BROWSER
+CURRENT-SITE CARDS & IDENTITIES
 
-Search and filter vault items; organize folders and favorites; manage cards, identities and secure notes. Fill supported card and identity forms on HTTPS websites. Deleted items go to trash, and previous passwords are available in encrypted history.
+Quickly fill supported card and identity forms stored in your OpenKeylet desktop vault on HTTPS websites without exposing full vault management inside the browser popup. Manage, edit, restore from trash, and inspect password history in OpenKeylet desktop.
 
 LOCAL CONNECTION, YOUR CHOICE
 

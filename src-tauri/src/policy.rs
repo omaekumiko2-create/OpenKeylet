@@ -44,6 +44,110 @@ pub fn blocked_header_names(connection: &StoredConnection) -> HashSet<String> {
     blocked
 }
 
+pub fn sensitive_redirect_header_names(connection: &StoredConnection) -> HashSet<String> {
+    let mut sensitive = blocked_header_names(connection);
+    sensitive.insert("authorization".to_owned());
+    sensitive.insert("proxy-authorization".to_owned());
+    sensitive.insert("cookie".to_owned());
+    sensitive.insert("cookie2".to_owned());
+    sensitive
+}
+
+pub fn strip_cross_origin_redirect_auth(
+    headers: &mut HeaderMap,
+    target_url: &mut Url,
+    connection: &StoredConnection,
+    secrets: &SecretBundle,
+) {
+    let sensitive_names = sensitive_redirect_header_names(connection);
+    let raw_secrets = secrets.non_empty_values();
+    let header_names_to_remove: Vec<_> = headers
+        .keys()
+        .filter(|name| {
+            let lower = name.as_str().to_ascii_lowercase();
+            if sensitive_names.contains(&lower) {
+                return true;
+            }
+            headers.get_all(*name).iter().any(|val| {
+                val.to_str().ok().is_some_and(|text| {
+                    raw_secrets
+                        .iter()
+                        .any(|secret| secret.len() >= 4 && text.contains(secret.as_str()))
+                })
+            })
+        })
+        .cloned()
+        .collect();
+    for name in header_names_to_remove {
+        headers.remove(name);
+    }
+
+    let query_auth_param = (connection.http_auth_type == "apiKey"
+        && connection.auth_location == "query"
+        && !connection.auth_header.is_empty())
+    .then_some(connection.auth_header.as_str());
+    if target_url.query().is_some() {
+        let mut removed_any = false;
+        let retained: Vec<(String, String)> = target_url
+            .query_pairs()
+            .filter_map(|(key, val)| {
+                let is_auth_param = query_auth_param.is_some_and(|param| key == param);
+                let leaks_secret = raw_secrets
+                    .iter()
+                    .any(|secret| secret.len() >= 4 && val.contains(secret.as_str()));
+                if is_auth_param || leaks_secret {
+                    removed_any = true;
+                    None
+                } else {
+                    Some((key.into_owned(), val.into_owned()))
+                }
+            })
+            .collect();
+        if removed_any {
+            target_url.set_query(None);
+            if !retained.is_empty() {
+                let mut pairs = target_url.query_pairs_mut();
+                for (key, val) in retained {
+                    pairs.append_pair(&key, &val);
+                }
+            }
+        }
+    }
+}
+
+pub fn replace_captured_secrets(mut text: String, captured: &[(String, String)]) -> String {
+    let mut ordered: Vec<(&str, &str)> = captured
+        .iter()
+        .filter(|(field, val)| !field.is_empty() && !val.is_empty())
+        .map(|(field, val)| (field.as_str(), val.as_str()))
+        .collect();
+    ordered.sort_by_key(|(_, val)| std::cmp::Reverse(val.len()));
+    for (field, secret) in ordered {
+        let marker = format!("[CAPTURED:{{{{openkeylet:{field}}}}}]");
+        let mut forms = vec![secret.to_owned()];
+        if let Ok(json_quoted) = serde_json::to_string(secret)
+            && let Some(inner) = json_quoted
+                .strip_prefix('"')
+                .and_then(|s| s.strip_suffix('"'))
+            && inner != secret
+        {
+            forms.push(inner.to_owned());
+        }
+        if secret.len() >= 4 {
+            forms.push(STANDARD.encode(secret.as_bytes()));
+            forms.push(url::form_urlencoded::byte_serialize(secret.as_bytes()).collect());
+        }
+        forms.sort_by_key(|f| std::cmp::Reverse(f.len()));
+        forms.dedup();
+        for form in forms {
+            if !form.is_empty() {
+                text = text.replace(&form, &marker);
+            }
+        }
+    }
+    text
+}
+
 pub fn visible_response_headers(headers: &HeaderMap) -> Vec<(String, String)> {
     headers
         .iter()
@@ -498,5 +602,60 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn cross_origin_redirect_strips_auth_headers_and_query_secrets() {
+        let mut conn = connection();
+        conn.http_auth_type = "apiKey".into();
+        conn.auth_location = "query".into();
+        conn.auth_header = "api_key".into();
+        conn.api_auth_headers = vec![crate::model::ApiAuthHeader {
+            name: "X-Custom-Auth".into(),
+            secret_name: "custom".into(),
+        }];
+        let mut secrets = SecretBundle::default();
+        secrets.api_key = Some("query-secret-9988".into());
+        secrets
+            .named_secrets
+            .insert("other".into(), "inline-header-secret-7766".into());
+
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", "Bearer leak".parse().unwrap());
+        headers.insert("cookie", "sid=secret".parse().unwrap());
+        headers.insert("x-custom-auth", "custom-val".parse().unwrap());
+        headers.insert(
+            "x-inline-secret",
+            "Bearer inline-header-secret-7766".parse().unwrap(),
+        );
+        headers.insert("x-safe-header", "keep-me".parse().unwrap());
+
+        let mut target =
+            Url::parse("https://other.example/cb?api_key=query-secret-9988&keep=yes&leak=inline-header-secret-7766")
+                .unwrap();
+
+        strip_cross_origin_redirect_auth(&mut headers, &mut target, &conn, &secrets);
+
+        assert!(headers.get("authorization").is_none());
+        assert!(headers.get("cookie").is_none());
+        assert!(headers.get("x-custom-auth").is_none());
+        assert!(headers.get("x-inline-secret").is_none());
+        assert_eq!(headers.get("x-safe-header").unwrap(), "keep-me");
+        assert_eq!(target.as_str(), "https://other.example/cb?keep=yes");
+    }
+
+    #[test]
+    fn replace_captured_secrets_masks_raw_and_encoded_forms() {
+        let secret = "tok_live/abc+123";
+        let b64 = STANDARD.encode(secret.as_bytes());
+        let text = format!(r#"{{"token":"{secret}","b64":"{b64}","ok":true}}"#);
+        let replaced = replace_captured_secrets(
+            text,
+            &[("accessToken".to_owned(), secret.to_owned())],
+        );
+        assert!(!replaced.contains(secret));
+        assert!(!replaced.contains(&b64));
+        assert!(replaced.contains("[CAPTURED:{{openkeylet:accessToken}}]"));
+        assert!(replaced.contains(r#""ok":true"#));
     }
 }

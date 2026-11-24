@@ -105,7 +105,12 @@ pub async fn handle(
             let website = text(p, "origin")?;
             if method == "passkey.create" {
                 let (key, response) = passkey::create(website, &p["options"], verified)?;
-                vault.store_browser_passkey(website, key, &p["options"])?;
+                let target_item_id = p["itemId"]
+                    .as_str()
+                    .filter(|value| !value.trim().is_empty())
+                    .map(Uuid::parse_str)
+                    .transpose()?;
+                vault.store_browser_passkey_for_item(target_item_id, website, key, &p["options"])?;
                 return Ok(response);
             }
             return vault.assert_browser_passkey(
@@ -358,10 +363,23 @@ impl Vault {
         key: passkey::StoredPasskey,
         options: &Value,
     ) -> Result<()> {
+        self.store_browser_passkey_for_item(None, website, key, options)?;
+        Ok(())
+    }
+
+    pub fn store_browser_passkey_for_item(
+        &self,
+        target_item_id: Option<Uuid>,
+        website: &str,
+        key: passkey::StoredPasskey,
+        options: &Value,
+    ) -> Result<String> {
+        let origin_url = passkey::origin(website)?;
         self.update_document_with_result(|document| {
-            if let Some(exclude) = options["excludeCredentials"].as_array() {
-                for c in &document.connections {
-                    let secrets: SecretBundle = self.unprotect_local_state(&c.encrypted_secrets)?;
+            let mut decrypted_secrets = Vec::with_capacity(document.connections.len());
+            for c in &document.connections {
+                let secrets: SecretBundle = self.unprotect_local_state(&c.encrypted_secrets)?;
+                if let Some(exclude) = options["excludeCredentials"].as_array() {
                     ensure!(
                         !secrets.passkeys.iter().any(|k| k.rp_id == key.rp_id
                             && exclude
@@ -370,14 +388,98 @@ impl Vault {
                         "InvalidStateError: A matching passkey already exists"
                     );
                 }
+                decrypted_secrets.push(secrets);
             }
+
+            let attach_index = if let Some(target_id) = target_item_id {
+                let index = document
+                    .connections
+                    .iter()
+                    .position(|c| c.id == target_id)
+                    .context("Target item not found")?;
+                ensure!(
+                    document.connections[index].enabled,
+                    "This project is disabled"
+                );
+                Some(index)
+            } else {
+                let target_user = key.user_name.trim();
+                if target_user.is_empty() {
+                    None
+                } else {
+                    let matching: Vec<usize> = document
+                        .connections
+                        .iter()
+                        .enumerate()
+                        .filter(|(index, c)| {
+                            if !c.enabled || !same_origin(c, website) {
+                                return false;
+                            }
+                            let secrets = &decrypted_secrets[*index];
+                            let same_user = secrets
+                                .get("username")
+                                .is_some_and(|u| u.trim().eq_ignore_ascii_case(target_user));
+                            if !same_user {
+                                return false;
+                            }
+                            !secrets.passkeys.iter().any(|existing| {
+                                existing.rp_id == key.rp_id
+                                    && (existing.credential_id == key.credential_id
+                                        || (!key.user_handle.is_empty()
+                                            && !existing.user_handle.is_empty()
+                                            && existing.user_handle != key.user_handle))
+                            })
+                        })
+                        .map(|(index, _)| index)
+                        .collect();
+                    if matching.len() == 1 {
+                        Some(matching[0])
+                    } else {
+                        None
+                    }
+                }
+            };
+
+            if let Some(index) = attach_index {
+                let stored = &mut document.connections[index];
+                let mut secrets = decrypted_secrets.swap_remove(index);
+                ensure!(
+                    !secrets
+                        .passkeys
+                        .iter()
+                        .any(|existing| existing.credential_id == key.credential_id),
+                    "InvalidStateError: A matching passkey already exists"
+                );
+                if !same_origin(stored, website) {
+                    if stored.login_uris.is_empty()
+                        && let Ok(existing_base) = passkey::origin(&stored.base_url)
+                    {
+                        stored.login_uris.push(crate::login_uri::LoginUri {
+                            uri: existing_base.origin().ascii_serialization(),
+                            match_type: "origin".to_owned(),
+                        });
+                    }
+                    if stored.login_uris.len() < 128 {
+                        stored.login_uris.push(crate::login_uri::LoginUri {
+                            uri: origin_url.origin().ascii_serialization(),
+                            match_type: "origin".to_owned(),
+                        });
+                    }
+                }
+                secrets.passkeys.push(key);
+                stored.encrypted_secrets = self.protect_local_state(&secrets)?;
+                stored.updated_at = chrono::Utc::now().to_rfc3339();
+                return Ok(stored.name.clone());
+            }
+
             let label = format!("{} · {} · Passkey", key.rp_id, key.user_name);
             let (mut stored, mut secrets) =
                 new_item(self, document, website, &key.user_name, &label, false)?;
+            let item_name = stored.name.clone();
             secrets.passkeys.push(key);
             stored.encrypted_secrets = self.protect_local_state(&secrets)?;
             document.connections.push(stored);
-            Ok(())
+            Ok(item_name)
         })
     }
 }
@@ -738,5 +840,151 @@ mod tests {
                 "expected {blocked} to be rejected, got: {err}"
             );
         }
+    }
+
+    #[test]
+    fn store_browser_passkey_for_item_attaches_explicitly_auto_matches_unique_and_falls_back() {
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as B64};
+        let dir = tempfile::tempdir().unwrap();
+        let vault = Vault::open(dir.path().to_path_buf()).unwrap();
+
+        let make_options = |rp: &str, user_name: &str, handle_byte: u8| {
+            json!({
+                "challenge": B64.encode([handle_byte; 32]),
+                "rp": {"id": rp, "name": rp},
+                "user": {"id": B64.encode([handle_byte; 16]), "name": user_name, "displayName": user_name},
+                "pubKeyCredParams": [{"type": "public-key", "alg": -7}],
+                "authenticatorSelection": {"residentKey": "required"}
+            })
+        };
+
+        // 1. Explicit target_item_id attaches to an existing item and adds a login_uri rule when base_url doesn't match.
+        let mut secrets = SecretBundle::default();
+        secrets.password = Some("pw-1".into());
+        secrets
+            .named_secrets
+            .insert("username".into(), "alice@corp.test".into());
+        let explicit_target = vault
+            .save_connection(ConnectionInput {
+                login_uris: Vec::new(),
+                item_type: "login".into(),
+                folder: String::new(),
+                favorite: false,
+                id: None,
+                modules: vec![
+                    ItemModule {
+                        kind: "url".into(),
+                        value: "https://app.example.com".into(),
+                        ..Default::default()
+                    },
+                    ItemModule {
+                        kind: "username".into(),
+                        ..Default::default()
+                    },
+                    ItemModule {
+                        kind: "password".into(),
+                        ..Default::default()
+                    },
+                ],
+                name: "Corp Account".into(),
+                enabled: true,
+                description: String::new(),
+                http_auth_type: String::new(),
+                private_key_import_path: String::new(),
+                auth_header: String::new(),
+                auth_location: String::new(),
+                auth_prefix: String::new(),
+                api_auth_headers: vec![],
+                test_path: String::new(),
+                remove_secret_names: vec![],
+                secrets,
+            })
+            .unwrap();
+
+        let opts1 = make_options("example.com", "alice@corp.test", 1);
+        let (key1, _) = passkey::create("https://auth.example.com", &opts1, true).unwrap();
+        let stored_name = vault
+            .store_browser_passkey_for_item(
+                Some(explicit_target.id),
+                "https://auth.example.com",
+                key1.clone(),
+                &opts1,
+            )
+            .unwrap();
+        assert_eq!(stored_name, "Corp Account");
+        assert_eq!(vault.list_connections().unwrap().len(), 1);
+        let updated = vault.get_connection(explicit_target.id).unwrap();
+        assert_eq!(updated.secrets.passkeys.len(), 1);
+        assert_eq!(updated.secrets.passkeys[0].credential_id, key1.credential_id);
+        assert!(same_origin(&updated.stored, "https://auth.example.com"));
+        assert!(same_origin(&updated.stored, "https://app.example.com"));
+
+        // Duplicate credential via excludeCredentials is still rejected across the vault.
+        let mut excluded = opts1.clone();
+        excluded["excludeCredentials"] =
+            json!([{"type": "public-key", "id": key1.credential_id}]);
+        assert!(
+            vault
+                .store_browser_passkey_for_item(
+                    Some(explicit_target.id),
+                    "https://auth.example.com",
+                    key1,
+                    &excluded,
+                )
+                .is_err()
+        );
+
+        // 2. target_item_id = None auto-attaches to a unique enabled item matching website + username (case-insensitive).
+        let saved_login = vault
+            .save_browser_login(&json!({
+                "origin": "https://login.other.example",
+                "username": "Bob@Other.Example",
+                "password": "bob-password",
+                "name": "Other Login"
+            }))
+            .unwrap();
+        let bob_id = Uuid::parse_str(saved_login["id"].as_str().unwrap()).unwrap();
+        let opts2 = make_options("other.example", "bob@other.example", 2);
+        let (key2, _) = passkey::create("https://login.other.example", &opts2, true).unwrap();
+        let auto_name = vault
+            .store_browser_passkey_for_item(None, "https://login.other.example", key2, &opts2)
+            .unwrap();
+        assert_eq!(auto_name, "Other Login");
+        assert_eq!(vault.get_connection(bob_id).unwrap().secrets.passkeys.len(), 1);
+        assert_eq!(vault.list_connections().unwrap().len(), 2);
+
+        // 3. target_item_id = None falls back to creating a new Passkey item when no unique match exists.
+        let opts3 = make_options("fresh.example", "carol", 3);
+        let (key3, _) = passkey::create("https://fresh.example", &opts3, true).unwrap();
+        let created_name = vault
+            .store_browser_passkey_for_item(None, "https://fresh.example", key3, &opts3)
+            .unwrap();
+        assert_eq!(created_name, "fresh.example · carol · Passkey");
+        assert_eq!(vault.list_connections().unwrap().len(), 3);
+
+        // 4. Ambiguous match (two items for same origin + username) falls back to creating a new Passkey item.
+        vault
+            .save_browser_login(&json!({
+                "origin": "https://dup.example",
+                "username": "dave",
+                "password": "pw-a",
+                "name": "Dup A"
+            }))
+            .unwrap();
+        vault
+            .save_browser_login(&json!({
+                "origin": "https://dup.example",
+                "username": "DAVE",
+                "password": "pw-b",
+                "name": "Dup B"
+            }))
+            .unwrap();
+        let opts4 = make_options("dup.example", "dave", 4);
+        let (key4, _) = passkey::create("https://dup.example", &opts4, true).unwrap();
+        let fallback_name = vault
+            .store_browser_passkey_for_item(None, "https://dup.example", key4, &opts4)
+            .unwrap();
+        assert_eq!(fallback_name, "dup.example · dave · Passkey");
+        assert_eq!(vault.list_connections().unwrap().len(), 6);
     }
 }

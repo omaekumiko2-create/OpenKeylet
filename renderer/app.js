@@ -1105,7 +1105,11 @@ function itemPermission(item) {
   const capabilities = itemCapabilities(item);
   if (capabilities.includes('http')) return 'HTTP';
   if (capabilities.includes('ssh')) return 'SSH';
-  return capabilities.includes('fill') ? 'FOCUS INPUT' : 'NOT EXPOSED';
+  if (capabilities.includes('fill')) return 'FOCUS INPUT';
+  if (capabilities.includes('passkey')) return 'PASSKEY';
+  if (capabilities.includes('personal')) return 'PERSONAL';
+  if (capabilities.includes('note')) return 'NOTE';
+  return 'NOT EXPOSED';
 }
 
 const activityFilterDefinitions = {
@@ -1618,16 +1622,29 @@ function draftSecretValues(secrets = {}) {
 function renderDrafts() {
   const button = $('#drafts-button');
   const pill = $('#draft-pill');
-  const hasDraft = Boolean(editorDrafts[0]);
+  const count = editorDrafts.length;
+  const hasDraft = count > 0;
   if (!hasDraft) creationMode = 'add';
   $('.creation-control').dataset.mode = creationMode;
   pill?.classList.toggle('hidden', !hasDraft);
   const deleteButton = $('#delete-draft-button');
   button.disabled = !hasDraft;
-  button.textContent = localized('草稿', 'DRAFT');
-  button.title = hasDraft ? localized('继续最近的草稿', 'Continue the most recent draft') : localized('暂无草稿', 'No draft');
+  const baseLabel = localized('草稿', 'DRAFT');
+  button.textContent = count > 1 ? `${baseLabel} (${count})` : baseLabel;
+  const latestName = editorDrafts[0]?.input?.name?.trim();
+  button.title = !hasDraft
+    ? localized('暂无草稿', 'No draft')
+    : count > 1
+      ? (latestName
+        ? localized(`继续最近草稿「${latestName}」（共 ${count} 条待处理）`, `Continue latest draft "${latestName}" (${count} queued)`)
+        : localized(`继续最近的草稿（共 ${count} 条待处理）`, `Continue the most recent draft (${count} queued)`))
+      : (latestName
+        ? localized(`继续草稿「${latestName}」`, `Continue draft "${latestName}"`)
+        : localized('继续最近的草稿', 'Continue the most recent draft'));
   deleteButton.classList.toggle('hidden', !hasDraft);
-  deleteButton.title = localized('删除草稿', 'Delete draft');
+  deleteButton.title = count > 1
+    ? localized(`删除最近草稿（剩余 ${count - 1} 条）`, `Delete latest draft (${count - 1} remaining)`)
+    : localized('删除草稿', 'Delete draft');
 }
 
 async function refreshDrafts(showError = false) {
@@ -2138,9 +2155,10 @@ function value(selector, next) {
 }
 
 function updateEditorTitle() {
-  $('#modal-title').textContent = editorOpenedFromDraft
+  const queueSuffix = editorOpenedFromDraft && editorDrafts.length > 1 ? ` (${editorDrafts.length})` : '';
+  $('#modal-title').textContent = (editorOpenedFromDraft
     ? (editorExistingItem ? localized('继续编辑', 'CONTINUE EDIT') : localized('继续草稿', 'CONTINUE DRAFT'))
-    : (editorExistingItem ? localized('编辑项目', 'EDIT ITEM') : localized('添加项目', 'ADD ITEM'));
+    : (editorExistingItem ? localized('编辑项目', 'EDIT ITEM') : localized('添加项目', 'ADD ITEM'))) + queueSuffix;
 }
 
 async function openEditor(item = null, draft = null) {
@@ -3700,17 +3718,23 @@ document.addEventListener('click', async (event) => {
   }
   const deleteDraftButton = event.target.closest('#delete-draft-button');
   if (deleteDraftButton && editorDrafts[0]) {
-    const draftId = editorDrafts[0].id;
+    const draft = editorDrafts[0];
+    const draftId = draft.id;
+    const draftName = draft.input?.name?.trim();
     if (!await confirmDestructiveAction({
-      title: localized('删除当前草稿？', 'Delete this draft?'),
+      title: draftName
+        ? localized(`删除草稿「${draftName}」？`, `Delete draft "${draftName}"?`)
+        : localized('删除当前草稿？', 'Delete this draft?'),
       message: localized('草稿中的未保存内容将永久丢失。', 'Unsaved content in this draft will be permanently lost.'),
     })) return;
     try {
       await api.deleteDraft(draftId);
-      editorDrafts = editorDrafts.filter((draft) => draft.id !== draftId);
+      editorDrafts = editorDrafts.filter((candidate) => candidate.id !== draftId);
       renderDrafts();
-      $('#add-connection-button').focus();
-      toast(localized('草稿已删除', 'Draft deleted'));
+      (editorDrafts.length > 0 ? $('#drafts-button') : $('#add-connection-button')).focus();
+      toast(editorDrafts.length > 0
+        ? localized(`草稿已删除（还有 ${editorDrafts.length} 条待处理）`, `Draft deleted (${editorDrafts.length} remaining)`)
+        : localized('草稿已删除', 'Draft deleted'));
     } catch (error) { toast(cleanError(error), 'error'); }
     return;
   }
@@ -4780,8 +4804,13 @@ $('#connection-form').addEventListener('submit', async (event) => {
     const input = serializeItem();
     const pastedClipboard = editorSmartClipboardSource;
     const onCandidateSaved = editorCandidateOnSaved;
+    const savedDraftId = currentDraftId;
     await api.save(input);
-    if (currentDraftId) await api.deleteDraft(currentDraftId);
+    if (savedDraftId) {
+      await api.deleteDraft(savedDraftId);
+      editorDrafts = editorDrafts.filter((draft) => draft.id !== savedDraftId);
+      renderDrafts();
+    }
     currentDraftId = '';
     closeEditor();
     onCandidateSaved?.();
@@ -4790,9 +4819,12 @@ $('#connection-form').addEventListener('submit', async (event) => {
       clearedClipboard = await api.clearClipboardIfMatches(pastedClipboard).catch(() => false);
     }
     window.OpenKeyletAppearance?.play?.('success');
+    const remainingDrafts = savedDraftId ? editorDrafts.length : 0;
     toast(clearedClipboard
       ? localized('项目已加密保存，并已自动清理剪贴板', 'Item saved and clipboard cleared')
-      : localized('项目已加密保存', 'Item saved and encrypted'));
+      : remainingDrafts > 0
+        ? localized(`项目已加密保存（还有 ${remainingDrafts} 条待处理草稿）`, `Item saved and encrypted · ${remainingDrafts} draft(s) remaining`)
+        : localized('项目已加密保存', 'Item saved and encrypted'));
     await refresh();
     await refreshDrafts();
   } catch (error) { toast(cleanError(error), 'error'); } finally { button.disabled = false; }
@@ -5910,7 +5942,6 @@ async function bootstrap() {
   });
   applyLanguage();
   syncVaultViewMode();
-  initLettering();
   await refreshOwnerLock();
   await refresh();
   await refreshDrafts();

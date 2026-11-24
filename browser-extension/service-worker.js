@@ -298,7 +298,8 @@ function jobExpiresAt(job, now = Date.now()) {
 
 async function fillFocused(value, expiresAt, submit = false) {
   if (typeof value !== "string") return { ok: false, message: "The fill value is invalid" };
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  let [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  if (!tab?.id) [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab?.id) return { ok: false, message: "No active tab" };
   const frameId = focusedFrameByTab.get(tab.id) ?? 0;
   try {

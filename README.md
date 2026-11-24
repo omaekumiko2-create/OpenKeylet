@@ -152,7 +152,7 @@ OpenKeylet connects to AI coding and terminal agents over local on-demand **`std
    ```
    The agent will call `items_search` and return only item names, targets, and available actions — never hidden secrets.
 
-> Using another MCP-compatible client? Expand [Manual `stdio` MCP Configuration](#complete-mcp-surface-17-tools) below or run `openkeylet config stdio-json`.
+> Using another MCP-compatible client? Expand [Manual `stdio` MCP Configuration](#complete-mcp-surface-23-tools--native-cli-bridge) below or run `openkeylet config stdio-json`.
 
 ---
 
@@ -277,26 +277,49 @@ In **System → CLOUD / 05**, you may optionally sync ciphertext through a **pri
 
 ---
 
-## Complete MCP Surface (17 Tools)
+## Complete MCP Surface (23 Tools) & Native CLI Bridge
 
-OpenKeylet runs on demand via local `stdio` MCP (`openkeylet mcp stdio`) and exposes 17 typed tools with `structuredContent` outputs:
+OpenKeylet runs on demand via local `stdio` MCP (`openkeylet mcp stdio`) and exposes **23 typed tools** with `structuredContent` outputs:
 
 | Category | Tool | Purpose |
 | --- | --- | --- |
-| **Discovery** | `items_search(query?)` | Search enabled items, module names, public targets, and advertised actions |
-| **Browser & Web** | `browser_inspect` | Inspect active tab URL, forms, fields, and clickable controls via paired extension |
-| | `browser_fill_login` | Match and fill saved login credentials (and TOTP) into a live web page |
-| | `browser_fill_personal` | Fill saved cards or identity details into web forms |
-| | `browser_click` | Click a targeted button/link in the active page |
-| | `browser_passkey` | Complete WebAuthn Passkey registration or sign-in using the local vault |
-| **Direct Fill** | `credential_fill` | Fill one hidden module into a focused browser, desktop control, or managed terminal |
-| **SSH & SFTP** | `ssh_run` | Run SSH commands with local password/key auth, stdin, and `{{openkeylet:...}}` placeholders |
+| **Discovery & Memory** | `items_search(query?)` | Search enabled items (including Login, SSH, API, Card, Identity, Secure Note), module names, saved `agentNotes`, and available actions |
+| | `item_note` | Attach, update, or remove short non-secret context notes (≤200 chars, secret-guarded) so future agent sessions select the right item fast |
+| **Browser & Web** | `browser_open` | Open an HTTP/HTTPS URL in a new tab or navigate an existing tab and wait for load completion |
+| | `browser_inspect` | Inspect active tab & secure child iframes: URLs, forms, fields (incl. checkboxes/radios), buttons, sanitized alerts/page summary, pending Passkeys, and matching vault items |
+| | `browser_fill_login` | Match and fill saved login credentials (and auto-fill TOTP on OTP-only verification steps) into a live page or matching SSO iframe |
+| | `browser_fill_personal` | Fill saved cards or identity details into HTTPS/localhost pages, including split cross-origin payment iframes (e.g. Stripe Elements) |
+| | `browser_click` | Click a visible button, link, checkbox, radio, or label in the page or secure iframe |
+| | `browser_passkey` | Complete WebAuthn Passkey sign-in or registration (attaching to a specified/matching login item when available) using the local vault |
+| **Direct Fill** | `credential_fill` | Fill one hidden module into a browser control, explicit desktop foreground control, or managed terminal |
+| **SSH & SFTP** | `ssh_run` | Run SSH commands with private-key-first + password fallback auth, stdin, bounded output cap, and cross-item `{{openkeylet:Item/module}}` / `{{openkeylet-raw:...}}` placeholders |
 | | `ssh_upload` | Recursively upload local files/directories over SFTP |
 | | `ssh_download` | Recursively download remote files/directories over SFTP |
-| **HTTP APIs** | `http_send` | Send authenticated HTTP/HTTPS requests (auto-detects providers, Bearer/Basic, custom headers, streaming, multipart) |
-| **Files** | `secret_write_file` | Render a local file template replacing `{{openkeylet:module}}` placeholders atomically without exposing plaintext |
-| **Terminal** | `terminal_run` | One-shot local command with hidden-module substitution and output redaction |
-| | `terminal_start` / `terminal_write` / `terminal_read` / `terminal_stop` | Managed interactive PTY sessions with continuous secret redaction across read boundaries |
+| **HTTP APIs** | `http_send` | Send authenticated HTTP/HTTPS requests (auto-detects providers, Bearer/Basic, custom headers, streaming, multipart, `insecure`, `followRedirects`, cross-origin auth stripping, and zero-plaintext `captureSecrets` from JSON responses) |
+| **Files & Onboarding** | `secret_write_file` | Render a local file template replacing single-item `{{openkeylet:module}}` or cross-item `{{openkeylet:Item/module}}` placeholders atomically (`0600` on Unix) without exposing plaintext |
+| | `secret_generate` | Cryptographically generate and store a strong password/hex/base64url secret locally into an item without exposing plaintext |
+| | `ssh_keygen` | Generate an Ed25519 SSH keypair locally, store the private key encrypted, and return only the public key & fingerprint |
+| | `secret_ingest_file` | Import a local `.env` or PEM private key directly into the vault without exposing plaintext (and optionally write a sealed template) |
+| | `draft_prepare` | Scaffold an encrypted item draft (queued up to 10 drafts) with public metadata so the owner only pastes secrets locally in the desktop GUI |
+| **Terminal** | `terminal_run` | One-shot local command with cross-item placeholder & `secretEnv` substitution, output truncation cap, and multi-item redaction |
+| | `terminal_start` / `terminal_write` / `terminal_read` / `terminal_stop` | Managed interactive PTY sessions with bounded buffers and continuous cross-boundary secret redaction |
+
+### Native CLI & Protocol Layer (for Claude Code, Codex & Antigravity Native Shells)
+
+When agents (or humans) run `git`, `ssh`, dev servers, or test suites inside native shells (`Bash` / `run_command`), OpenKeylet also provides zero-plaintext native bridges:
+
+```bash
+# Inject secrets into any native command with real-time boundary-safe stdout/stderr redaction
+openkeylet run --item "OpenAI" --env-file .env.template --env DB_PASS="Prod DB/password" -- npm run dev
+
+# Local read-only OpenSSH Agent (Unix domain socket on macOS/Linux, Named Pipe on Windows)
+# Exposes only enabled SSH items and revokes immediately when disabled
+openkeylet ssh-agent
+eval "$(openkeylet ssh-agent --print-env)"   # macOS/Linux (or PowerShell $env:SSH_AUTH_SOCK = '\\.\pipe\openkeylet-ssh-agent')
+
+# Git HTTPS credential helper (uses enabled tokens/passwords; store/erase are safe no-ops)
+git config --global credential.helper '!openkeylet git-credential'
+```
 
 <details>
   <summary>Manual <code>stdio</code> MCP Configuration (JSON &amp; CLI)</summary>

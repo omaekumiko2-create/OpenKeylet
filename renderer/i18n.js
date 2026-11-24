@@ -795,6 +795,13 @@
     [/^Scanned (\d+) file\(s\) in folder — no plaintext secrets found$/, (m) => [`已深掃目錄內 ${m[1]} 個檔案，未發現明文憑證`, `フォルダ内 ${m[1]} 件をスキャンしました（秘密情報なし）`, `폴더 내 파일 ${m[1]}개 스캔 완료 — 평문 비밀 없음`, `${m[1]} archivo(s) escaneados en carpeta — sin secretos`]],
     [/^Encrypt and upload the entire vault to (.+)\. Git history retains older encrypted snapshots\.$/, (m) => [`將整個密碼庫加密上傳至 ${m[1]}。Git 歷史會保留舊版密文。`, `金庫全体を暗号化して ${m[1]} へアップロードします。Git 履歴には過去の暗号化スナップショットが残ります。`, `전체 금고를 암호화해 ${m[1]}(으)로 업로드합니다. Git 기록에 이전 암호화 스냅샷이 유지됩니다.`, `Cifra y sube toda la bóveda a ${m[1]}. El historial Git conserva copias anteriores.`]],
     [/^NOTE · (\d+)$/, (m) => [`筆記 · ${m[1]}`, `メモ · ${m[1]}`, `메모 · ${m[1]}`, `NOTA · ${m[1]}`]],
+    [/^Continue latest draft "(.+)" \((\d+) queued\)$/, (m) => [`繼續最近草稿「${m[1]}」（共 ${m[2]} 條待處理）`, `最新の下書き「${m[1]}」を再開（待機中 ${m[2]} 件）`, `최근 임시 저장 "${m[1]}" 이어쓰기(총 ${m[2]}건 대기)`, `Continuar último borrador "${m[1]}" (${m[2]} en cola)`]],
+    [/^Continue the most recent draft \((\d+) queued\)$/, (m) => [`繼續最近的草稿（共 ${m[1]} 條待處理）`, `最新の下書きを再開（待機中 ${m[1]} 件）`, `최근 임시 저장 이어쓰기(총 ${m[1]}건 대기)`, `Continuar borrador reciente (${m[1]} en cola)`]],
+    [/^Continue draft "(.+)"$/, (m) => [`繼續草稿「${m[1]}」`, `下書き「${m[1]}」を再開`, `임시 저장 "${m[1]}" 이어쓰기`, `Continuar borrador "${m[1]}"`]],
+    [/^Delete latest draft \((\d+) remaining\)$/, (m) => [`刪除最近草稿（剩餘 ${m[1]} 條）`, `最新の下書きを削除（残り ${m[1]} 件）`, `최근 임시 저장 삭제(${m[1]}건 남음)`, `Eliminar último borrador (${m[1]} restantes)`]],
+    [/^Delete draft "(.+)"\?$/, (m) => [`刪除草稿「${m[1]}」？`, `下書き「${m[1]}」を削除しますか？`, `임시 저장 "${m[1]}"을(를) 삭제할까요?`, `¿Eliminar borrador "${m[1]}"?`]],
+    [/^Draft deleted \((\d+) remaining\)$/, (m) => [`草稿已刪除（還有 ${m[1]} 條待處理）`, `下書きを削除しました（残り ${m[1]} 件）`, `임시 저장 삭제됨(${m[1]}건 남음)`, `Borrador eliminado (${m[1]} restantes)`]],
+    [/^Item saved and encrypted · (\d+) draft\(s\) remaining$/, (m) => [`項目已加密儲存（還有 ${m[1]} 條待處理草稿）`, `項目を暗号化して保存しました（残り下書き ${m[1]} 件）`, `항목이 암호화되어 저장됨(남은 임시 저장 ${m[1]}건)`, `Elemento guardado y cifrado · ${m[1]} borrador(es) restante(s)`]],
   ];
 
   const LANG_INDEX = { 'zh-TW': 0, ja: 1, ko: 2, es: 3 };

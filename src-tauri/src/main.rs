@@ -12,10 +12,13 @@ use mcp_vault::{
     admin_server::{self, AdminServerConfig, DEFAULT_ADMIN_PORT},
     backup,
     browser::BrowserBridge,
+    cli_run,
+    git_credential,
     mcp,
     migration,
     model::{ItemModule, SecretBundle, SettingsPatch},
     smart_ingest,
+    ssh_agent,
     storage::{app_data_dir, resolve_user_path, uses_explicit_data_dir},
     updater,
     vault::Vault,
@@ -31,23 +34,27 @@ use zeroize::Zeroizing;
 
 #[tokio::main]
 async fn main() {
-    if let Err(error) = dispatch().await {
-        eprintln!("OpenKeylet: {error:#}");
-        std::process::exit(1);
+    match dispatch().await {
+        Ok(0) => {}
+        Ok(code) => std::process::exit(code),
+        Err(error) => {
+            eprintln!("OpenKeylet: {error:#}");
+            std::process::exit(1);
+        }
     }
 }
 
-async fn dispatch() -> Result<()> {
+async fn dispatch() -> Result<i32> {
     let args: Vec<String> = env::args().skip(1).collect();
     if args.is_empty() || args.first().is_some_and(|arg| arg == "gui") {
         #[cfg(feature = "gui")]
         {
             run_gui()?;
-            return Ok(());
+            return Ok(0);
         }
         #[cfg(not(feature = "gui"))]
         anyhow::bail!(
-            "This is the headless version of OpenKeylet; use the mcp stdio, config, vault, admin, browser, or backup subcommand"
+            "This is the headless version of OpenKeylet; use the mcp stdio, run, ssh-agent, git-credential, config, vault, admin, browser, or backup subcommand"
         );
     }
 
@@ -62,10 +69,23 @@ async fn dispatch() -> Result<()> {
         } else {
             println!("The app-private master key file already exists; no migration is needed");
         }
-        return Ok(());
+        return Ok(0);
     }
 
     let vault = Vault::open(app_data_dir()?)?;
+    match args.as_slice() {
+        [command, rest @ ..] if command == "run" => return cli_run::run_cli(&vault, rest).await,
+        [command, rest @ ..] if command == "ssh-agent" => {
+            ssh_agent::run_cli(&vault, rest).await?;
+            return Ok(0);
+        }
+        [command, rest @ ..] if command == "git-credential" => {
+            git_credential::run_cli(&vault, rest)?;
+            return Ok(0);
+        }
+        _ => {}
+    }
+
     match args.as_slice() {
         [command, transport] if command == "mcp" && transport == "stdio" => {
             mcp::serve_stdio(vault).await
@@ -109,9 +129,10 @@ async fn dispatch() -> Result<()> {
         [command, rest @ ..] if command == "import-ssh" => run_cli_import_ssh(&vault, rest),
         [command, rest @ ..] if command == "keygen" => run_cli_keygen(&vault, rest),
         _ => anyhow::bail!(
-            "Usage: openkeylet [gui] | mcp stdio | config <stdio-json|stdio-toml> | vault <status|list [--all]|show <ITEM>|enable <ITEM>|disable <ITEM>|trash <ITEM>|restore <ITEM>|pin <status|set|clear>> | admin serve [--port <PORT>] [--bind <IP>] [--token-env <VAR>] | add [--name <NAME>] [--folder <FOLDER>] [--file <PATH>] | import-env <FILE> [--name <NAME>] [--folder <FOLDER>] [--seal [TEMPLATE]] | import-ssh [CONFIG_FILE] | keygen <NAME> [--host <HOST>] [--port <PORT>] [--user <USER>] [--comment <COMMENT>] [--folder <FOLDER>] | browser <status|enable [port]|disable|pair [port]|reset> | backup <export|import> <file> [--passphrase | --passphrase-env <VAR> | --passphrase-stdin] | update <check|install> | key migrate (macOS)"
+            "Usage: openkeylet [gui] | mcp stdio | run [--item <ITEM>]... [--env VAR=MODULE]... [--env-file <PATH>]... [--no-redact] -- <COMMAND> [ARGS...] | ssh-agent [--socket <PATH> | --pipe <NAME>] [--print-env] | git-credential <get|store|erase> | config <stdio-json|stdio-toml> | vault <status|list [--all]|show <ITEM>|enable <ITEM>|disable <ITEM>|trash <ITEM>|restore <ITEM>|pin <status|set|clear>> | admin serve [--port <PORT>] [--bind <IP>] [--token-env <VAR>] | add [--name <NAME>] [--folder <FOLDER>] [--file <PATH>] | import-env <FILE> [--name <NAME>] [--folder <FOLDER>] [--seal [TEMPLATE]] | import-ssh [CONFIG_FILE] | keygen <NAME> [--host <HOST>] [--port <PORT>] [--user <USER>] [--comment <COMMENT>] [--folder <FOLDER>] | browser <status|enable [port]|disable|pair [port]|reset> | backup <export|import> <file> [--passphrase | --passphrase-env <VAR> | --passphrase-stdin] | update <check|install> | key migrate (macOS)"
         ),
-    }
+    }?;
+    Ok(0)
 }
 
 fn unique_cli_name(vault: &Vault, base: &str) -> Result<String> {

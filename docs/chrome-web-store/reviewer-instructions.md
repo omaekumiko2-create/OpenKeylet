@@ -16,7 +16,7 @@ OpenKeylet is a companion to a local desktop vault. It has no OpenKeylet cloud a
 2. Enter a synthetic account. Open the extension, choose “Save login,” inspect the source and values, and confirm. This writes only to the local desktop vault.
 3. Clear the form and select the matching login in the popup. The fields fill; normal popup autofill does not submit the form.
 4. Change the account from the desktop and reopen the popup to verify both use the same vault.
-5. Open a browser management page. The popup should explain that these pages cannot be filled, while full vault management remains accessible.
+5. Open a browser management page. The popup should explain that these pages cannot be filled and direct vault management to OpenKeylet desktop.
 
 ## Optional save suggestions and privacy
 
@@ -26,9 +26,9 @@ OpenKeylet is a companion to a local desktop vault. It has no OpenKeylet cloud a
 4. Turn the option off, change origin, close the tab, disconnect the bridge or explicitly lock the extension. Applicable temporary suggestions are cleared. Drafts expire within five minutes; username-only steps within two minutes.
 5. Open the bundled Privacy page from the popup footer.
 
-## Cards, identities and notes
+## Cards and identities
 
-Create synthetic items in “Cards, identities & notes” or “All vault items.” On a controlled HTTPS page with standard autocomplete fields, explicitly choose a card or identity to fill. Hidden fields and cross-origin frames are not filled. Secure notes are vault items, not automatically injected into webpages. Delete an item, view Trash and restore it.
+Create synthetic card or identity items in OpenKeylet desktop. On a controlled HTTPS page with standard autocomplete fields, explicitly choose a card or identity from the popup's “Cards & addresses” section to fill. Hidden fields and cross-origin frames are not filled. Vault editing, trash, and history remain in OpenKeylet desktop.
 
 ## Passkeys
 

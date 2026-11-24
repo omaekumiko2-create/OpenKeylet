@@ -1,8 +1,9 @@
 use crate::{
     model::{SecretBundle, StoredConnection},
     policy::{
-        blocked_header_names, normalize_api_request_method, redact, redirect_target_supported,
-        validate_ssh_command, visible_response_headers,
+        blocked_header_names, normalize_api_request_method, redact, redact_values,
+        redirect_target_supported, strip_cross_origin_redirect_auth, validate_ssh_command,
+        visible_response_headers,
     },
     storage::resolve_user_path,
     vault::{DecryptedConnection, Vault},
@@ -22,14 +23,14 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     fmt::Display,
     path::{Path, PathBuf},
     process::Stdio,
     sync::Arc,
     time::Duration,
 };
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use url::Url;
 use uuid::Uuid;
 
@@ -40,6 +41,101 @@ use std::os::unix::process::ExitStatusExt;
 // requests comfortably below the usual 32 KiB packet limit and stream larger
 // commands to the account's configured remote shell instead.
 const MAX_DIRECT_SSH_COMMAND_LENGTH: usize = 16_384;
+const MAX_HTTP_REDIRECTS: usize = 10;
+pub const DEFAULT_MAX_OUTPUT_BYTES: usize = 512 * 1024;
+
+#[derive(Debug)]
+struct BoundedOutputCapture {
+    limit: Option<usize>,
+    head: Vec<u8>,
+    tail: VecDeque<u8>,
+    omitted_bytes: usize,
+}
+
+impl BoundedOutputCapture {
+    fn new(limit: Option<usize>) -> Self {
+        Self {
+            limit: limit.filter(|&bytes| bytes > 0),
+            head: Vec::new(),
+            tail: VecDeque::new(),
+            omitted_bytes: 0,
+        }
+    }
+
+    fn push(&mut self, chunk: &[u8]) {
+        if chunk.is_empty() {
+            return;
+        }
+        let Some(limit) = self.limit else {
+            self.head.extend_from_slice(chunk);
+            return;
+        };
+        let head_cap = (limit / 2).max(1);
+        let tail_cap = limit.saturating_sub(head_cap);
+        let mut remaining = chunk;
+        if self.head.len() < head_cap {
+            let take = (head_cap - self.head.len()).min(remaining.len());
+            self.head.extend_from_slice(&remaining[..take]);
+            remaining = &remaining[take..];
+        }
+        if remaining.is_empty() {
+            return;
+        }
+        if tail_cap == 0 {
+            self.omitted_bytes = self.omitted_bytes.saturating_add(remaining.len());
+            return;
+        }
+        if remaining.len() >= tail_cap {
+            let dropped = self.tail.len() + (remaining.len() - tail_cap);
+            self.omitted_bytes = self.omitted_bytes.saturating_add(dropped);
+            self.tail.clear();
+            self.tail
+                .extend(&remaining[remaining.len() - tail_cap..]);
+            return;
+        }
+        let overflow = (self.tail.len() + remaining.len()).saturating_sub(tail_cap);
+        if overflow > 0 {
+            self.tail.drain(..overflow);
+            self.omitted_bytes = self.omitted_bytes.saturating_add(overflow);
+        }
+        self.tail.extend(remaining);
+    }
+
+    fn finish(self, redact_fn: impl Fn(String) -> String) -> (String, bool) {
+        if self.omitted_bytes == 0 {
+            let mut combined = self.head;
+            combined.extend(self.tail);
+            return (
+                redact_fn(String::from_utf8_lossy(&combined).into_owned()),
+                false,
+            );
+        }
+        let head_str = redact_fn(String::from_utf8_lossy(&self.head).into_owned());
+        let tail_bytes: Vec<u8> = self.tail.into_iter().collect();
+        let tail_str = redact_fn(String::from_utf8_lossy(&tail_bytes).into_owned());
+        let notice = format!(
+            "\n…[Output truncated: omitted {} bytes; pass maxOutputBytes=0 for unlimited]\n",
+            self.omitted_bytes
+        );
+        (format!("{head_str}{notice}{tail_str}"), true)
+    }
+}
+
+async fn read_stream_bounded<R: AsyncRead + Unpin>(
+    mut reader: R,
+    limit: Option<usize>,
+) -> std::io::Result<BoundedOutputCapture> {
+    let mut capture = BoundedOutputCapture::new(limit);
+    let mut buf = [0_u8; 8_192];
+    loop {
+        let count = reader.read(&mut buf).await?;
+        if count == 0 {
+            break;
+        }
+        capture.push(&buf[..count]);
+    }
+    Ok(capture)
+}
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -70,6 +166,10 @@ pub struct ApiRequestInput {
     pub save_response_to: Option<String>,
     #[serde(default)]
     pub overwrite_response_file: bool,
+    #[serde(default)]
+    pub insecure: bool,
+    #[serde(default)]
+    pub follow_redirects: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -133,6 +233,19 @@ pub struct ApiResponse {
     pub saved_to: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bytes_transferred: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub captured_secrets: Vec<String>,
+}
+
+pub(crate) struct RawApiResponse {
+    pub status: u16,
+    pub status_text: String,
+    pub url: String,
+    pub headers: HashMap<String, String>,
+    pub raw_body: String,
+    pub truncated: bool,
+    pub saved_to: Option<String>,
+    pub bytes_transferred: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -165,10 +278,97 @@ struct TransferStats {
     directories: u64,
 }
 
+enum PreparedApiBody {
+    Empty,
+    Bytes {
+        bytes: Vec<u8>,
+        default_content_type: Option<&'static str>,
+    },
+    Multipart {
+        form: HashMap<String, Value>,
+        files: Vec<ApiUploadFile>,
+    },
+}
+
+async fn build_multipart_form(
+    form: &HashMap<String, Value>,
+    files: &[ApiUploadFile],
+) -> Result<reqwest::multipart::Form> {
+    let mut multipart = reqwest::multipart::Form::new();
+    for (name, value) in form {
+        for value in form_values(value.clone()) {
+            multipart = multipart.text(name.clone(), value);
+        }
+    }
+    for file in files {
+        let field = file.field.trim();
+        if field.is_empty() {
+            bail!("Uploaded file field name cannot be empty");
+        }
+        let path = resolve_user_path(&file.path)?;
+        if !tokio::fs::metadata(&path)
+            .await
+            .context("Unable to read uploaded file")?
+            .is_file()
+        {
+            bail!("Upload path is not a regular file");
+        }
+        let mut part = reqwest::multipart::Part::file(&path)
+            .await
+            .context("Unable to open uploaded file")?;
+        if let Some(file_name) = file
+            .file_name
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            part = part.file_name(file_name.to_owned());
+        }
+        if let Some(content_type) = file
+            .content_type
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            part = part
+                .mime_str(content_type.trim())
+                .context("Invalid uploaded file Content-Type")?;
+        }
+        multipart = multipart.part(field.to_owned(), part);
+    }
+    Ok(multipart)
+}
+
 pub async fn execute_api(
     connection: &DecryptedConnection,
     input: ApiRequestInput,
 ) -> Result<ApiResponse> {
+    let raw = execute_api_raw(connection, input).await?;
+    let body = if raw.saved_to.is_some() {
+        String::new()
+    } else {
+        sanitize_api_body(
+            raw.raw_body,
+            raw.truncated,
+            &connection.stored,
+            &connection.secrets,
+        )
+    };
+    Ok(ApiResponse {
+        status: raw.status,
+        status_text: raw.status_text,
+        url: raw.url,
+        headers: raw.headers,
+        body,
+        truncated: raw.truncated,
+        saved_to: raw.saved_to,
+        bytes_transferred: raw.bytes_transferred,
+        captured_secrets: Vec::new(),
+    })
+}
+
+pub(crate) async fn execute_api_raw(
+    connection: &DecryptedConnection,
+    input: ApiRequestInput,
+) -> Result<RawApiResponse> {
     if !connection.stored.enabled {
         bail!("This connection is disabled");
     }
@@ -200,87 +400,166 @@ pub async fn execute_api(
         &mut target,
     )?;
 
-    let response_limit = input.max_response_bytes.filter(|limit| *limit > 0);
-    let mut client_builder =
-        Client::builder().redirect(reqwest::redirect::Policy::custom(move |attempt| {
-            if redirect_target_supported(attempt.url()) {
-                attempt.follow()
-            } else {
-                attempt.stop()
-            }
-        }));
-    if let Some(seconds) = input.timeout_seconds.filter(|seconds| *seconds > 0) {
-        client_builder = client_builder.timeout(Duration::from_secs(seconds));
-    }
-    let client = client_builder.build()?;
-    let mut request = client
-        .request(method.clone(), target.clone())
-        .headers(headers);
     let body_kinds = usize::from(input.body.is_some())
         + usize::from(!input.form.is_empty() || !input.files.is_empty())
         + usize::from(input.body_base64.is_some());
     if body_kinds > 1 {
         bail!("Only one request body format may be selected: body, form/files, or bodyBase64");
     }
-    if !input.files.is_empty() {
-        let mut multipart = reqwest::multipart::Form::new();
-        for (name, value) in input.form {
-            for value in form_values(value) {
-                multipart = multipart.text(name.clone(), value);
-            }
+    let prepared_body = if !input.files.is_empty() {
+        PreparedApiBody::Multipart {
+            form: input.form,
+            files: input.files,
         }
-        for file in input.files {
-            let field = file.field.trim();
-            if field.is_empty() {
-                bail!("Uploaded file field name cannot be empty");
-            }
-            let path = resolve_user_path(&file.path)?;
-            if !tokio::fs::metadata(&path)
-                .await
-                .context("Unable to read uploaded file")?
-                .is_file()
-            {
-                bail!("Upload path is not a regular file");
-            }
-            let mut part = reqwest::multipart::Part::file(&path)
-                .await
-                .context("Unable to open uploaded file")?;
-            if let Some(file_name) = file.file_name.filter(|value| !value.trim().is_empty()) {
-                part = part.file_name(file_name);
-            }
-            if let Some(content_type) = file.content_type.filter(|value| !value.trim().is_empty()) {
-                part = part
-                    .mime_str(content_type.trim())
-                    .context("Invalid uploaded file Content-Type")?;
-            }
-            multipart = multipart.part(field.to_owned(), part);
-        }
-        request = request.multipart(multipart);
     } else if !input.form.is_empty() {
-        let mut form = Vec::new();
+        let mut serializer = url::form_urlencoded::Serializer::new(String::new());
         for (name, value) in input.form {
             for value in form_values(value) {
-                form.push((name.clone(), value));
+                serializer.append_pair(&name, &value);
             }
         }
-        request = request.form(&form);
+        PreparedApiBody::Bytes {
+            bytes: serializer.finish().into_bytes(),
+            default_content_type: Some("application/x-www-form-urlencoded"),
+        }
     } else if let Some(body_base64) = input.body_base64 {
         let bytes = STANDARD
             .decode(body_base64.trim())
             .context("bodyBase64 is not valid Base64")?;
-        request = request.body(bytes);
+        PreparedApiBody::Bytes {
+            bytes,
+            default_content_type: None,
+        }
     } else if let Some(body) = input.body {
         if let Some(text) = body.as_str() {
-            request = request.body(text.to_owned());
+            PreparedApiBody::Bytes {
+                bytes: text.as_bytes().to_vec(),
+                default_content_type: None,
+            }
         } else {
-            request = request.json(&body);
+            PreparedApiBody::Bytes {
+                bytes: serde_json::to_vec(&body).context("Unable to encode JSON request body")?,
+                default_content_type: Some("application/json"),
+            }
         }
-    }
+    } else {
+        PreparedApiBody::Empty
+    };
 
-    let mut response = request
-        .send()
-        .await
-        .map_err(|error| anyhow::anyhow!(api_request_error_message(&error)))?;
+    let response_limit = input.max_response_bytes.filter(|limit| *limit > 0);
+    let follow_redirects = input.follow_redirects.unwrap_or(true);
+    let mut client_builder = Client::builder().redirect(reqwest::redirect::Policy::none());
+    if input.insecure {
+        client_builder = client_builder.danger_accept_invalid_certs(true);
+    }
+    if let Some(seconds) = input.timeout_seconds.filter(|seconds| *seconds > 0) {
+        client_builder = client_builder.timeout(Duration::from_secs(seconds));
+    }
+    let client = client_builder.build()?;
+
+    let initial_origin = target.origin();
+    let mut current_url = target;
+    let mut current_method = method;
+    let mut current_headers = headers;
+    let mut current_body = prepared_body;
+
+    let send_loop = async {
+        let mut hops = 0usize;
+        loop {
+            let mut req_headers = current_headers.clone();
+            let mut request = client.request(current_method.clone(), current_url.clone());
+            match &current_body {
+                PreparedApiBody::Empty => {}
+                PreparedApiBody::Bytes {
+                    bytes,
+                    default_content_type,
+                } => {
+                    if let Some(ct) = default_content_type
+                        && !req_headers.contains_key(reqwest::header::CONTENT_TYPE)
+                    {
+                        req_headers.insert(
+                            reqwest::header::CONTENT_TYPE,
+                            HeaderValue::from_static(ct),
+                        );
+                    }
+                    request = request.body(bytes.clone());
+                }
+                PreparedApiBody::Multipart { form, files } => {
+                    req_headers.remove(reqwest::header::CONTENT_TYPE);
+                    let multipart = build_multipart_form(form, files).await?;
+                    request = request.multipart(multipart);
+                }
+            }
+            let response = request
+                .headers(req_headers)
+                .send()
+                .await
+                .map_err(|error| anyhow::anyhow!(api_request_error_message(&error)))?;
+
+            let status = response.status();
+            let location = response
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|value| value.to_str().ok())
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+
+            if !follow_redirects || !status.is_redirection() || hops >= MAX_HTTP_REDIRECTS {
+                return Ok::<_, anyhow::Error>(response);
+            }
+            let Some(location) = location else {
+                return Ok(response);
+            };
+            let Ok(mut next_url) = current_url.join(location) else {
+                return Ok(response);
+            };
+            if !redirect_target_supported(&next_url) {
+                return Ok(response);
+            }
+
+            if next_url.origin() != initial_origin {
+                strip_cross_origin_redirect_auth(
+                    &mut current_headers,
+                    &mut next_url,
+                    &connection.stored,
+                    &connection.secrets,
+                );
+            }
+
+            match status.as_u16() {
+                303 => {
+                    if current_method != Method::HEAD {
+                        current_method = Method::GET;
+                    }
+                    current_body = PreparedApiBody::Empty;
+                    current_headers.remove(reqwest::header::CONTENT_TYPE);
+                    current_headers.remove(reqwest::header::CONTENT_LENGTH);
+                }
+                301 | 302 => {
+                    if current_method == Method::POST {
+                        current_method = Method::GET;
+                        current_body = PreparedApiBody::Empty;
+                        current_headers.remove(reqwest::header::CONTENT_TYPE);
+                        current_headers.remove(reqwest::header::CONTENT_LENGTH);
+                    }
+                }
+                _ => {
+                    // 307 / 308 preserve method and body.
+                }
+            }
+
+            current_url = next_url;
+            hops += 1;
+        }
+    };
+
+    let mut response = match input.timeout_seconds.filter(|seconds| *seconds > 0) {
+        Some(seconds) => tokio::time::timeout(Duration::from_secs(seconds), send_loop)
+            .await
+            .map_err(|_| anyhow::anyhow!("API request timed out"))??,
+        None => send_loop.await?,
+    };
+
     let status = response.status();
     let response_url = response.url().clone();
     let response_headers = visible_response_headers(response.headers())
@@ -290,7 +569,7 @@ pub async fn execute_api(
     if let Some(destination) = save_response_to {
         let (saved_to, bytes_transferred) =
             save_api_response_to_file(&mut response, &destination, overwrite_response_file).await?;
-        return Ok(ApiResponse {
+        return Ok(RawApiResponse {
             status: status.as_u16(),
             status_text: status.canonical_reason().unwrap_or_default().to_owned(),
             url: redact(
@@ -299,7 +578,7 @@ pub async fn execute_api(
                 &connection.secrets,
             ),
             headers: response_headers,
-            body: String::new(),
+            raw_body: String::new(),
             truncated: false,
             saved_to: Some(saved_to),
             bytes_transferred: Some(bytes_transferred),
@@ -327,13 +606,7 @@ pub async fn execute_api(
             bytes.extend_from_slice(&chunk);
         }
     }
-    let body = sanitize_api_body(
-        String::from_utf8_lossy(&bytes).into_owned(),
-        truncated,
-        &connection.stored,
-        &connection.secrets,
-    );
-    Ok(ApiResponse {
+    Ok(RawApiResponse {
         status: status.as_u16(),
         status_text: status.canonical_reason().unwrap_or_default().to_owned(),
         url: redact(
@@ -342,7 +615,7 @@ pub async fn execute_api(
             &connection.secrets,
         ),
         headers: response_headers,
-        body,
+        raw_body: String::from_utf8_lossy(&bytes).into_owned(),
         truncated,
         saved_to: None,
         bytes_transferred: None,
@@ -448,6 +721,18 @@ async fn save_api_response_to_file(
     Ok((saved_to, bytes_transferred))
 }
 
+#[cfg(windows)]
+fn windows_local_shell() -> (&'static str, bool) {
+    if let Some(path) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path) {
+            if dir.join("pwsh.exe").is_file() {
+                return ("pwsh.exe", false);
+            }
+        }
+    }
+    ("powershell.exe", true)
+}
+
 pub async fn execute_ssh(
     vault: &Vault,
     connection: &DecryptedConnection,
@@ -456,6 +741,7 @@ pub async fn execute_ssh(
     timeout_seconds: Option<u64>,
     secret_env: &HashMap<String, String>,
     stdin: Option<&str>,
+    max_output_bytes: Option<usize>,
 ) -> Result<SshResponse> {
     if !connection.stored.enabled {
         bail!("This connection is disabled");
@@ -467,7 +753,7 @@ pub async fn execute_ssh(
         None => command,
     };
     let command = validate_ssh_command(&command)?;
-    let execution = execute_ssh_inner(vault, connection, &command, stdin);
+    let execution = execute_ssh_inner(vault, connection, &command, stdin, max_output_bytes);
     match timeout_seconds.filter(|seconds| *seconds > 0) {
         Some(seconds) => tokio::time::timeout(Duration::from_secs(seconds), execution)
             .await
@@ -483,6 +769,8 @@ pub async fn execute_local(
     timeout_seconds: Option<u64>,
     secret_env: &HashMap<String, String>,
     stdin: Option<&str>,
+    max_output_bytes: Option<usize>,
+    extra_redactions: &[String],
 ) -> Result<SshResponse> {
     let command = command.trim();
     if command.is_empty() || command.contains('\0') {
@@ -494,8 +782,12 @@ pub async fn execute_local(
 
     #[cfg(windows)]
     let mut process = {
-        let mut process = tokio::process::Command::new("powershell.exe");
-        process.args(["-NoProfile", "-NonInteractive", "-Command", command]);
+        let (shell, clear_ps_module_path) = windows_local_shell();
+        let mut process = tokio::process::Command::new(shell);
+        if clear_ps_module_path {
+            process.env_remove("PSModulePath");
+        }
+        process.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command]);
         process
     };
     #[cfg(not(windows))]
@@ -537,6 +829,14 @@ pub async fn execute_local(
     let stdin = stdin.map(str::as_bytes).map(<[u8]>::to_vec);
     let execution = async {
         let mut child = process.spawn().context("Unable to start local command")?;
+        let child_stdout = child
+            .stdout
+            .take()
+            .context("Unable to open local command stdout")?;
+        let child_stderr = child
+            .stderr
+            .take()
+            .context("Unable to open local command stderr")?;
         let input_task = if let Some(input) = stdin {
             let mut child_stdin = child
                 .stdin
@@ -549,17 +849,28 @@ pub async fn execute_local(
         } else {
             None
         };
-        let output = child
-            .wait_with_output()
+        let stdout_task = tokio::spawn(read_stream_bounded(child_stdout, max_output_bytes));
+        let stderr_task = tokio::spawn(read_stream_bounded(child_stderr, max_output_bytes));
+        let status = child
+            .wait()
             .await
             .context("Unable to wait for local command")?;
         if let Some(task) = input_task {
             task.await
                 .context("Local command standard input task ended unexpectedly")??;
         }
-        Ok::<_, anyhow::Error>(output)
+        let stdout_capture = stdout_task
+            .await
+            .context("Local command stdout task ended unexpectedly")?
+            .context("Unable to read local command stdout")?;
+        let stderr_capture = stderr_task
+            .await
+            .context("Local command stderr task ended unexpectedly")?
+            .context("Unable to read local command stderr")?;
+        Ok::<_, anyhow::Error>((status, stdout_capture, stderr_capture))
     };
-    let output = match timeout_seconds.filter(|seconds| *seconds > 0) {
+    let (status, stdout_capture, stderr_capture) = match timeout_seconds.filter(|seconds| *seconds > 0)
+    {
         Some(seconds) => tokio::time::timeout(Duration::from_secs(seconds), execution)
             .await
             .map_err(|_| {
@@ -569,23 +880,28 @@ pub async fn execute_local(
             })??,
         None => execution.await?,
     };
-    let mut stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let mut stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    if let Some(connection) = connection {
-        stdout = redact(stdout, &connection.stored, &connection.secrets);
-        stderr = redact(stderr, &connection.stored, &connection.secrets);
-    }
+    let redact_text = |mut text: String| {
+        if let Some(connection) = connection {
+            text = redact(text, &connection.stored, &connection.secrets);
+        }
+        if !extra_redactions.is_empty() {
+            text = redact_values(text, extra_redactions);
+        }
+        text
+    };
+    let (stdout, stdout_truncated) = stdout_capture.finish(&redact_text);
+    let (stderr, stderr_truncated) = stderr_capture.finish(&redact_text);
     #[cfg(unix)]
-    let signal = output.status.signal().map(|signal| signal.to_string());
+    let signal = status.signal().map(|signal| signal.to_string());
     #[cfg(not(unix))]
     let signal = None;
     Ok(SshResponse {
-        exit_code: output.status.code().map(|code| code as u32),
+        exit_code: status.code().map(|code| code as u32),
         signal,
         stdout,
         stderr,
-        stdout_truncated: false,
-        stderr_truncated: false,
+        stdout_truncated,
+        stderr_truncated,
     })
 }
 
@@ -626,6 +942,7 @@ async fn execute_ssh_inner(
     connection: &DecryptedConnection,
     command: &str,
     stdin: Option<&str>,
+    max_output_bytes: Option<usize>,
 ) -> Result<SshResponse> {
     let session = connect_ssh(vault, connection).await?;
     let channel = session.channel_open_session().await?;
@@ -656,14 +973,14 @@ async fn execute_ssh_inner(
             write_half.eof().await
         }));
     }
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
+    let mut stdout_capture = BoundedOutputCapture::new(max_output_bytes);
+    let mut stderr_capture = BoundedOutputCapture::new(max_output_bytes);
     let mut exit_code = None;
     let mut signal = None;
     while let Some(message) = reader.wait().await {
         match message {
-            ChannelMsg::Data { data } => stdout.extend_from_slice(&data),
-            ChannelMsg::ExtendedData { data, .. } => stderr.extend_from_slice(&data),
+            ChannelMsg::Data { data } => stdout_capture.push(&data),
+            ChannelMsg::ExtendedData { data, .. } => stderr_capture.push(&data),
             ChannelMsg::ExitStatus { exit_status } => exit_code = Some(exit_status),
             ChannelMsg::ExitSignal { signal_name, .. } => signal = Some(format!("{signal_name:?}")),
             _ => {}
@@ -676,72 +993,129 @@ async fn execute_ssh_inner(
     let _ = session
         .disconnect(Disconnect::ByApplication, "", "en")
         .await;
-    let stdout = redact(
-        String::from_utf8_lossy(&stdout).into_owned(),
-        &connection.stored,
-        &connection.secrets,
-    );
-    let stderr = redact(
-        String::from_utf8_lossy(&stderr).into_owned(),
-        &connection.stored,
-        &connection.secrets,
-    );
+    let redact_text = |text: String| redact(text, &connection.stored, &connection.secrets);
+    let (stdout, stdout_truncated) = stdout_capture.finish(&redact_text);
+    let (stderr, stderr_truncated) = stderr_capture.finish(&redact_text);
     Ok(SshResponse {
         exit_code,
         signal,
         stdout,
         stderr,
-        stdout_truncated: false,
-        stderr_truncated: false,
+        stdout_truncated,
+        stderr_truncated,
     })
+}
+
+fn ssh_auth_methods(connection: &DecryptedConnection) -> Vec<&'static str> {
+    let mut methods = Vec::new();
+    if connection
+        .secrets
+        .private_key
+        .as_deref()
+        .is_some_and(|v| !v.trim().is_empty())
+    {
+        methods.push("privateKey");
+    }
+    if connection
+        .secrets
+        .password
+        .as_deref()
+        .is_some_and(|v| !v.is_empty())
+    {
+        methods.push("password");
+    }
+    methods
 }
 
 async fn connect_ssh(
     _vault: &Vault,
     connection: &DecryptedConnection,
 ) -> Result<client::Handle<SshClient>> {
-    let handler = SshClient;
+    let username = connection
+        .secrets
+        .get("username")
+        .context("No SSH username in vault")?;
+    let methods = ssh_auth_methods(connection);
+    if methods.is_empty() {
+        bail!("No SSH private key or password in vault");
+    }
+
     let mut session = client::connect(
         Arc::new(client::Config::default()),
         (connection.stored.host.as_str(), connection.stored.port),
-        handler,
+        SshClient,
     )
     .await
     .map_err(|error| anyhow::anyhow!(ssh_connect_error_message(&error)))?;
 
-    let auth = if connection.stored.ssh_auth_type == "privateKey" {
-        let username = connection
-            .secrets
-            .get("username")
-            .context("No SSH username in vault")?;
+    let mut authenticated = false;
+    let mut key_error: Option<anyhow::Error> = None;
+    let mut needs_reconnect = false;
+
+    if methods.contains(&"privateKey") {
         let private_key = connection
             .secrets
             .private_key
             .as_deref()
-            .context("No SSH private key in vault")?;
-        let key = decode_secret_key(private_key, connection.secrets.passphrase.as_deref())
-            .context("Unable to parse SSH private key or incorrect passphrase")?;
-        let hash = session.best_supported_rsa_hash().await?.flatten();
-        session
-            .authenticate_publickey(username, PrivateKeyWithHashAlg::new(Arc::new(key), hash))
-            .await?
-    } else {
-        let username = connection
-            .secrets
-            .get("username")
-            .context("No SSH username in vault")?;
-        session
-            .authenticate_password(
-                username,
-                connection
-                    .secrets
-                    .password
-                    .clone()
-                    .context("No SSH password in the vault")?,
+            .expect("privateKey checked non-empty");
+        match decode_secret_key(private_key, connection.secrets.passphrase.as_deref()) {
+            Ok(key) => match session.best_supported_rsa_hash().await {
+                Ok(hash_opt) => {
+                    let hash = hash_opt.flatten();
+                    match session
+                        .authenticate_publickey(
+                            username,
+                            PrivateKeyWithHashAlg::new(Arc::new(key), hash),
+                        )
+                        .await
+                    {
+                        Ok(auth) if auth.success() => authenticated = true,
+                        Ok(_) => {}
+                        Err(err) => {
+                            key_error = Some(err.into());
+                            needs_reconnect = true;
+                        }
+                    }
+                }
+                Err(err) => {
+                    key_error = Some(err.into());
+                    needs_reconnect = true;
+                }
+            },
+            Err(err) => {
+                key_error = Some(
+                    anyhow::Error::from(err)
+                        .context("Unable to parse SSH private key or incorrect passphrase"),
+                );
+            }
+        }
+    }
+
+    if !authenticated && methods.contains(&"password") {
+        if needs_reconnect {
+            session = client::connect(
+                Arc::new(client::Config::default()),
+                (connection.stored.host.as_str(), connection.stored.port),
+                SshClient,
             )
-            .await?
-    };
-    if !auth.success() {
+            .await
+            .map_err(|error| anyhow::anyhow!(ssh_connect_error_message(&error)))?;
+        }
+        let password = connection
+            .secrets
+            .password
+            .clone()
+            .expect("password checked non-empty");
+        let auth = session.authenticate_password(username, password).await?;
+        if auth.success() {
+            authenticated = true;
+        }
+    }
+
+    if !authenticated {
+        if let Some(err) = key_error {
+            return Err(err);
+        }
         bail!("SSH authentication failed");
     }
 
@@ -1568,6 +1942,7 @@ pub async fn test_connection(vault: &Vault, connection: &DecryptedConnection) ->
             Some(30),
             &HashMap::new(),
             None,
+            Some(DEFAULT_MAX_OUTPUT_BYTES),
         )
         .await?;
         validate_ssh_connection_test(&result)?;
@@ -1784,7 +2159,7 @@ impl client::Handler for SshClient {
     }
 }
 
-fn sanitize_api_body(
+pub(crate) fn sanitize_api_body(
     mut body: String,
     truncated: bool,
     connection: &StoredConnection,
@@ -2521,5 +2896,201 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn ssh_auth_methods_prefer_private_key_with_password_fallback() {
+        let mut both_secrets = SecretBundle::default();
+        both_secrets.private_key = Some("-----BEGIN OPENSSH PRIVATE KEY-----".into());
+        both_secrets.password = Some("sudo-password".into());
+        let mut both_stored = stored(String::new());
+        both_stored.ssh_auth_type = "password".into();
+        let both = DecryptedConnection {
+            stored: both_stored,
+            secrets: both_secrets,
+        };
+        assert_eq!(ssh_auth_methods(&both), vec!["privateKey", "password"]);
+
+        let mut pw_only_secrets = SecretBundle::default();
+        pw_only_secrets.password = Some("only-password".into());
+        let pw_only = DecryptedConnection {
+            stored: stored(String::new()),
+            secrets: pw_only_secrets,
+        };
+        assert_eq!(ssh_auth_methods(&pw_only), vec!["password"]);
+    }
+
+    #[test]
+    fn bounded_output_capture_preserves_head_and_tail_and_redacts() {
+        let mut capture = BoundedOutputCapture::new(Some(64));
+        capture.push(b"HEAD_SECRET=topsecret123_");
+        capture.push(&vec![b'M'; 400]);
+        capture.push(b"_TAIL_SECRET=topsecret123");
+        let (text, truncated) = capture.finish(|s| s.replace("topsecret123", "[REDACTED]"));
+        assert!(truncated);
+        assert!(text.contains("HEAD_SECRET=[REDACTED]"));
+        assert!(text.contains("_TAIL_SECRET=[REDACTED]"));
+        assert!(text.contains("Output truncated: omitted"));
+        assert!(!text.contains("topsecret123"));
+
+        let mut unlimited = BoundedOutputCapture::new(Some(0));
+        unlimited.push(&vec![b'X'; 4096]);
+        let (full, full_truncated) = unlimited.finish(|s| s);
+        assert!(!full_truncated);
+        assert_eq!(full.len(), 4096);
+    }
+
+    #[tokio::test]
+    async fn api_cross_origin_redirect_strips_custom_auth_headers_and_supports_no_redirect() {
+        async fn inspect_headers(headers: AxumHeaders) -> String {
+            let auth = headers
+                .get("authorization")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("NONE");
+            let api_key = headers
+                .get("x-api-key")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("NONE");
+            let custom = headers
+                .get("x-client-secret")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("NONE");
+            format!("auth={auth}|key={api_key}|custom={custom}")
+        }
+
+        let foreign_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let foreign_addr = foreign_listener.local_addr().unwrap();
+        let foreign_server = tokio::spawn(async move {
+            axum::serve(
+                foreign_listener,
+                Router::new().route("/landed", get(inspect_headers)),
+            )
+            .await
+            .unwrap();
+        });
+
+        let origin_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin_addr = origin_listener.local_addr().unwrap();
+        let foreign_target = format!("http://{foreign_addr}/landed");
+        let same_origin_target = format!("http://{origin_addr}/same-landed");
+        let origin_server = tokio::spawn(async move {
+            axum::serve(
+                origin_listener,
+                Router::new()
+                    .route(
+                        "/to-foreign",
+                        get({
+                            let url = foreign_target.clone();
+                            move || {
+                                let url = url.clone();
+                                async move { Redirect::temporary(&url) }
+                            }
+                        }),
+                    )
+                    .route(
+                        "/to-same",
+                        get({
+                            let url = same_origin_target.clone();
+                            move || {
+                                let url = url.clone();
+                                async move { Redirect::temporary(&url) }
+                            }
+                        }),
+                    )
+                    .route("/same-landed", get(inspect_headers)),
+            )
+            .await
+            .unwrap();
+        });
+
+        let mut item = stored(format!("http://{origin_addr}/"));
+        item.http_auth_type = "custom".into();
+        item.api_auth_headers = vec![ApiAuthHeader {
+            name: "X-Client-Secret".into(),
+            secret_name: "clientSecret".into(),
+        }];
+        let mut secrets = SecretBundle::default();
+        secrets
+            .named_secrets
+            .insert("clientSecret".into(), "custom-header-secret-5544".into());
+        let connection = DecryptedConnection {
+            stored: item,
+            secrets,
+        };
+
+        // Cross-origin redirect must follow AND strip X-Client-Secret
+        let foreign_res = execute_api(
+            &connection,
+            ApiRequestInput {
+                url: format!("http://{origin_addr}/to-foreign"),
+                method: "GET".into(),
+                ..ApiRequestInput::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(foreign_res.status, 200);
+        assert_eq!(foreign_res.body, "auth=NONE|key=NONE|custom=NONE");
+
+        // Same-origin redirect keeps X-Client-Secret (redacted in echoed body)
+        let same_res = execute_api(
+            &connection,
+            ApiRequestInput {
+                url: format!("http://{origin_addr}/to-same"),
+                method: "GET".into(),
+                ..ApiRequestInput::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(same_res.status, 200);
+        assert_eq!(same_res.body, "auth=NONE|key=NONE|custom=[REDACTED]");
+
+        // follow_redirects=false returns 307 + Location without following
+        let no_redir = execute_api(
+            &connection,
+            ApiRequestInput {
+                url: format!("http://{origin_addr}/to-foreign"),
+                method: "GET".into(),
+                follow_redirects: Some(false),
+                ..ApiRequestInput::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(no_redir.status, 307);
+        assert_eq!(
+            no_redir.headers.get("location").map(String::as_str),
+            Some(format!("http://{foreign_addr}/landed").as_str())
+        );
+
+        origin_server.abort();
+        foreign_server.abort();
+    }
+
+    #[tokio::test]
+    async fn execute_local_truncates_large_output_and_redacts_extra_secrets() {
+        #[cfg(windows)]
+        let cmd = "Write-Output ('START_sec9988_' + ('Z' * 1200) + '_END_sec9988')";
+        #[cfg(not(windows))]
+        let cmd = "printf 'START_sec9988_%01200d_END_sec9988\\n' 0";
+
+        let res = execute_local(
+            None,
+            cmd,
+            None,
+            Some(15),
+            &HashMap::new(),
+            None,
+            Some(256),
+            &["sec9988".to_owned()],
+        )
+        .await
+        .unwrap();
+        assert_eq!(res.exit_code, Some(0));
+        assert!(res.stdout_truncated);
+        assert!(res.stdout.contains("START_[REDACTED]_"));
+        assert!(res.stdout.contains("_END_[REDACTED]"));
+        assert!(!res.stdout.contains("sec9988"));
     }
 }

@@ -1,15 +1,14 @@
 # Recessed control geometry
 
-OpenKeylet follows Bricktone's `src/daw/console-hardware.css`: a recessed floor
-surrounds raised caps, with one inset used on every edge. Bricktone's 28 px cap
-plus two 4 px insets makes a 36 px console row. OpenKeylet retains its compact
-32 px row and derives a 24 px cap from the same 4 px inset.
+OpenKeylet uses a recessed-well hardware geometry: a recessed floor surrounds
+raised caps, with one inset used on every edge. OpenKeylet uses a compact
+32 px primary row and derives a 24 px cap from the same 4 px inset.
 Item rows and single-line editor fields use the compact 28 px control token.
 Item action caps derive their 20 px height from that token and the same inset;
 the bordered item row is 38 px tall. Compact density changes control size and
 section spacing, while preserving the existing text sizes and state cues.
 
-- Define dimensions through the tokens in `renderer/bricktone.css`.
+- Define dimensions through the tokens in `renderer/styles/tokens.css`.
   `--control-inset` governs all four clearances; cap sizes and switch widths are
   derived from the row height and travel. Do not override one edge independently.
 - A well owns its padding and floor. Its children must fit the content box,

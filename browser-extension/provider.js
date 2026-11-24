@@ -99,11 +99,22 @@ async function popupAction(message) {
     const fillFields = { ...item.fields };
     for (const field of ["passportNumber", "licenseNumber", "nationalId"]) delete fillFields[field];
     await pageStillMatches(tab.id, origin);
-    const [result] = await chrome.scripting.executeScript({
-      target: { tabId: tab.id, frameIds: [focusedFrameByTab.get(tab.id) ?? 0] },
-      func: usePersonalForm, args: [origin, item.itemType, fillFields] });
-    if (!result?.result?.filled) throw new Error("没有识别到可填写的字段 / No matching form fields");
-    return result.result;
+    let totalFilled = 0;
+    const frames = typeof listEligibleFrames === "function"
+      ? await listEligibleFrames(tab.id, origin)
+      : [{ frameId: focusedFrameByTab.get(tab.id) ?? 0, origin }];
+    for (const frame of frames) {
+      try {
+        const [result] = await chrome.scripting.executeScript({
+          target: { tabId: tab.id, frameIds: [frame.frameId] },
+          func: usePersonalForm,
+          args: [frame.origin, item.itemType, fillFields],
+        });
+        totalFilled += result?.result?.filled || 0;
+      } catch {}
+    }
+    if (!totalFilled) throw new Error("没有识别到可填写的字段 / No matching form fields");
+    return { filled: totalFilled };
   }
   if (message.action === "fill") {
     const target = await loginPage(tab, origin);
@@ -118,7 +129,7 @@ async function popupAction(message) {
   if (message.action === "read-form") return formAction(tab, origin, "read");
   if (message.action === "save") {
     const target = await loginPage(tab, origin);
-    if (!message.generatedDirect && (message.sourceUrl !== target.url || message.sourceTabId !== tab.id))
+    if (message.sourceUrl !== target.url || message.sourceTabId !== tab.id)
       throw new Error("网页已经变化，请重新读取 / The page changed; read the form again");
     return bridgeCall("password.save", { origin: target.url, id: message.id || null, expectedUpdatedAt: message.expectedUpdatedAt,
       name: message.name, username: message.username, password: message.password });

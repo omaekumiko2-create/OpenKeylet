@@ -280,26 +280,49 @@ OpenKeylet 会在本地执行 `secret_write_file`、`http_send`、`ssh_run` 或 
 
 ---
 
-## 完整 MCP 工具列表（17 个）
+## 完整 MCP 工具列表（23 个）与原生 CLI 底座
 
-OpenKeylet 通过按需启动的本地 `stdio` MCP（`openkeylet mcp stdio`）提供 17 个带结构化 `structuredContent` 的工具：
+OpenKeylet 通过按需启动的本地 `stdio` MCP（`openkeylet mcp stdio`）提供 **23 个**带结构化 `structuredContent` 的工具：
 
 | 分类 | 工具名 | 用途 |
 | --- | --- | --- |
-| **发现** | `items_search(query?)` | 搜索已启用项目的名称、模块清单、公开地址与可用动作 |
-| **浏览器与 Passkey** | `browser_inspect` | 通过已配对扩展检查当前网页地址、表单、字段与可点击按钮 |
-| | `browser_fill_login` | 匹配并填写当前网页的登录账号、密码及实时 TOTP |
-| | `browser_fill_personal` | 填写已保存的支付卡或身份地址信息 |
-| | `browser_click` | 点击页面中的指定按钮或链接 |
-| | `browser_passkey` | 调用本机加密库完成网页 WebAuthn Passkey 注册或登录 |
-| **直接填写** | `credential_fill` | 向已聚焦的浏览器输入框、桌面控件或托管终端写入单个隐藏模块 |
-| **SSH 与 SFTP** | `ssh_run` | 使用本地密码/私钥认证执行 SSH 命令，支持标准输入与 `{{openkeylet:...}}` 占位符 |
+| **发现与记忆** | `items_search(query?)` | 搜索已启用项目（含登录、SSH、API、银行卡、身份、安全笔记）的名称、模块、`agentNotes` 与可用动作 |
+| | `item_note` | 为项目添加/更新/删除简短非敏感上下文备注（≤200 字，自动拦截密文），帮助后续会话快速定位项目 |
+| **浏览器与 Passkey** | `browser_open` | 通过已配对扩展在浏览器打开或跳转指定 HTTP/HTTPS 页面并等待加载完成 |
+| | `browser_inspect` | 检查当前页面及安全子 iframe：地址、表单、字段（含复选框/单选框）、按钮、脱敏告警/页面状态摘要、待处理 Passkey 及匹配条目 |
+| | `browser_fill_login` | 匹配并填写网页或受信任 SSO iframe 的账号、密码及实时 TOTP（纯 OTP 验证页自动补填 2FA） |
+| | `browser_fill_personal` | 在 HTTPS/localhost 页面填写已保存的支付卡或身份地址（支持 Stripe Elements 等跨源分拆支付 iframe） |
+| | `browser_click` | 点击页面或安全 iframe 中的可见按钮、链接、复选框、单选框或标签 |
+| | `browser_passkey` | 调用本机加密库完成 WebAuthn Passkey 登录或注册（支持直接挂载到指定/匹配的已有登录项） |
+| **直接填写** | `credential_fill` | 向浏览器控件、显式指定的桌面控件或托管终端写入单个隐藏模块 |
+| **SSH 与 SFTP** | `ssh_run` | 私钥优先 + 密码自动回退认证执行 SSH 命令，支持标准输入、输出截断保护与跨条目 `{{openkeylet:项目/模块}}` / `{{openkeylet-raw:...}}` 占位符 |
 | | `ssh_upload` | 通过 SFTP 递归上传本地文件或目录 |
 | | `ssh_download` | 通过 SFTP 递归下载远端文件或目录 |
-| **HTTP API** | `http_send` | 发送认证 HTTP/HTTPS 请求（自动识别常见服务商、Bearer/Basic、自定义认证头、流式下载、multipart 上传） |
-| **密钥文件** | `secret_write_file` | 本地原子渲染模板文件，替换 `{{openkeylet:模块名}}` 而不暴露明文 |
-| **本地终端** | `terminal_run` | 一次性执行本地命令，支持隐藏模块替换与输出脱敏 |
-| | `terminal_start` / `terminal_write` / `terminal_read` / `terminal_stop` | 托管交互式 PTY 会话，跨读取边界持续脱敏隐藏秘密 |
+| **HTTP API** | `http_send` | 发送认证 HTTP/HTTPS 请求（自动识别服务商、Bearer/Basic、自定义认证头、流式下载、multipart、`insecure`、`followRedirects`、跨源重定向剥离认证头，以及 `captureSecrets` 零明文截留 JSON 响应新令牌入库） |
+| **密钥文件与录入** | `secret_write_file` | 本地原子渲染模板文件，支持单条目 `{{openkeylet:模块}}` 与跨条目 `{{openkeylet:项目/模块}}`（Unix `0600` 权限），不暴露明文 |
+| | `secret_generate` | 在本地密码学生成强密码/hex/base64url 令牌并直接加密写入项目，不向模型暴露明文 |
+| | `ssh_keygen` | 在本地生成 Ed25519 SSH 密钥对，私钥直接加密入库，仅向模型返回公钥与指纹 |
+| | `secret_ingest_file` | 直接将本机 `.env` 或 PEM 私钥文件加密吸收进 Vault（可选同时生成密封模板），不经过模型上下文 |
+| | `draft_prepare` | 预建加密草稿骨架（支持最多 10 条草稿队列），用户仅需在桌面端粘贴密文即可保存 |
+| **本地终端** | `terminal_run` | 一次性执行本地命令，支持跨条目占位符与 `secretEnv` 注入、输出截断保护与多条目联合脱敏 |
+| | `terminal_start` / `terminal_write` / `terminal_read` / `terminal_stop` | 托管交互式 PTY 会话，带缓冲区上限与跨读取边界持续脱敏 |
+
+### 原生 CLI 与协议层底座（专为 Claude Code / Codex / Antigravity 原生终端打造）
+
+当 Agent（或开发者本人）在原生终端里运行 `git`、`ssh`、开发服务器或测试套件时，可直接零明文接入 OpenKeylet：
+
+```bash
+# 为任意原生命令注入多条目环境变量并做实时跨块输出脱敏
+openkeylet run --item "OpenAI" --env-file .env.template --env DB_PASS="Prod DB/password" -- npm run dev
+
+# 本地只读 OpenSSH Agent（macOS/Linux Unix Socket，Windows Named Pipe）
+# 仅暴露已启用的 SSH 私钥，桌面端关闭开关即刻吊销签名权限
+openkeylet ssh-agent
+eval "$(openkeylet ssh-agent --print-env)"   # macOS/Linux（Windows PowerShell: $env:SSH_AUTH_SOCK = '\\.\pipe\openkeylet-ssh-agent'）
+
+# Git HTTPS 凭据助手（自动匹配已启用令牌/密码，store/erase 安全空操作不改库）
+git config --global credential.helper '!openkeylet git-credential'
+```
 
 <details>
   <summary>手动 <code>stdio</code> MCP 配置（JSON 与命令行导出）</summary>
