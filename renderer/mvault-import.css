@@ -1,0 +1,628 @@
+/* OpenKeylet .mvault Drag-and-Drop Overlay & Selective Import Modal */
+
+.global-mvault-drop-overlay {
+  position: fixed;
+  top: var(--titlebar-height, 38px);
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 210;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: color-mix(in srgb, var(--chassis, #070708) 84%, transparent);
+  backdrop-filter: blur(8px);
+  pointer-events: none;
+  border-radius: 0 0 var(--window-radius, 12px) var(--window-radius, 12px);
+}
+.global-mvault-drop-overlay.hidden {
+  display: none;
+}
+.global-mvault-drop-frame {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  height: 100%;
+  padding: 24px 20px;
+  border: 2px dashed var(--accent);
+  border-radius: var(--radius-lg, 12px);
+  background: color-mix(in srgb, var(--surface-2, #121215) 88%, transparent);
+  box-shadow: var(--shadow-float);
+  text-align: center;
+  box-sizing: border-box;
+}
+.global-mvault-drop-icon {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border-radius: var(--radius-lg, 12px);
+  background: var(--accent-soft);
+  border: 1px solid var(--border-strong);
+  color: var(--accent);
+}
+.global-mvault-drop-icon svg {
+  width: 24px;
+  height: 24px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.global-mvault-drop-frame strong {
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+.global-mvault-drop-frame span {
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.5;
+  max-width: 300px;
+}
+.global-mvault-drop-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--surface-1);
+  border: 1px solid var(--border-default);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Modal Container */
+#mvault-import-modal {
+  z-index: 140;
+}
+.mvault-modal-card {
+  width: min(432px, calc(100vw - 16px));
+  max-width: 432px;
+  max-height: calc(100vh - 24px);
+  height: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.mvault-modal-header {
+  flex: 0 0 auto;
+  gap: 10px;
+}
+.mvault-header-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.mvault-header-copy h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  line-height: 1.25;
+}
+.mvault-file-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+.mvault-file-pill {
+  display: inline-flex;
+  align-items: center;
+  max-width: 240px;
+  padding: 2px 7px;
+  border-radius: var(--radius-xs, 4px);
+  background: var(--surface-1);
+  border: 1px solid var(--border-default);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mvault-format-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  border: 1px solid var(--border-subtle);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.mvault-format-pill.hidden {
+  display: none;
+}
+
+/* Unlock Step */
+.mvault-unlock-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  background: var(--surface-2);
+}
+.mvault-unlock-panel.hidden {
+  display: none;
+}
+.mvault-unlock-help {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.mvault-password-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.mvault-password-row .input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.mvault-password-row .button {
+  flex: 0 0 auto;
+  height: 34px;
+  min-height: 34px;
+  padding: 0 10px;
+  font-size: 10.5px;
+}
+.mvault-error {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm, 6px);
+  border: 1px solid var(--danger);
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.mvault-error.hidden {
+  display: none;
+}
+.mvault-unlock-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+/* Loading Step */
+.mvault-loading-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 28px 16px;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+}
+.mvault-loading-panel.hidden {
+  display: none;
+}
+
+/* Selective Import Step */
+.mvault-select-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  background: var(--surface-2);
+}
+.mvault-select-panel.hidden {
+  display: none;
+}
+.mvault-select-top {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+  flex: 0 0 auto;
+}
+
+.mvault-stats-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+}
+.mvault-stat-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 21px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--surface-1);
+  border: 1px solid var(--border-subtle);
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.mvault-stat-pill.is-new {
+  background: var(--success-soft);
+  border-color: transparent;
+  color: var(--success);
+}
+.mvault-stat-pill.is-conflict {
+  background: var(--warn-soft);
+  border-color: transparent;
+  color: var(--warn);
+}
+.mvault-stat-pill.is-dup {
+  background: var(--surface-3);
+  border-color: transparent;
+  color: var(--faint);
+}
+
+.mvault-legacy-note {
+  margin: 0;
+  padding: 7px 9px;
+  border-radius: var(--radius-sm, 6px);
+  border: 1px solid var(--warn);
+  background: var(--warn-soft);
+  color: var(--ink);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+.mvault-legacy-note.hidden {
+  display: none;
+}
+
+.mvault-search-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.mvault-search-input {
+  width: 100%;
+  height: 30px !important;
+  min-height: 30px !important;
+  padding: 0 10px !important;
+  font-size: 11.5px !important;
+  line-height: 28px !important;
+}
+
+.mvault-type-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+.mvault-type-pills.hidden {
+  display: none;
+}
+.mvault-type-pill {
+  height: 22px;
+  padding: 0 7px;
+  border: 1px solid var(--border-default);
+  border-radius: 999px;
+  background: var(--surface-1);
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.mvault-type-pill:hover {
+  color: var(--ink);
+  border-color: var(--border-strong);
+}
+.mvault-type-pill.active {
+  background: var(--accent);
+  color: var(--accent-fg);
+  border-color: var(--accent);
+}
+
+.mvault-master-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 2px;
+}
+.mvault-select-all-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--ink);
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+}
+.mvault-selection-counter {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+/* Custom Monochrome Checkboxes */
+.mvault-checkbox {
+  position: relative;
+  appearance: none;
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  border: 1.5px solid var(--border-strong);
+  border-radius: 4px;
+  background: var(--surface-input);
+  cursor: pointer;
+  flex: 0 0 16px;
+  transition: background-color 140ms ease, border-color 140ms ease;
+}
+.mvault-checkbox:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.mvault-checkbox:focus-visible {
+  outline: 2px solid var(--accent-ring);
+  outline-offset: 1px;
+}
+.mvault-checkbox:checked,
+.mvault-checkbox:indeterminate {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.mvault-checkbox:checked::after {
+  content: "";
+  position: absolute;
+  top: 1px;
+  left: 4px;
+  width: 4px;
+  height: 8px;
+  border: solid var(--accent-fg);
+  border-width: 0 1.8px 1.8px 0;
+  transform: rotate(45deg);
+}
+.mvault-checkbox:indeterminate::after {
+  content: "";
+  position: absolute;
+  top: 5.5px;
+  left: 3px;
+  width: 7px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--accent-fg);
+}
+.mvault-checkbox:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Scrollable Item Checklist */
+.mvault-item-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 10px 14px;
+  overflow-y: auto;
+  min-height: 120px;
+  max-height: 310px;
+  flex: 1 1 auto;
+  overscroll-behavior: contain;
+}
+.mvault-item-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius, 8px);
+  background: var(--surface-1);
+  cursor: pointer;
+  transition: border-color 120ms ease, background-color 120ms ease, opacity 120ms ease;
+  min-width: 0;
+  user-select: none;
+}
+.mvault-item-row:hover:not(.is-duplicate) {
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
+}
+.mvault-item-row.is-selected {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border-default));
+  background: var(--surface-2);
+}
+.mvault-item-row.is-unchecked {
+  opacity: 0.65;
+}
+.mvault-item-row.is-duplicate {
+  opacity: 0.55;
+  cursor: default;
+  border-style: dashed;
+}
+.mvault-item-row .mvault-checkbox {
+  margin-top: 2px;
+}
+
+.mvault-item-body {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.mvault-item-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.mvault-item-type {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: var(--radius-xs, 4px);
+  background: var(--surface-3);
+  border: 1px solid var(--border-subtle);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  flex: 0 0 auto;
+  text-transform: uppercase;
+}
+.mvault-item-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mvault-item-status {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 9.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+.mvault-item-status.is-new {
+  background: var(--success-soft);
+  color: var(--success);
+}
+.mvault-item-status.is-conflict {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+.mvault-item-status.is-dup {
+  background: var(--surface-3);
+  color: var(--faint);
+}
+
+.mvault-item-sub {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.35;
+}
+.mvault-item-summary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 10px;
+}
+.mvault-item-rename {
+  color: var(--warn);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.mvault-meta-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 5px;
+  border-radius: var(--radius-xs, 4px);
+  background: var(--surface-3);
+  color: var(--muted);
+  font-size: 9.5px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.mvault-meta-chip.is-trash {
+  color: var(--warn);
+  background: var(--warn-soft);
+}
+
+.mvault-empty-state {
+  padding: 20px 12px;
+  border-radius: var(--radius, 8px);
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-1);
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+/* Modal Footer */
+.mvault-modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 14px 12px;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--surface-2);
+  flex: 0 0 auto;
+}
+.mvault-footer-hint {
+  min-width: 0;
+  flex: 1 1 auto;
+  color: var(--faint);
+  font-size: 10px;
+  line-height: 1.35;
+}
+.mvault-footer-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+.mvault-footer-actions .button {
+  min-height: 32px;
+  height: 32px;
+  padding: 0 12px;
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+.mvault-select-error {
+  margin: 0 14px 8px;
+}
+
+@media (forced-colors: active) {
+  .mvault-checkbox {
+    appearance: auto;
+  }
+  .mvault-checkbox::after {
+    content: none;
+  }
+}

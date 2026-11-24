@@ -80,6 +80,7 @@ try {
     await search.fill(value);
   };
   assert.equal(await page.locator('.vault-filters').count(),0);
+  await page.locator('[data-page="import"]').click();
   assert.equal(await page.locator('#drafts-button').isDisabled(),true);
   // A closed unsaved editor remains recoverable through the shared selector.
   await page.locator('#add-connection-button').click();
@@ -123,12 +124,14 @@ try {
   assert.equal(saved.itemType,"card");assert.equal(saved.folder,"钱包");assert.equal(saved.favorite,false);assert.equal(saved.enabled,false);
   assert.equal(saved.secrets.namedSecrets.cardNumber,"4111111111111111");
   assert.ok(saved.modules.every(m=>m.value==="" && m.agentVisible===false));
+  await page.locator('[data-page="connections"]').click();
   await fillItemSearch("不存在的项目");
   assert.equal(await page.locator(".connection-card").count(),0);
   await fillItemSearch("钱包");
   assert.equal(await page.locator(".connection-card").count(),1);
   await page.screenshot({path:path.join(artifacts,"vault-organization.png")});
   await fillItemSearch("");
+  await page.locator('[data-page="import"]').click();
   await page.locator("#add-connection-button").click();
   await page.locator('[data-item-template="secureNote"]').click();
   await page.locator("#connection-name").fill("测试笔记");
@@ -249,6 +252,9 @@ try {
   await page.locator("#vault-management-close").click();
   await page.locator('[data-page="connections"]').click();
   await page.screenshot({path:path.join(artifacts,"narrow-vault.png")});
+  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+  await page.locator('[data-page="import"]').click();
+  await page.screenshot({path:path.join(artifacts,"narrow-import.png")});
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
   await page.locator("#add-connection-button").click();
   await page.locator('[data-item-template="card"]').click();

@@ -658,7 +658,7 @@ html.platform-macos.window-blurred .window-controls:hover .window-control.close 
   top: var(--control-inset);
   bottom: var(--control-inset);
   left: var(--control-inset);
-  width: calc((100% - 2 * var(--control-inset)) / 3);
+  width: calc((100% - 2 * var(--control-inset)) / 4);
   border: 0;
   border-radius: var(--radius-sm);
   background: var(--surface-thumb);
@@ -668,8 +668,9 @@ html.platform-macos.window-blurred .window-controls:hover .window-control.close 
   transform: translateX(0);
   transition: transform 180ms cubic-bezier(.22, .8, .28, 1);
 }
-.nav[data-active="activity"]::before { transform: translateX(100%); }
-.nav[data-active="settings"]::before { transform: translateX(200%); }
+.nav[data-active="import"]::before { transform: translateX(100%); }
+.nav[data-active="activity"]::before { transform: translateX(200%); }
+.nav[data-active="settings"]::before { transform: translateX(300%); }
 
 .nav-item {
   z-index: 1;

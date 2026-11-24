@@ -340,7 +340,7 @@ Upgrading the binary preserves your vault automatically:
 | macOS | `~/Library/Application Support/mcp-vault/v2` |
 | Linux | `${XDG_DATA_HOME:-~/.local/share}/mcp-vault/v2` |
 
-*(Override with `OPENKEYLET_DATA_DIR=/absolute/path` for isolated/portable vaults.)*
+*(Override with `OPENKEYLET_DATA_DIR=/absolute/path` for isolated/portable vaults. For headless Linux servers, remote/LAN Browser Bridge, SSH-tunneled admin UI, and CLI `--passphrase` backups, see [docs/HEADLESS_AND_REMOTE.md](docs/HEADLESS_AND_REMOTE.md).)*
 
 **Automatic Updates (GitHub Releases)**: Official signed builds check `releases/latest/download/latest.json` directly on GitHub Releases (no custom server), verify the Ed25519 manifest signature and SHA-256 checksum, optionally download silently in the background, and apply updates in place on restart without breaking MCP paths. Configure under **System → UPDATE / 07**, or run `openkeylet update check` / `openkeylet update install` on headless Linux.
 

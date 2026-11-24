@@ -27,7 +27,11 @@
     "test:login-flows": "cargo build --manifest-path src-tauri/Cargo.toml --example browser_fixture && node scripts/test-login-flows.mjs",
     "test:public-logins": "node scripts/probe-public-logins.mjs",
     "test:github-ui": "node scripts/test-github-backup-ui.mjs",
-    "test:updater-ui": "node scripts/test-updater-ui.mjs"
+    "version:sync": "node scripts/sync-version.mjs",
+    "test:updater-ui": "node scripts/test-updater-ui.mjs",
+    "test:import-ui": "node scripts/test-import-hub-ui.mjs",
+    "test:mvault-ui": "node scripts/test-mvault-drop-ui.mjs",
+    "test:strong-ui": "node scripts/test-strong-vault-ui.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.11.4",

@@ -64,6 +64,23 @@ pub fn export_protected(vault: &Vault, path: &Path, password: &str) -> Result<()
     Ok(())
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupPreviewItem {
+    pub index: usize,
+    pub kind: String,
+    pub id: String,
+    pub name: String,
+    pub item_type: String,
+    pub folder: String,
+    pub summary: String,
+    pub status: String,
+    pub assigned_name: Option<String>,
+    pub passkey_count: usize,
+    pub history_count: usize,
+    pub deleted_at: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BackupMergeStats {
@@ -76,6 +93,7 @@ pub struct BackupMergeStats {
     pub history_entries: usize,
     pub sample_names: Vec<String>,
     pub conflict_renames: Vec<String>,
+    pub items: Vec<BackupPreviewItem>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -94,6 +112,7 @@ pub struct BackupPreview {
     pub history_entries: usize,
     pub sample_names: Vec<String>,
     pub conflict_renames: Vec<String>,
+    pub items: Vec<BackupPreviewItem>,
 }
 
 pub struct PreparedBackup {
@@ -102,14 +121,12 @@ pub struct PreparedBackup {
     pub raw_payload: Zeroizing<Vec<u8>>,
 }
 
-pub fn inspect_file_requires_password(path: &Path) -> Result<bool> {
-    ensure!(
-        fs::metadata(path)?.len() <= 64 * 1024 * 1024,
-        "Backup exceeds 64 MiB"
-    );
-    let bytes = fs::read(path).context("Unable to read backup")?;
+const MAX_BACKUP_FILE_BYTES: usize = 64 * 1024 * 1024;
+
+pub fn inspect_bytes_requires_password(bytes: &[u8]) -> Result<bool> {
+    ensure!(bytes.len() <= MAX_BACKUP_FILE_BYTES, "Backup exceeds 64 MiB");
     let value: serde_json::Value =
-        serde_json::from_slice(&bytes).context("Invalid backup format")?;
+        serde_json::from_slice(bytes).context("Invalid backup format")?;
     if value["format"] == "openkeylet-password-backup" {
         return Ok(true);
     }
@@ -118,18 +135,23 @@ pub fn inspect_file_requires_password(path: &Path) -> Result<bool> {
     Ok(false)
 }
 
-pub fn prepare_import_with_password(
-    vault: &Vault,
-    path: &Path,
-    password: &str,
-) -> Result<PreparedBackup> {
+pub fn inspect_file_requires_password(path: &Path) -> Result<bool> {
     ensure!(
-        fs::metadata(path)?.len() <= 64 * 1024 * 1024,
+        fs::metadata(path)?.len() <= MAX_BACKUP_FILE_BYTES as u64,
         "Backup exceeds 64 MiB"
     );
     let bytes = fs::read(path).context("Unable to read backup")?;
+    inspect_bytes_requires_password(&bytes)
+}
+
+pub fn prepare_import_bytes_with_password(
+    vault: &Vault,
+    bytes: &[u8],
+    password: &str,
+) -> Result<PreparedBackup> {
+    ensure!(bytes.len() <= MAX_BACKUP_FILE_BYTES, "Backup exceeds 64 MiB");
     let value: serde_json::Value =
-        serde_json::from_slice(&bytes).context("Invalid backup format")?;
+        serde_json::from_slice(bytes).context("Invalid backup format")?;
     let (plain, version, protected) = if value["format"] == "openkeylet-password-backup" {
         let file: PasswordBackupFile = serde_json::from_value(value)?;
         ensure!(
@@ -180,10 +202,24 @@ pub fn prepare_import_with_password(
             history_entries: stats.history_entries,
             sample_names: stats.sample_names,
             conflict_renames: stats.conflict_renames,
+            items: stats.items,
         },
         version,
         raw_payload: plain,
     })
+}
+
+pub fn prepare_import_with_password(
+    vault: &Vault,
+    path: &Path,
+    password: &str,
+) -> Result<PreparedBackup> {
+    ensure!(
+        fs::metadata(path)?.len() <= MAX_BACKUP_FILE_BYTES as u64,
+        "Backup exceeds 64 MiB"
+    );
+    let bytes = fs::read(path).context("Unable to read backup")?;
+    prepare_import_bytes_with_password(vault, &bytes, password)
 }
 
 pub fn commit_prepared_import(
@@ -191,7 +227,53 @@ pub fn commit_prepared_import(
     raw_payload: &[u8],
     version: u8,
 ) -> Result<ImportSummary> {
-    merge_backup_payload(vault, raw_payload, version)
+    commit_prepared_import_selected(vault, raw_payload, version, None, None)
+}
+
+pub fn commit_prepared_import_selected(
+    vault: &Vault,
+    raw_payload: &[u8],
+    version: u8,
+    selected_item_indices: Option<&[usize]>,
+    selected_trash_indices: Option<&[usize]>,
+) -> Result<ImportSummary> {
+    let (connections, trash, _) = parse_backup_payload(raw_payload, version)?;
+    let connections = match selected_item_indices {
+        Some(indices) => {
+            let allow: std::collections::HashSet<usize> = indices.iter().copied().collect();
+            connections
+                .into_iter()
+                .enumerate()
+                .filter_map(|(idx, item)| allow.contains(&idx).then_some(item))
+                .collect()
+        }
+        None => connections,
+    };
+    let trash = if version == 3 {
+        Vec::new()
+    } else {
+        match selected_trash_indices {
+            Some(indices) => {
+                let allow: std::collections::HashSet<usize> = indices.iter().copied().collect();
+                trash
+                    .into_iter()
+                    .enumerate()
+                    .filter_map(|(idx, item)| allow.contains(&idx).then_some(item))
+                    .collect()
+            }
+            None => trash,
+        }
+    };
+    if connections.is_empty() && trash.is_empty() {
+        return Ok(ImportSummary {
+            added: 0,
+            merged: 0,
+        });
+    }
+    if version == 3 {
+        return vault.merge_connections(connections);
+    }
+    vault.merge_backup_entries(connections, trash)
 }
 
 pub fn import_with_password(vault: &Vault, path: &Path, password: &str) -> Result<ImportSummary> {
@@ -1120,5 +1202,99 @@ mod tests {
         assert_eq!(summary.added, 2);
         assert_eq!(summary.merged, 1);
         assert_eq!(dst.list_connections().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn preview_lists_items_without_secrets_and_commits_selected_subset_only() {
+        let dir = tempdir().unwrap();
+        let src = Vault::open(dir.path().join("src")).unwrap();
+        let dst = Vault::open(dir.path().join("dst")).unwrap();
+
+        src.save_connection(input(Uuid::new_v4(), "Identical Item", "same-secret-marker"))
+            .unwrap();
+        src.save_connection(input(Uuid::new_v4(), "Conflict Item", "conflict-secret-marker"))
+            .unwrap();
+        src.save_connection(input(Uuid::new_v4(), "Pick Me Only", "picked-secret-marker"))
+            .unwrap();
+        let trashed = src
+            .save_connection(input(Uuid::new_v4(), "Old Trash Item", "trash-secret-marker"))
+            .unwrap();
+        src.trash_connection(trashed.id, Some(&trashed.updated_at))
+            .unwrap();
+
+        dst.save_connection(input(Uuid::new_v4(), "Identical Item", "same-secret-marker"))
+            .unwrap();
+        dst.save_connection(input(Uuid::new_v4(), "Conflict Item", "local-secret-marker"))
+            .unwrap();
+
+        let path = dir.path().join("openkeylet-backup.mvault");
+        export_protected(&src, &path, "selective-test-password").unwrap();
+        let raw_bytes = fs::read(&path).unwrap();
+        assert!(inspect_bytes_requires_password(&raw_bytes).unwrap());
+
+        let prepared =
+            prepare_import_bytes_with_password(&dst, &raw_bytes, "selective-test-password")
+                .unwrap();
+        assert_eq!(prepared.preview.items.len(), 4);
+
+        let serialized_preview = serde_json::to_string(&prepared.preview).unwrap();
+        for secret_marker in [
+            "same-secret-marker",
+            "conflict-secret-marker",
+            "picked-secret-marker",
+            "trash-secret-marker",
+        ] {
+            assert!(
+                !serialized_preview.contains(secret_marker),
+                "preview must never leak secret {secret_marker}"
+            );
+        }
+
+        assert_eq!(prepared.preview.items[0].name, "Identical Item");
+        assert_eq!(prepared.preview.items[0].status, "duplicate");
+        assert_eq!(prepared.preview.items[1].name, "Conflict Item");
+        assert_eq!(prepared.preview.items[1].status, "conflict");
+        assert_eq!(
+            prepared.preview.items[1].assigned_name.as_deref(),
+            Some("Conflict Item(2)")
+        );
+        assert_eq!(prepared.preview.items[2].name, "Pick Me Only");
+        assert_eq!(prepared.preview.items[2].status, "new");
+        assert_eq!(prepared.preview.items[3].kind, "trash");
+        assert_eq!(prepared.preview.items[3].name, "Old Trash Item");
+        assert_eq!(prepared.preview.items[3].status, "new");
+
+        // Empty selection must be a no-op
+        let empty_summary = commit_prepared_import_selected(
+            &dst,
+            &prepared.raw_payload,
+            prepared.version,
+            Some(&[]),
+            Some(&[]),
+        )
+        .unwrap();
+        assert_eq!(empty_summary.added, 0);
+        assert_eq!(empty_summary.merged, 0);
+        assert_eq!(dst.list_connections().unwrap().len(), 2);
+
+        // Selecting only index 2 ("Pick Me Only") and no trash imports strictly that one item
+        let summary = commit_prepared_import_selected(
+            &dst,
+            &prepared.raw_payload,
+            prepared.version,
+            Some(&[2]),
+            Some(&[]),
+        )
+        .unwrap();
+        assert_eq!(summary.added, 1);
+        assert_eq!(summary.merged, 0);
+        let names: Vec<String> = dst
+            .list_connections()
+            .unwrap()
+            .into_iter()
+            .map(|c| c.name)
+            .collect();
+        assert_eq!(names, vec!["Identical Item", "Conflict Item", "Pick Me Only"]);
+        assert!(dst.trash_items().unwrap().is_empty());
     }
 }

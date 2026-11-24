@@ -75,7 +75,7 @@ tauri = { version = "2.11.5", features = ["tray-icon"], optional = true }
 tauri-plugin-clipboard-manager = { version = "2", optional = true }
 tauri-plugin-dialog = { version = "2", optional = true }
 tauri-plugin-opener = { version = "2", optional = true }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "net", "io-util", "sync", "process"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "net", "io-util", "sync", "process", "signal"] }
 tokio-util = "0.7"
 tower-http = { version = "0.6", features = ["cors"] }
 url = "2.5"

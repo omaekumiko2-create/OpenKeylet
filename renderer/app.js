@@ -58,10 +58,12 @@ const staticCopy = [
   ['.window-control[data-window-action="minimize"]', 'aria-label', '最小化', 'Minimize'],
   ['.window-control[data-window-action="close"]', 'aria-label', '关闭', 'Close'],
   ['.nav-item[data-page="connections"] > span', 'text', '项目', 'ITEMS'],
+  ['.nav-item[data-page="import"] > span', 'text', '导入', 'IMPORT'],
   ['.nav-item[data-page="activity"] > span', 'text', '记录', 'LOG'],
   ['.nav-item[data-page="settings"] > span', 'text', '设置', 'SYSTEM'],
   ['#title-search-input', 'aria-label', '搜索秘密项目', 'Search vault items'],
   ['#add-connection-button', 'text', '＋ 添加', '+ ADD'],
+  ['#import-chip-manual', 'text', '＋ 手动新建项目', '+ Manual item'],
   ['#drafts-button', 'text', '草稿', 'DRAFT'],
   ['#generator-open', 'text', '生成器', 'GENERATE'],
   ['#trash-open', 'text', '回收站', 'TRASH'],
@@ -131,6 +133,7 @@ const staticCopy = [
   ['#open-extension-button', 'text', '扩展目录', 'EXTENSION FOLDER'],
   ['#start-pairing-button', 'text', '开启配对', 'START PAIRING'],
   ['#test-browser-bridge-button', 'text', '测试连接', 'TEST BRIDGE'],
+  ['#reload-extension-button', 'text', '重载插件', 'RELOAD EXTENSION'],
   ['#reset-pairing-button', 'text', '重置', 'RESET'],
   ['[data-module="SAFE / 06"] .settings-heading h2', 'text', '本地数据与离线包', 'LOCAL DATA & ARCHIVES'],
   ['#safe-export-backup-button', 'text', '导出 .mvault 包', 'EXPORT .MVAULT'],
@@ -229,6 +232,11 @@ function applyLanguage() {
   syncActivityFilterControl();
   syncSettingsFilterControl();
   syncTitleSearch();
+  window.OpenKeyletImportHub?.render?.();
+  if (mvaultState && !$('#mvault-import-modal')?.classList.contains('hidden')) {
+    if (mvaultState.preview) renderMvaultSelectPanel();
+    else if (mvaultState.requiresPassword) renderMvaultUnlockPanel($('#mvault-unlock-error')?.textContent || '');
+  }
 }
 
 function publicMessage(value, fallback = localized('操作失败', 'Operation failed')) {
@@ -283,13 +291,19 @@ const api = {
   quickPair: (port) => invoke('quick_pair_browser', { port }),
   openChrome: (profileDirectory = null) => invoke('open_chrome_browser', profileDirectory ? { profileDirectory } : {}),
   testBrowserBridge: () => invoke('test_browser_bridge'),
+  reloadBrowserExtension: () => invoke('reload_browser_extension'),
   resetPair: () => invoke('reset_browser_pairing'),
   extensionFolder: () => invoke('open_browser_extension_folder'),
   exportBackup: (password) => invoke('export_backup', { password }),
   importBackup: (password) => invoke('import_backup', { password }),
   pickBackupImportFile: () => invoke('pick_backup_import_file'),
+  inspectDroppedBackupBytes: (fileName, content) => invoke('inspect_dropped_backup_bytes', { fileName, content }),
   prepareBackupImport: (password) => invoke('prepare_backup_import', { password }),
-  commitBackupImport: (id) => invoke('commit_backup_import', { id }),
+  commitBackupImport: (id, selectedItemIndices = null, selectedTrashIndices = null) => invoke('commit_backup_import', {
+    id,
+    ...(Array.isArray(selectedItemIndices) ? { selectedItemIndices } : {}),
+    ...(Array.isArray(selectedTrashIndices) ? { selectedTrashIndices } : {}),
+  }),
   cancelBackupImport: () => invoke('cancel_backup_import'),
   prepareImport: (format) => invoke('prepare_import', { format }),
   prepareSshConfigImport: (useDefault) => invoke('prepare_ssh_config_import', { useDefault }),
@@ -307,7 +321,7 @@ let state;
 let systemIntegrationState = { desktopShortcut: false, launchAtLogin: false };
 let activePage = 'connections';
 let currentActivityFilter = 'all';
-const pageSearch = { connections: '', activity: '', settings: '' };
+const pageSearch = { connections: '', import: '', activity: '', settings: '' };
 const itemTypeFilterOrder = ['all', 'ssh', 'login', 'api', 'passkey', 'card', 'identity', 'secureNote', 'custom'];
 let currentItemTypeFilter = 'all';
 let vaultViewMode = (() => {
@@ -331,6 +345,7 @@ let editorOpening = false;
 let editorClosing = null;
 let editorSmartClipboardSource = '';
 let editorSmartTotpUri = '';
+let editorCandidateOnSaved = null;
 let pendingTotpQrModuleIndex = -1;
 let switchPointerDrag = null;
 let switchSelectionPending = false;
@@ -403,7 +418,7 @@ function finishConfirmation(accepted, restoreFocus = true) {
       previousFocus = $$('[data-action][data-id]').find((button) => button.dataset.action === confirmationPreviousFocus.dataset.action && button.dataset.id === confirmationPreviousFocus.dataset.id);
     }
     if (previousFocus?.isConnected && !previousFocus.closest('.hidden')) previousFocus.focus();
-    else if ($('#connection-modal').classList.contains('hidden')) $('#add-connection-button').focus();
+    else if ($('#connection-modal').classList.contains('hidden')) (activePage === 'import' ? $('#add-connection-button') : $('#vault-view-toggle'))?.focus();
   }
   confirmationPreviousFocus = null;
   resolve(accepted);
@@ -522,9 +537,12 @@ function renderOwnerLock() {
   if (locked) {
     if (!$('#vault-management-modal').classList.contains('hidden')) closeVaultManagement();
     if (!$('#migration-modal').classList.contains('hidden')) closeMigration();
+    if (!$('#mvault-import-modal')?.classList.contains('hidden')) closeMvaultImportModal();
+    setGlobalMvaultDropOverlay(false);
     closeGenerator();
     finishBackupPassword(null);
     clearOwnerPlaintext();
+    window.OpenKeyletImportHub?.clearPlaintext?.();
     editorDrafts = [];
     renderDrafts();
   }
@@ -578,6 +596,7 @@ function render() {
   renderDrafts();
   renderActivity();
   renderSettings();
+  window.OpenKeyletImportHub?.render?.();
 }
 
 const segmentNames = ['a', 'b', 'c', 'd', 'e', 'f', 'g'];
@@ -627,6 +646,7 @@ function renderMetrics() {
   const errors24h = activities24h.filter((activity) => activity.status === 'error').length;
   const registeredAgents = agentClients.filter((client) => client.state === 'registered').length;
   const brokenAgents = agentClients.filter((client) => ['stale', 'conflict', 'error'].includes(client.state)).length;
+  const importStats = window.OpenKeyletImportHub?.getStats?.() || { total: 0, selected: 0, ignored: 0 };
   const models = {
     connections: {
       value: total, mode: localized('密码库', 'VAULT'), unit: localized('项', 'ITEMS'),
@@ -636,6 +656,16 @@ function renderMetrics() {
         tone: enabled > 0 ? 'active' : '',
         ratio: total > 0 ? Math.round((enabled / total) * 100) : 0,
         label: localized('已启用项目数，包含所有类型', 'Enabled items across all item types'),
+      },
+    },
+    import: {
+      value: importStats.total, mode: localized('已识别', 'EXTRACTED'), unit: localized('项', 'FOUND'),
+      label: localized('本地规则已提取的候选凭据数', 'Candidate credentials extracted locally'),
+      secondary: {
+        value: importStats.selected, mode: localized('待入库', 'SELECTED'), unit: importStats.total > 0 ? `/ ${importStats.total}` : localized('项', 'READY'),
+        tone: importStats.selected > 0 ? 'active' : '',
+        ratio: importStats.total > 0 ? Math.round((importStats.selected / importStats.total) * 100) : 0,
+        label: localized('已勾选准备批量入库的条目数', 'Selected candidates ready to import'),
       },
     },
     activity: {
@@ -833,6 +863,10 @@ async function selectPage(page) {
   });
   $$('.page').forEach(item => item.classList.toggle('active', item.id === `page-${page}`));
   renderMetrics();
+  if (page === 'import') {
+    window.OpenKeyletImportHub?.render?.();
+    window.OpenKeyletImportHub?.focusInput?.();
+  }
   if (page === 'settings') scanAgents();
 }
 
@@ -878,7 +912,7 @@ function switchControlFor(target) {
         else if (input.id === 'launch-at-login-enabled') await setSystemIntegration('startup', input.checked);
         else if (input.id === 'browser-enabled' || input.id === 'browser-agent-passkey-enabled') await saveBrowserSettings();
         else if (input.id === 'pin-enabled') await savePinSettings();
-        else if (input.id === 'github-auto-sync') input.dispatchEvent(new Event('change', { bubbles: true }));
+        else input.dispatchEvent(new Event('change', { bubbles: true }));
       } };
   }
   if (strip.matches('.module-agent-toggle')) {
@@ -985,8 +1019,13 @@ document.addEventListener('click', event => {
 }, true);
 
 function syncTitleSearch() {
-  const labels = { connections: ['搜索项目', 'Search items'], activity: ['搜索记录', 'Search activity'], settings: ['搜索设置', 'Search settings'] };
-  const label = localized(...labels[activePage]);
+  const labels = {
+    connections: ['搜索项目', 'Search items'],
+    import: ['筛选候选项目', 'Filter candidates'],
+    activity: ['搜索记录', 'Search activity'],
+    settings: ['搜索设置', 'Search settings'],
+  };
+  const label = localized(...(labels[activePage] || labels.connections));
   const shortcutHint = isMacOS ? '⌘K' : 'Ctrl+K';
   const hasQuery = Boolean(pageSearch[activePage]);
   const control = $('#title-search');
@@ -1286,6 +1325,21 @@ function renderSettings() {
           : bridge.endpoint;
   strip.innerHTML = `<span class="status-dot"></span><span class="status-key">${statusKey}</span><span>${escapeHtml(statusDetail)}</span>`;
   $('#test-browser-bridge-button').disabled = !bridge.connected;
+  const reloadExtBtn = $('#reload-extension-button');
+  if (reloadExtBtn) {
+    reloadExtBtn.disabled = !bridge.connected;
+    reloadExtBtn.className = bridge.extensionOutdated ? 'button primary' : 'button quiet';
+  }
+  const versionStrip = $('#browser-version-strip');
+  if (versionStrip) {
+    const outdated = Boolean(bridge.connected && bridge.extensionOutdated);
+    versionStrip.classList.toggle('hidden', !outdated);
+    if (outdated) {
+      const appVer = bridge.appVersion ? `v${bridge.appVersion}` : '';
+      const extVer = bridge.extensionVersion ? `v${bridge.extensionVersion}` : '?';
+      versionStrip.innerHTML = `<span class="status-dot"></span><span class="status-key">${localized('版本不同步', 'OUTDATED')}</span><span>${escapeHtml(localized(`主程序 ${appVer} · 插件 ${extVer} — 点击下方「重载插件」或重新拖入新版扩展目录`, `App ${appVer} · Extension ${extVer} — Click Reload extension or drag the updated folder`))}</span>`;
+    }
+  }
   $('#reset-pairing-button').disabled = !bridge.paired;
   renderChromeProfiles();
   renderAgents();
@@ -1654,6 +1708,7 @@ function closeEditor() {
   setModuleMenu(false);
   editorItemId = null;
   editorSourceInput = null;
+  editorCandidateOnSaved = null;
   editorOpenedFromDraft = false;
   editorInitialSnapshot = '';
   if (!editorReturnFocus?.isConnected && editorReturnFocus?.dataset.action && editorReturnFocus?.dataset.id) {
@@ -2042,34 +2097,258 @@ function closeMigration() {
   api.cancelImport().catch(() => {});
   api.cancelBackupImport().catch(() => {});
 }
-async function openMvaultPreviewFlow(picked) {
-  const password = picked.requiresPassword ? await askBackupPassword(false, picked.fileName) : '';
-  if (password === null) {
-    api.cancelBackupImport().catch(() => {});
+let mvaultState = null;
+let mvaultSequence = 0;
+
+function setGlobalMvaultDropOverlay(visible, options = '') {
+  const overlay = $('#global-mvault-drop-overlay');
+  if (!overlay) return;
+  if (visible) {
+    const opts = typeof options === 'string'
+      ? { mode: 'mvault', fileNames: options ? [options] : [] }
+      : (options || {});
+    const mode = opts.mode || 'mvault';
+    const fileNames = Array.isArray(opts.fileNames) ? opts.fileNames.filter(Boolean) : [];
+    const totalCount = Number(opts.totalCount || fileNames.length || 0);
+    const titleEl = $('#global-mvault-drop-title');
+    const subEl = $('#global-mvault-drop-subtitle');
+    const chipEl = $('#global-mvault-drop-file');
+    if (titleEl) {
+      if (mode === 'universal') {
+        titleEl.textContent = localized('松开即可智能提取并构建项目', 'Drop files to extract & build items');
+      } else if (mode === 'mixed') {
+        titleEl.textContent = localized('松开即可导入备份并提取文件', 'Drop to import backup & extract files');
+      } else {
+        titleEl.textContent = localized('松开即可导入 .mvault 备份', 'Drop .mvault backup to import');
+      }
+    }
+    if (subEl) {
+      if (mode === 'universal') {
+        subEl.textContent = localized(
+          '支持 Excel / Word / ZIP / .env / CSV / JSON / KeePass / 私钥 / 2FA 截图 / 文件夹等任意文件',
+          'Supports Excel, Word, ZIP, .env, CSV, JSON, KeePass, SSH keys, 2FA QR, folders & any text'
+        );
+      } else if (mode === 'mixed') {
+        subEl.textContent = localized(
+          '自动弹窗勾选 .mvault 备份，同时提取其余文件至导入中心',
+          'Opens .mvault selector and extracts other files into Import Hub'
+        );
+      } else {
+        subEl.textContent = localized(
+          '自动弹窗预览，可勾选需要导入的项目或全选',
+          'Opens a preview popup where you can check specific items or select all'
+        );
+      }
+    }
+    if (chipEl) {
+      let chipText = '';
+      if (fileNames.length === 1 && totalCount <= 1) {
+        chipText = opts.hasFolder ? `📁 ${fileNames[0]}` : fileNames[0];
+      } else if (fileNames.length > 0) {
+        const extra = Math.max(0, totalCount - fileNames.length);
+        chipText = fileNames.slice(0, 2).join(' · ') + (extra > 0 || fileNames.length > 2 ? ` (+${Math.max(extra, fileNames.length - 2)})` : '');
+      }
+      chipEl.textContent = chipText;
+      chipEl.classList.toggle('hidden', !chipText);
+    }
+    overlay.classList.remove('hidden');
+  } else {
+    overlay.classList.add('hidden');
+  }
+}
+
+function closeMvaultImportModal(cancelBackend = true) {
+  mvaultSequence++;
+  mvaultState = null;
+  const modal = $('#mvault-import-modal');
+  if (modal) modal.classList.add('hidden');
+  const pwInput = $('#mvault-unlock-password');
+  if (pwInput) {
+    pwInput.value = '';
+    pwInput.type = 'password';
+  }
+  const revealBtn = $('#mvault-unlock-reveal');
+  if (revealBtn) revealBtn.textContent = localized('显示', 'SHOW');
+  const searchInput = $('#mvault-search-input');
+  if (searchInput) searchInput.value = '';
+  $('#mvault-unlock-panel')?.classList.add('hidden');
+  $('#mvault-loading-panel')?.classList.add('hidden');
+  $('#mvault-select-panel')?.classList.add('hidden');
+  $('#mvault-unlock-error')?.classList.add('hidden');
+  $('#mvault-select-error')?.classList.add('hidden');
+  $('#mvault-item-list')?.replaceChildren();
+  if (cancelBackend) api.cancelBackupImport().catch(() => {});
+}
+
+function mvaultCategoryKey(item) {
+  return item.kind === 'trash' ? 'trash' : (item.itemType || 'custom');
+}
+
+function mvaultCategoryLabel(key) {
+  if (key === 'all') return localized('全部', 'All');
+  if (key === 'trash') return localized('回收站', 'Trash');
+  return itemTypeLabel(key);
+}
+
+function mvaultFilteredItems() {
+  if (!mvaultState?.items) return [];
+  const q = String(mvaultState.searchQuery || '').trim().toLowerCase();
+  const filter = mvaultState.activeTypeFilter || 'all';
+  return mvaultState.items.filter((item) => {
+    if (filter !== 'all' && mvaultCategoryKey(item) !== filter) return false;
+    if (!q) return true;
+    const hay = [
+      item.name,
+      item.assignedName || '',
+      item.summary || '',
+      item.folder || '',
+      itemTypeLabel(item.itemType),
+      item.kind === 'trash' ? 'trash 回收站' : '',
+    ]
+      .join(' ')
+      .toLowerCase();
+    return hay.includes(q);
+  });
+}
+
+function renderMvaultHeader() {
+  if (!mvaultState) return;
+  $('#mvault-modal-title').textContent = localized('导入 .mvault 备份', 'Import .mvault backup');
+  $('#mvault-file-name').textContent = mvaultState.fileName || 'openkeylet-backup.mvault';
+  const formatPill = $('#mvault-format-pill');
+  if (mvaultState.preview) {
+    formatPill.textContent = mvaultState.preview.protected
+      ? `v${mvaultState.preview.version}`
+      : localized(`旧版 v${mvaultState.preview.version}`, `Legacy v${mvaultState.preview.version}`);
+    formatPill.classList.remove('hidden');
+  } else {
+    formatPill.textContent = '';
+    formatPill.classList.add('hidden');
+  }
+}
+
+function renderMvaultUnlockPanel(errorMessage = '') {
+  if (!mvaultState) return;
+  renderMvaultHeader();
+  $('#mvault-loading-panel').classList.add('hidden');
+  $('#mvault-select-panel').classList.add('hidden');
+  $('#mvault-unlock-panel').classList.remove('hidden');
+  $('#mvault-unlock-help').textContent = localized(
+    `输入「${mvaultState.fileName}」创建时设置的备份密码，解密后即可预览并勾选需要导入的项目。`,
+    `Enter the backup password for "${mvaultState.fileName}" to preview and select items to import.`
+  );
+  $('#mvault-unlock-password-label').textContent = localized('备份密码', 'Backup password');
+  $('#mvault-unlock-cancel').textContent = localized('取消', 'Cancel');
+  $('#mvault-unlock-submit').textContent = localized('解锁并预览', 'Unlock & preview');
+  $('#mvault-unlock-submit').disabled = false;
+  const pwInput = $('#mvault-unlock-password');
+  const revealBtn = $('#mvault-unlock-reveal');
+  if (revealBtn) {
+    revealBtn.textContent = pwInput?.type === 'text' ? localized('隐藏', 'HIDE') : localized('显示', 'SHOW');
+  }
+  const errEl = $('#mvault-unlock-error');
+  if (errorMessage) {
+    errEl.textContent = errorMessage;
+    errEl.classList.remove('hidden');
+  } else {
+    errEl.textContent = '';
+    errEl.classList.add('hidden');
+  }
+  requestAnimationFrame(() => {
+    pwInput?.focus();
+    if (errorMessage) pwInput?.select();
+  });
+}
+
+function updateMvaultSelectionChrome() {
+  if (!mvaultState) return;
+  const selectAllInput = $('#mvault-select-all');
+  const selectAllText = $('#mvault-select-all-text');
+  const counterEl = $('#mvault-selection-counter');
+  const confirmBtn = $('#mvault-select-confirm');
+  const cancelBtn = $('#mvault-select-cancel');
+  const hintEl = $('#mvault-footer-hint');
+  if (cancelBtn) cancelBtn.textContent = localized('取消', 'Cancel');
+
+  if (!mvaultState.hasItemList) {
+    const p = mvaultState.preview || {};
+    const count = (p.newItems ?? p.totalItems ?? 0) + (p.trashCount || 0);
+    if (selectAllInput) {
+      selectAllInput.checked = count > 0;
+      selectAllInput.indeterminate = false;
+      selectAllInput.disabled = true;
+    }
+    if (selectAllText) selectAllText.textContent = localized('全选', 'Select all');
+    if (counterEl) counterEl.textContent = localized(`共 ${p.totalItems || 0} 项`, `${p.totalItems || 0} items`);
+    if (hintEl) {
+      hintEl.textContent = localized('同名冲突将自动另存，不覆盖已有项目', 'Conflicts are renamed safely without overwriting');
+    }
+    if (confirmBtn) {
+      const canConfirm = (p.totalItems || 0) > 0 || (p.trashCount || 0) > 0;
+      confirmBtn.disabled = !canConfirm || mvaultState.committing;
+      confirmBtn.textContent = mvaultState.committing
+        ? localized('正在导入…', 'Importing…')
+        : localized('确认导入', 'Import');
+    }
     return;
   }
-  $('#migration-format').value = 'mvault';
-  resetMigration();
-  migrationHelp();
-  $('#migration-modal').classList.remove('hidden');
-  const sequence = migrationSequence;
-  $('#migration-select').disabled = true;
-  try {
-    const result = await api.prepareBackupImport(password);
-    if (!result || sequence !== migrationSequence) return;
-    migrationId = result.id;
-    migrationMode = 'mvault';
-    const p = result.preview;
+
+  const allImportable = mvaultState.items.filter((item) => item.importable);
+  const totalSelected = allImportable.filter((item) => item.selected).length;
+  const visibleImportable = mvaultFilteredItems().filter((item) => item.importable);
+  const visibleSelected = visibleImportable.filter((item) => item.selected).length;
+  const isFiltered = (mvaultState.activeTypeFilter && mvaultState.activeTypeFilter !== 'all')
+    || Boolean(String(mvaultState.searchQuery || '').trim());
+
+  if (selectAllInput) {
+    selectAllInput.disabled = visibleImportable.length === 0;
+    selectAllInput.checked = visibleImportable.length > 0 && visibleSelected === visibleImportable.length;
+    selectAllInput.indeterminate = visibleSelected > 0 && visibleSelected < visibleImportable.length;
+  }
+  if (selectAllText) {
+    selectAllText.textContent = isFiltered
+      ? localized('全选当前筛选', 'Select visible')
+      : localized('全选', 'Select all');
+  }
+  if (counterEl) {
+    counterEl.textContent = localized(
+      `已选 ${totalSelected} / ${allImportable.length} 项`,
+      `${totalSelected} / ${allImportable.length} selected`
+    );
+  }
+  if (hintEl) {
+    const selectedConflicts = mvaultState.items.filter((i) => i.selected && i.status === 'conflict').length;
+    hintEl.textContent = selectedConflicts > 0
+      ? localized(`含 ${selectedConflicts} 项同名冲突，将自动另存不覆盖`, `${selectedConflicts} conflict(s) will be safely renamed`)
+      : localized('仅导入已勾选项目，不会覆盖已有数据', 'Only checked items are imported; existing items are untouched');
+  }
+  if (confirmBtn) {
+    confirmBtn.disabled = totalSelected === 0 || mvaultState.committing;
+    confirmBtn.textContent = mvaultState.committing
+      ? localized('正在导入…', 'Importing…')
+      : totalSelected > 0 && totalSelected === allImportable.length
+        ? localized(`全量导入 (${totalSelected})`, `Import all (${totalSelected})`)
+        : localized(`导入所选 (${totalSelected})`, `Import (${totalSelected})`);
+  }
+}
+
+function renderMvaultItemList() {
+  if (!mvaultState) return;
+  const listEl = $('#mvault-item-list');
+  if (!listEl) return;
+
+  if (!mvaultState.hasItemList) {
+    const p = mvaultState.preview || {};
     const lines = [
-      `${picked.fileName} · ${p.formatLabel}`,
+      `${mvaultState.fileName} · ${p.formatLabel || '.mvault'}`,
       localized(
-        `共 ${p.totalItems} 项 · 将新增 ${p.newItems} 项 · 跳过相同 ${p.duplicateSkipped} 项 · 同名安全重命名 ${p.nameConflicts} 项`,
-        `${p.totalItems} items · ${p.newItems} to add · ${p.duplicateSkipped} identical skipped · ${p.nameConflicts} renamed on conflict`
+        `共 ${p.totalItems || 0} 项 · 将新增 ${p.newItems || 0} 项 · 跳过相同 ${p.duplicateSkipped || 0} 项 · 同名安全重命名 ${p.nameConflicts || 0} 项`,
+        `${p.totalItems || 0} items · ${p.newItems || 0} to add · ${p.duplicateSkipped || 0} identical skipped · ${p.nameConflicts || 0} renamed on conflict`
       ),
       ...(p.passkeyCount || p.trashCount || p.historyEntries
         ? [localized(
-            `含 Passkey ${p.passkeyCount} 个 · 密码历史 ${p.historyEntries} 条 · 回收站 ${p.trashCount} 项`,
-            `Includes ${p.passkeyCount} passkeys · ${p.historyEntries} history entries · ${p.trashCount} trashed items`
+            `含 Passkey ${p.passkeyCount || 0} 个 · 密码历史 ${p.historyEntries || 0} 条 · 回收站 ${p.trashCount || 0} 项`,
+            `Includes ${p.passkeyCount || 0} passkeys · ${p.historyEntries || 0} history entries · ${p.trashCount || 0} trashed items`
           )]
         : []),
       ...(p.sampleNames?.length
@@ -2078,23 +2357,378 @@ async function openMvaultPreviewFlow(picked) {
       ...(p.conflictRenames?.length
         ? [localized(`同名冲突将自动另存（不覆盖）：${p.conflictRenames.join('；')}`, `Conflicts safely renamed (no overwrite): ${p.conflictRenames.join('; ')}`)]
         : []),
-      ...(!p.protected
-        ? [localized('安全提示：此文件为旧版无密码自解锁 .mvault，文件内含解锁密钥。导入完成后建议删除旧文件并重新导出带密码保护的新备份。', 'Security note: This is a legacy self-unlocking .mvault containing its own unlock key. Delete the old file after importing and export a password-protected backup.')]
-        : []),
     ];
-    const preview = $('#migration-preview');
-    preview.replaceChildren(...lines.map(line => { const el = document.createElement('p'); el.textContent = line; return el; }));
-    preview.classList.remove('hidden');
-    $('#migration-confirm').classList.toggle('hidden', p.totalItems === 0 && p.trashCount === 0);
-  } catch (error) {
-    if (sequence === migrationSequence) {
-      $('#migration-error').textContent = cleanError(error);
-      $('#migration-error').classList.remove('hidden');
+    listEl.innerHTML = `<div class="mvault-empty-state" style="text-align:left">${lines.map((line) => `<p style="margin:4px 0">${escapeHtml(line)}</p>`).join('')}</div>`;
+    updateMvaultSelectionChrome();
+    return;
+  }
+
+  const visible = mvaultFilteredItems();
+  if (!mvaultState.items.length) {
+    listEl.innerHTML = `<div class="mvault-empty-state">${escapeHtml(localized('此备份文件为空，没有可导入的项目。', 'This backup file is empty — no items to import.'))}</div>`;
+    updateMvaultSelectionChrome();
+    return;
+  }
+  if (!visible.length) {
+    listEl.innerHTML = `<div class="mvault-empty-state">${escapeHtml(localized('当前筛选或搜索条件下没有匹配的项目。', 'No items match the current search or filter.'))}</div>`;
+    updateMvaultSelectionChrome();
+    return;
+  }
+
+  listEl.innerHTML = visible.map((item) => {
+    const isDup = !item.importable;
+    const rowClasses = [
+      'mvault-item-row',
+      isDup ? 'is-duplicate' : (item.selected ? 'is-selected' : 'is-unchecked'),
+    ].join(' ');
+    const statusBadge = item.status === 'duplicate'
+      ? `<span class="mvault-item-status is-dup" title="${escapeHtml(localized('当前密码库中已存在完全相同的条目', 'An identical item already exists in your vault'))}">${escapeHtml(localized('已存在', 'EXISTS'))}</span>`
+      : item.status === 'conflict'
+        ? `<span class="mvault-item-status is-conflict" title="${escapeHtml(localized('已有同名条目，导入时将自动另存不覆盖', 'Name conflict — will be renamed safely without overwriting'))}">${escapeHtml(localized('同名另存', 'RENAME'))}</span>`
+        : `<span class="mvault-item-status is-new">${escapeHtml(localized('新增', 'NEW'))}</span>`;
+    const metaChips = [];
+    if (item.kind === 'trash') {
+      metaChips.push(`<span class="mvault-meta-chip is-trash">${escapeHtml(localized('回收站', 'Trash'))}</span>`);
     }
-  } finally {
-    $('#migration-select').disabled = false;
+    if (item.folder) {
+      metaChips.push(`<span class="mvault-meta-chip">${escapeHtml(item.folder)}</span>`);
+    }
+    if (item.passkeyCount > 0) {
+      metaChips.push(`<span class="mvault-meta-chip">${escapeHtml(localized(`Passkey ×${item.passkeyCount}`, `Passkey ×${item.passkeyCount}`))}</span>`);
+    }
+    if (item.historyCount > 0) {
+      metaChips.push(`<span class="mvault-meta-chip">${escapeHtml(localized(`历史 ${item.historyCount}`, `History ${item.historyCount}`))}</span>`);
+    }
+    const subParts = [];
+    if (item.assignedName) {
+      subParts.push(`<span class="mvault-item-rename">→ ${escapeHtml(item.assignedName)}</span>`);
+    }
+    if (item.summary) {
+      subParts.push(`<span class="mvault-item-summary">${escapeHtml(item.summary)}</span>`);
+    }
+    const subHtml = (subParts.length || metaChips.length)
+      ? `<div class="mvault-item-sub">${subParts.join('')}${metaChips.join('')}</div>`
+      : '';
+    return `
+      <label class="${rowClasses}" role="listitem" data-mvault-row="${escapeHtml(item.key)}">
+        <input type="checkbox" class="mvault-checkbox" data-mvault-check="${escapeHtml(item.key)}" ${item.selected ? 'checked' : ''} ${isDup ? 'disabled' : ''} aria-label="${escapeHtml(item.name)}" />
+        <div class="mvault-item-body">
+          <div class="mvault-item-head">
+            <span class="mvault-item-type">${escapeHtml(itemTypeLabel(item.itemType))}</span>
+            <span class="mvault-item-name" title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</span>
+            ${statusBadge}
+          </div>
+          ${subHtml}
+        </div>
+      </label>
+    `;
+  }).join('');
+
+  updateMvaultSelectionChrome();
+}
+
+function renderMvaultSelectPanel() {
+  if (!mvaultState || !mvaultState.preview) return;
+  renderMvaultHeader();
+  $('#mvault-unlock-panel').classList.add('hidden');
+  $('#mvault-loading-panel').classList.add('hidden');
+  $('#mvault-select-panel').classList.remove('hidden');
+
+  const p = mvaultState.preview;
+  const statsEl = $('#mvault-stats-strip');
+  const pills = [];
+  const totalCount = mvaultState.hasItemList ? mvaultState.items.length : (p.totalItems || 0);
+  pills.push(`<span class="mvault-stat-pill">${escapeHtml(localized(`共 ${totalCount} 项`, `${totalCount} total`))}</span>`);
+  if ((p.newItems || 0) > 0) {
+    pills.push(`<span class="mvault-stat-pill is-new">${escapeHtml(localized(`可新增 ${p.newItems}`, `${p.newItems} new`))}</span>`);
+  }
+  if ((p.nameConflicts || 0) > 0) {
+    pills.push(`<span class="mvault-stat-pill is-conflict">${escapeHtml(localized(`同名另存 ${p.nameConflicts}`, `${p.nameConflicts} rename`))}</span>`);
+  }
+  if ((p.duplicateSkipped || 0) > 0) {
+    pills.push(`<span class="mvault-stat-pill is-dup">${escapeHtml(localized(`已存在 ${p.duplicateSkipped}`, `${p.duplicateSkipped} existing`))}</span>`);
+  }
+  if ((p.trashCount || 0) > 0) {
+    pills.push(`<span class="mvault-stat-pill">${escapeHtml(localized(`回收站 ${p.trashCount}`, `${p.trashCount} trash`))}</span>`);
+  }
+  statsEl.innerHTML = pills.join('');
+
+  const legacyNote = $('#mvault-legacy-note');
+  if (!p.protected) {
+    legacyNote.textContent = localized(
+      '安全提示：此文件为旧版无密码自解锁 .mvault，文件内含解锁密钥。导入后建议删除旧文件并重新导出带密码保护的备份。',
+      'Security note: This is a legacy self-unlocking .mvault containing its own unlock key. Delete the old file after importing and export a password-protected backup.'
+    );
+    legacyNote.classList.remove('hidden');
+  } else {
+    legacyNote.textContent = '';
+    legacyNote.classList.add('hidden');
+  }
+
+  const searchInput = $('#mvault-search-input');
+  if (searchInput) {
+    searchInput.placeholder = localized('搜索备份中的项目…', 'Search items in backup…');
+    searchInput.parentElement?.classList.toggle('hidden', !mvaultState.hasItemList || mvaultState.items.length === 0);
+  }
+
+  const typePillsEl = $('#mvault-type-pills');
+  if (typePillsEl) {
+    if (mvaultState.hasItemList && mvaultState.items.length > 0) {
+      const counts = new Map();
+      for (const item of mvaultState.items) {
+        const key = mvaultCategoryKey(item);
+        counts.set(key, (counts.get(key) || 0) + 1);
+      }
+      if (counts.size > 1) {
+        const keys = ['all', ...counts.keys()];
+        typePillsEl.innerHTML = keys.map((key) => {
+          const count = key === 'all' ? mvaultState.items.length : counts.get(key);
+          const active = mvaultState.activeTypeFilter === key ? 'active' : '';
+          return `<button type="button" class="mvault-type-pill ${active}" data-mvault-filter="${escapeHtml(key)}">${escapeHtml(mvaultCategoryLabel(key))} ${count}</button>`;
+        }).join('');
+        typePillsEl.classList.remove('hidden');
+      } else {
+        typePillsEl.innerHTML = '';
+        typePillsEl.classList.add('hidden');
+      }
+    } else {
+      typePillsEl.innerHTML = '';
+      typePillsEl.classList.add('hidden');
+    }
+  }
+
+  const selectErrorEl = $('#mvault-select-error');
+  if (selectErrorEl) {
+    selectErrorEl.textContent = '';
+    selectErrorEl.classList.add('hidden');
+  }
+
+  renderMvaultItemList();
+}
+
+async function unlockAndPreviewMvault(password) {
+  if (!mvaultState) return;
+  const sequence = mvaultSequence;
+  const submitBtn = $('#mvault-unlock-submit');
+  if (submitBtn) submitBtn.disabled = true;
+  $('#mvault-unlock-error')?.classList.add('hidden');
+  $('#mvault-loading-text').textContent = localized('正在解密并分析备份内容…', 'Decrypting & analyzing backup…');
+  $('#mvault-unlock-panel').classList.add('hidden');
+  $('#mvault-select-panel').classList.add('hidden');
+  $('#mvault-loading-panel').classList.remove('hidden');
+
+  try {
+    const result = await api.prepareBackupImport(password);
+    if (!result || sequence !== mvaultSequence || !mvaultState) return;
+    const pwInput = $('#mvault-unlock-password');
+    if (pwInput) pwInput.value = '';
+    mvaultState.id = result.id;
+    mvaultState.preview = result.preview;
+    const rawItems = result.preview?.items;
+    if (Array.isArray(rawItems)) {
+      mvaultState.hasItemList = true;
+      mvaultState.items = rawItems.map((item) => {
+        const importable = item.status !== 'duplicate';
+        return {
+          key: `${item.kind || 'item'}:${item.index}`,
+          index: item.index,
+          kind: item.kind || 'item',
+          id: item.id || '',
+          name: item.name || localized('未命名项目', 'Untitled'),
+          itemType: item.itemType || 'custom',
+          folder: item.folder || '',
+          summary: item.summary || '',
+          status: item.status || 'new',
+          assignedName: item.assignedName || null,
+          passkeyCount: Number(item.passkeyCount || 0),
+          historyCount: Number(item.historyCount || 0),
+          deletedAt: item.deletedAt || null,
+          importable,
+          selected: importable,
+        };
+      });
+    } else {
+      mvaultState.hasItemList = false;
+      mvaultState.items = [];
+    }
+    renderMvaultSelectPanel();
+  } catch (error) {
+    if (sequence !== mvaultSequence || !mvaultState) return;
+    const message = cleanError(error);
+    if (mvaultState.requiresPassword) {
+      renderMvaultUnlockPanel(message);
+    } else {
+      closeMvaultImportModal(true);
+      toast(message, 'error');
+    }
   }
 }
+
+async function openMvaultPreviewFlow(picked) {
+  if (!picked) return;
+  setModuleMenu(false);
+  if (!$('#migration-modal')?.classList.contains('hidden')) {
+    resetMigration();
+    $('#migration-modal').classList.add('hidden');
+  }
+  mvaultSequence++;
+  mvaultState = {
+    fileName: picked.fileName || 'openkeylet-backup.mvault',
+    requiresPassword: Boolean(picked.requiresPassword),
+    id: null,
+    preview: null,
+    items: [],
+    hasItemList: false,
+    activeTypeFilter: 'all',
+    searchQuery: '',
+    committing: false,
+  };
+  const pwInput = $('#mvault-unlock-password');
+  if (pwInput) {
+    pwInput.value = '';
+    pwInput.type = 'password';
+  }
+  const searchInput = $('#mvault-search-input');
+  if (searchInput) searchInput.value = '';
+  $('#mvault-import-modal').classList.remove('hidden');
+
+  if (mvaultState.requiresPassword) {
+    renderMvaultUnlockPanel('');
+  } else {
+    renderMvaultHeader();
+    await unlockAndPreviewMvault('');
+  }
+}
+
+async function handleDroppedMvaultFile(file) {
+  if (!file) return;
+  await refreshOwnerLock();
+  if (!ownerLockState.unlocked) {
+    toast(localized('请先解锁密码库后再拖入 .mvault 备份', 'Unlock OpenKeylet first before dropping a .mvault backup'), 'error');
+    return;
+  }
+  if (file.size > 64 * 1024 * 1024) {
+    toast(localized('备份文件超过 64 MiB 限制', 'Backup file exceeds the 64 MiB limit'), 'error');
+    return;
+  }
+  try {
+    const content = await file.text();
+    const picked = await api.inspectDroppedBackupBytes(file.name || 'openkeylet-backup.mvault', content);
+    if (!picked) return;
+    await openMvaultPreviewFlow(picked);
+  } catch (error) {
+    toast(cleanError(error), 'error');
+  }
+}
+
+$('#mvault-modal-close')?.addEventListener('click', () => closeMvaultImportModal(true));
+$('#mvault-unlock-cancel')?.addEventListener('click', () => closeMvaultImportModal(true));
+$('#mvault-select-cancel')?.addEventListener('click', () => closeMvaultImportModal(true));
+
+$('#mvault-unlock-reveal')?.addEventListener('click', () => {
+  const input = $('#mvault-unlock-password');
+  const btn = $('#mvault-unlock-reveal');
+  if (!input || !btn) return;
+  const showing = input.type === 'text';
+  input.type = showing ? 'password' : 'text';
+  btn.textContent = showing ? localized('显示', 'SHOW') : localized('隐藏', 'HIDE');
+  input.focus();
+});
+
+$('#mvault-unlock-panel')?.addEventListener('submit', (event) => {
+  event.preventDefault();
+  if (!mvaultState) return;
+  const password = $('#mvault-unlock-password')?.value || '';
+  if (!password) {
+    renderMvaultUnlockPanel(localized('请输入备份密码', 'Enter the backup password'));
+    return;
+  }
+  void unlockAndPreviewMvault(password);
+});
+
+$('#mvault-search-input')?.addEventListener('input', (event) => {
+  if (!mvaultState) return;
+  mvaultState.searchQuery = event.currentTarget.value || '';
+  renderMvaultItemList();
+});
+
+$('#mvault-type-pills')?.addEventListener('click', (event) => {
+  const pill = event.target.closest('[data-mvault-filter]');
+  if (!pill || !mvaultState) return;
+  mvaultState.activeTypeFilter = pill.dataset.mvaultFilter || 'all';
+  for (const btn of $$('#mvault-type-pills [data-mvault-filter]')) {
+    btn.classList.toggle('active', btn.dataset.mvaultFilter === mvaultState.activeTypeFilter);
+  }
+  renderMvaultItemList();
+});
+
+$('#mvault-select-all')?.addEventListener('change', (event) => {
+  if (!mvaultState?.hasItemList) return;
+  const checked = Boolean(event.currentTarget.checked);
+  for (const item of mvaultFilteredItems()) {
+    if (item.importable) item.selected = checked;
+  }
+  renderMvaultItemList();
+});
+
+$('#mvault-item-list')?.addEventListener('change', (event) => {
+  const checkbox = event.target.closest('[data-mvault-check]');
+  if (!checkbox || !mvaultState?.hasItemList) return;
+  const key = checkbox.dataset.mvaultCheck;
+  const item = mvaultState.items.find((entry) => entry.key === key);
+  if (!item || !item.importable) return;
+  item.selected = Boolean(checkbox.checked);
+  const row = checkbox.closest('[data-mvault-row]');
+  if (row) {
+    row.classList.toggle('is-selected', item.selected);
+    row.classList.toggle('is-unchecked', !item.selected);
+  }
+  updateMvaultSelectionChrome();
+});
+
+$('#mvault-select-confirm')?.addEventListener('click', async () => {
+  if (!mvaultState?.id || mvaultState.committing) return;
+  const sequence = mvaultSequence;
+  mvaultState.committing = true;
+  $('#mvault-select-error')?.classList.add('hidden');
+  updateMvaultSelectionChrome();
+  try {
+    let result;
+    if (mvaultState.hasItemList) {
+      const selectedItemIndices = mvaultState.items
+        .filter((item) => item.kind === 'item' && item.selected)
+        .map((item) => item.index);
+      const selectedTrashIndices = mvaultState.items
+        .filter((item) => item.kind === 'trash' && item.selected)
+        .map((item) => item.index);
+      if (!selectedItemIndices.length && !selectedTrashIndices.length) {
+        mvaultState.committing = false;
+        updateMvaultSelectionChrome();
+        return;
+      }
+      result = await api.commitBackupImport(mvaultState.id, selectedItemIndices, selectedTrashIndices);
+    } else {
+      result = await api.commitBackupImport(mvaultState.id);
+    }
+    if (sequence !== mvaultSequence) return;
+    closeMvaultImportModal(false);
+    window.OpenKeyletAppearance?.play?.('success');
+    toastImportSummary(result);
+    if (activePage === 'import') {
+      window.OpenKeyletImportHub?.notifyExternalImportDone?.(result);
+    }
+    await refresh();
+  } catch (error) {
+    if (sequence !== mvaultSequence || !mvaultState) return;
+    mvaultState.committing = false;
+    const errEl = $('#mvault-select-error');
+    if (errEl) {
+      errEl.textContent = cleanError(error);
+      errEl.classList.remove('hidden');
+    }
+    updateMvaultSelectionChrome();
+  }
+});
 $('#migration-open').onclick = async () => {
   await refreshOwnerLock();
   if (!ownerLockState.unlocked) return;
@@ -2183,6 +2817,7 @@ document.addEventListener('click', async (event) => {
       input.value = '';
       syncTitleSearch();
       if (activePage === 'connections') renderConnections();
+      if (activePage === 'import') window.OpenKeyletImportHub?.render?.();
       if (activePage === 'activity') { activityVisibleCount = ACTIVITY_PAGE_SIZE; renderActivity(); }
       if (activePage === 'settings') applySettingsSearch();
     }
@@ -2247,6 +2882,7 @@ document.addEventListener('click', async (event) => {
   if (event.target === $('#confirmation-modal') && confirmationResolver) finishConfirmation(false);
   if (event.target === $('#generator-modal')) closeGenerator();
   if (event.target === $('#backup-password-modal')) finishBackupPassword(null);
+  if (event.target === $('#mvault-import-modal')) closeMvaultImportModal(true);
   if (event.target === $('#migration-modal')) closeMigration();
   if (event.target === $('#vault-management-modal')) closeVaultManagement();
   if (event.target.closest('[data-close-modal]')) await closeEditorWithDraft();
@@ -2349,7 +2985,7 @@ document.addEventListener('click', async (event) => {
       message: localized('项目将停止用于填写、Passkey 登录和 Agent 操作。你可以在回收站恢复它。', 'The item will stop being available for autofill, passkeys and agents. You can restore it from Trash.'),
       acceptLabel: localized('移入回收站', 'MOVE TO TRASH'),
     })) {
-      try { await api.remove(item.id, item.updatedAt); toast(localized('已移入回收站', 'Moved to trash')); await refresh(); $('#add-connection-button').focus(); } catch (error) { toast(cleanError(error), 'error'); }
+      try { await api.remove(item.id, item.updatedAt); toast(localized('已移入回收站', 'Moved to trash')); await refresh(); $('#vault-view-toggle')?.focus(); } catch (error) { toast(cleanError(error), 'error'); }
     }
   }
   const errorDetail = event.target.closest('[data-expand-error]');
@@ -2406,6 +3042,7 @@ document.addEventListener('input', (event) => {
   pageSearch[page] = event.target.value;
   syncTitleSearch();
   if (page === 'connections') renderConnections();
+  if (page === 'import') window.OpenKeyletImportHub?.render?.();
   if (page === 'activity') {
     activityVisibleCount = ACTIVITY_PAGE_SIZE;
     renderActivity();
@@ -2767,6 +3404,7 @@ function trapFocusInContainer(container, event, extraElements = []) {
 function topSecondaryModal() {
   for (const [id, close] of [
     ['#backup-password-modal', () => finishBackupPassword(null)],
+    ['#mvault-import-modal', () => closeMvaultImportModal(true)],
     ['#generator-modal', closeGenerator],
     ['#migration-modal', closeMigration],
     ['#vault-management-modal', closeVaultManagement],
@@ -2918,9 +3556,9 @@ document.addEventListener('keydown', (event) => {
       void selectPage('settings');
       return;
     }
-    if (key === '1' || key === '2' || key === '3') {
+    if (key === '1' || key === '2' || key === '3' || key === '4') {
       event.preventDefault();
-      void selectPage({ 1: 'connections', 2: 'activity', 3: 'settings' }[key]);
+      void selectPage({ 1: 'connections', 2: 'import', 3: 'activity', 4: 'settings' }[key]);
       return;
     }
     if (key === 'l' && event.shiftKey && ownerLockState.pinConfigured && ownerLockState.unlocked) {
@@ -2941,6 +3579,7 @@ document.addEventListener('keydown', (event) => {
       search.value = '';
       pageSearch[page] = '';
       if (page === 'connections') renderConnections();
+      if (page === 'import') window.OpenKeyletImportHub?.render?.();
       if (page === 'activity') { activityVisibleCount = ACTIVITY_PAGE_SIZE; renderActivity(); }
       if (page === 'settings') applySettingsSearch();
     }
@@ -2955,10 +3594,12 @@ $('#connection-form').addEventListener('submit', async (event) => {
   try {
     const input = serializeItem();
     const pastedClipboard = editorSmartClipboardSource;
+    const onCandidateSaved = editorCandidateOnSaved;
     await api.save(input);
     if (currentDraftId) await api.deleteDraft(currentDraftId);
     currentDraftId = '';
     closeEditor();
+    onCandidateSaved?.();
     let clearedClipboard = false;
     if (pastedClipboard) {
       clearedClipboard = await api.clearClipboardIfMatches(pastedClipboard).catch(() => false);
@@ -3163,6 +3804,22 @@ $('#quick-pairing-button').addEventListener('click', async event => {
     button.disabled = false;
   }
 });
+$('#reload-extension-button')?.addEventListener('click', async (event) => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  try {
+    const count = await api.reloadBrowserExtension();
+    window.OpenKeyletAppearance?.play?.('success');
+    toast(count > 0
+      ? localized(`已通知 ${count} 个浏览器插件热重载`, `Reload signal sent to ${count} browser extension(s)`)
+      : localized('当前没有已连接的浏览器插件', 'No connected browser extensions to reload'));
+    setTimeout(() => { void refresh(false); }, 900);
+  } catch (error) {
+    toast(cleanError(error), 'error');
+  } finally {
+    button.disabled = !state?.browserBridge?.connected;
+  }
+});
 $('#reset-pairing-button').addEventListener('click', async () => {
   if (!await confirmDestructiveAction({
     title: localized('重置浏览器配对？', 'Reset browser pairing?'),
@@ -3320,6 +3977,7 @@ $('#vault-view-toggle')?.addEventListener('click', () => {
   let menu = null;
   let activeSelect = null;
   let activeIndex = -1;
+  let menuOpenedAt = 0;
 
   function ensureMenu() {
     if (menu) return menu;
@@ -3353,7 +4011,13 @@ $('#vault-view-toggle')?.addEventListener('click', () => {
     if (!items.length) return;
     activeIndex = ((nextIndex % items.length) + items.length) % items.length;
     items.forEach((item, index) => item.classList.toggle('is-active', index === activeIndex));
-    items[activeIndex].scrollIntoView({ block: 'nearest' });
+    const activeItem = items[activeIndex];
+    if (activeItem && menu.scrollHeight > menu.clientHeight) {
+      const top = activeItem.offsetTop;
+      const bottom = top + activeItem.offsetHeight;
+      if (top < menu.scrollTop) menu.scrollTop = top;
+      else if (bottom > menu.scrollTop + menu.clientHeight) menu.scrollTop = bottom - menu.clientHeight;
+    }
   }
 
   function commitOption(value) {
@@ -3377,6 +4041,7 @@ $('#vault-view-toggle')?.addEventListener('click', () => {
     closeSelectMenu(false);
     const el = ensureMenu();
     activeSelect = select;
+    menuOpenedAt = performance.now();
     select.classList.add('is-select-open');
     select.setAttribute('aria-expanded', 'true');
     el.replaceChildren();
@@ -3461,7 +4126,7 @@ $('#vault-view-toggle')?.addEventListener('click', () => {
     const select = event.target.closest('select');
     if (select && !select.disabled && !select.multiple && select.options.length) {
       event.preventDefault();
-      select.focus();
+      select.focus({ preventScroll: true });
       openSelectMenu(select);
       return;
     }
@@ -3520,6 +4185,7 @@ $('#vault-view-toggle')?.addEventListener('click', () => {
   window.addEventListener('blur', () => closeSelectMenu(false));
   document.addEventListener('scroll', (event) => {
     if (!activeSelect) return;
+    if (performance.now() - menuOpenedAt < 120) return;
     if (menu && (event.target === menu || menu.contains(event.target))) return;
     closeSelectMenu(false);
   }, true);
@@ -3606,6 +4272,19 @@ async function applySmartParseToEditor(parsed, options = {}) {
     banner.classList.remove('hidden');
   }
   toast(localized(`已智能识别：${parsed.labelZh || parsed.label}`, `Detected: ${parsed.label}`));
+}
+
+async function openCandidateInEditor(candidate, onSaved = null) {
+  if (!candidate?.input) return;
+  await applySmartParseToEditor({
+    input: candidate.input,
+    label: candidate.badge || 'IMPORT',
+    labelZh: candidate.badgeZh || candidate.badge || '导入',
+    summary: candidate.summary || '',
+    warnings: [],
+    totpUri: candidate.totpUri || '',
+  });
+  editorCandidateOnSaved = typeof onSaved === 'function' ? onSaved : null;
 }
 
 async function smartIngestText(rawText, options = {}) {
@@ -3736,7 +4415,7 @@ document.addEventListener('paste', (event) => {
   const canPasteInBlankEditor = !$('#connection-modal').classList.contains('hidden')
     && !$('#template-picker').classList.contains('hidden');
   if (modalOpen && !canPasteInBlankEditor) return;
-  if (!modalOpen && activePage !== 'connections') return;
+  if (!modalOpen && activePage !== 'connections' && activePage !== 'import') return;
   const dt = event.clipboardData;
   if (!dt) return;
   const imageItem = [...(dt.items || [])].find((item) => item.type?.startsWith('image/'));
@@ -3744,14 +4423,16 @@ document.addEventListener('paste', (event) => {
     const blob = imageItem.getAsFile();
     if (blob) {
       event.preventDefault();
-      void handleSmartFile(blob);
+      if (!modalOpen && activePage === 'import') void window.OpenKeyletImportHub?.handleFiles?.([blob]);
+      else void handleSmartFile(blob);
       return;
     }
   }
   const text = dt.getData('text/plain');
   if (text && text.trim()) {
     event.preventDefault();
-    void smartIngestText(text, { fromClipboard: true });
+    if (!modalOpen && activePage === 'import') window.OpenKeyletImportHub?.handlePasteText?.(text, { fromClipboard: true });
+    else void smartIngestText(text, { fromClipboard: true });
   }
 });
 
@@ -3759,31 +4440,136 @@ document.addEventListener('paste', (event) => {
   let dragDepth = 0;
   const overlay = $('#smart-drop-overlay');
   const isFileDrag = (event) => Array.from(event.dataTransfer?.types || []).includes('Files');
+  const splitTransferredFiles = (dt) => {
+    const files = Array.from(dt?.files || []);
+    const mvaultFiles = files.filter((f) => /\.mvault$/i.test(f?.name || ''));
+    const otherFiles = files.filter((f) => !/\.mvault$/i.test(f?.name || ''));
+    return { files, mvaultFiles, otherFiles };
+  };
   document.addEventListener('dragenter', (event) => {
-    if (!ownerLockState?.unlocked || !isFileDrag(event)) return;
+    if (!isFileDrag(event)) return;
     event.preventDefault();
     dragDepth++;
-    if (activePage === 'connections') overlay?.classList.remove('hidden');
+    const { files, mvaultFiles, otherFiles } = splitTransferredFiles(event.dataTransfer);
+    if (mvaultFiles.length && otherFiles.length) {
+      overlay?.classList.add('hidden');
+      setGlobalMvaultDropOverlay(true, {
+        mode: 'mixed',
+        fileNames: files.slice(0, 3).map((f) => f.name),
+        totalCount: files.length,
+      });
+      return;
+    }
+    if (mvaultFiles.length) {
+      overlay?.classList.add('hidden');
+      setGlobalMvaultDropOverlay(true, {
+        mode: 'mvault',
+        fileNames: [mvaultFiles[0].name],
+        totalCount: mvaultFiles.length,
+      });
+      return;
+    }
+    if (!ownerLockState?.unlocked) return;
+    if (activePage !== 'import') {
+      overlay?.classList.add('hidden');
+      setGlobalMvaultDropOverlay(true, {
+        mode: 'universal',
+        fileNames: otherFiles.slice(0, 3).map((f) => f.name),
+        totalCount: otherFiles.length,
+      });
+    }
   });
   document.addEventListener('dragover', (event) => {
-    if (!ownerLockState?.unlocked || !isFileDrag(event)) return;
+    if (!isFileDrag(event)) return;
     event.preventDefault();
     if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
   });
   document.addEventListener('dragleave', (event) => {
     if (!isFileDrag(event)) return;
     dragDepth = Math.max(0, dragDepth - 1);
-    if (dragDepth === 0) overlay?.classList.add('hidden');
+    if (dragDepth === 0) {
+      overlay?.classList.add('hidden');
+      setGlobalMvaultDropOverlay(false);
+    }
   });
-  document.addEventListener('drop', (event) => {
+  document.addEventListener('drop', async (event) => {
     if (!isFileDrag(event)) return;
     event.preventDefault();
     dragDepth = 0;
     overlay?.classList.add('hidden');
-    if (!ownerLockState?.unlocked) return;
-    const file = event.dataTransfer?.files?.[0];
-    if (file) void handleSmartFile(file);
+    setGlobalMvaultDropOverlay(false);
+    const { mvaultFiles, otherFiles } = splitTransferredFiles(event.dataTransfer);
+    if (otherFiles.length) {
+      await refreshOwnerLock();
+      if (!ownerLockState?.unlocked) {
+        toast(localized('请先解锁密码库后再拖入文件', 'Unlock OpenKeylet first before dropping files'), 'error');
+      } else {
+        if (activePage !== 'import') await selectPage('import');
+        await window.OpenKeyletImportHub?.handleFiles?.(otherFiles);
+      }
+    }
+    if (mvaultFiles.length) {
+      await handleDroppedMvaultFile(mvaultFiles[0]);
+    }
   });
+
+  if (window.__TAURI__?.event?.listen) {
+    window.__TAURI__.event.listen('native-file-drag', (event) => {
+      const payload = event?.payload || {};
+      if (payload.state === 'enter' && (payload.hasMvault || Number(payload.otherCount || 0) > 0)) {
+        overlay?.classList.add('hidden');
+        const mode = payload.hasMvault && Number(payload.otherCount || 0) > 0
+          ? 'mixed'
+          : payload.hasMvault
+            ? 'mvault'
+            : 'universal';
+        setGlobalMvaultDropOverlay(true, {
+          mode,
+          fileNames: Array.isArray(payload.fileNames) ? payload.fileNames : [],
+          totalCount: Number(payload.totalCount || 0),
+          hasFolder: Boolean(payload.hasFolder),
+        });
+      } else {
+        setGlobalMvaultDropOverlay(false);
+      }
+    });
+    window.__TAURI__.event.listen('native-files-dropped', async (event) => {
+      const payload = event?.payload || {};
+      overlay?.classList.add('hidden');
+      setGlobalMvaultDropOverlay(false);
+      if (payload.locked) {
+        toast(localized('请先解锁密码库后再拖入文件', 'Unlock OpenKeylet first before dropping files'), 'error');
+        await refreshOwnerLock(false);
+        return;
+      }
+      if (payload.error) {
+        toast(cleanError(payload.error), 'error');
+        return;
+      }
+      if (activePage !== 'import') await selectPage('import');
+      await window.OpenKeyletImportHub?.handleNativeDropPayload?.(payload);
+    });
+    window.__TAURI__.event.listen('mvault-file-dropped', async (event) => {
+      const payload = event?.payload || {};
+      overlay?.classList.add('hidden');
+      setGlobalMvaultDropOverlay(false);
+      if (payload.locked) {
+        toast(localized('请先解锁密码库后再拖入 .mvault 备份', 'Unlock OpenKeylet first before dropping a .mvault backup'), 'error');
+        await refreshOwnerLock(false);
+        return;
+      }
+      if (payload.error) {
+        toast(cleanError(payload.error), 'error');
+        return;
+      }
+      if (payload.fileName) {
+        await openMvaultPreviewFlow({
+          fileName: payload.fileName,
+          requiresPassword: Boolean(payload.requiresPassword),
+        });
+      }
+    });
+  }
 }
 
 {
@@ -3842,6 +4628,26 @@ document.addEventListener('paste', (event) => {
 }
 
 async function bootstrap() {
+  window.OpenKeyletImportHub?.init?.({
+    invoke,
+    localized,
+    toast,
+    cleanError,
+    getLang: () => language,
+    getSearchQuery: () => pageSearch.import || '',
+    ensureUnlocked: async () => {
+      await refreshOwnerLock();
+      return Boolean(ownerLockState?.unlocked);
+    },
+    onStatsChange: () => renderMetrics(),
+    refreshVault: () => refresh(),
+    goToItems: () => void selectPage('connections'),
+    goToImport: () => void selectPage('import'),
+    openBackupRestore: () => $('#header-import-backup-button')?.click(),
+    openDroppedMvault: (file) => handleDroppedMvaultFile(file),
+    openMvaultPreview: (picked) => openMvaultPreviewFlow(picked),
+    openCandidateInEditor: (candidate, onSaved) => openCandidateInEditor(candidate, onSaved),
+  });
   applyLanguage();
   syncVaultViewMode();
   initLettering();

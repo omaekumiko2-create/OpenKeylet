@@ -1310,12 +1310,14 @@ impl Vault {
         let document = self.read_document()?;
         self.with_key(|key| {
             let mut simulated = document.connections;
+            let mut simulated_trash = document.trash;
             let mut stats = crate::backup::BackupMergeStats {
                 total_items: imported.len(),
                 trash_count: trash.len(),
+                items: Vec::with_capacity(imported.len() + trash.len()),
                 ..Default::default()
             };
-            for (public, secrets) in imported {
+            for (index, (public, secrets)) in imported.iter().enumerate() {
                 stats.passkey_count += secrets.passkeys.len();
                 stats.history_entries += secrets.password_history.len();
                 let mut stored = stored_from_portable(public, secrets, key)?;
@@ -1328,6 +1330,15 @@ impl Vault {
                 if stats.sample_names.len() < 6 {
                     stats.sample_names.push(stored.name.clone());
                 }
+
+                let public_view = stored.public(Some(secrets));
+                let summary = backup_preview_summary(&public_view);
+                let original_name = stored.name.clone();
+                let item_id = stored.id.to_string();
+                let item_type = public_view.item_type.clone();
+                let folder = public_view.folder.clone();
+                let passkey_count = secrets.passkeys.len();
+                let history_count = secrets.password_history.len();
 
                 let has_requested_name = simulated
                     .iter()
@@ -1345,10 +1356,25 @@ impl Vault {
                 }
                 if duplicate {
                     stats.duplicate_skipped += 1;
+                    stats.items.push(crate::backup::BackupPreviewItem {
+                        index,
+                        kind: "item".to_owned(),
+                        id: item_id,
+                        name: original_name,
+                        item_type,
+                        folder,
+                        summary,
+                        status: "duplicate".to_owned(),
+                        assigned_name: None,
+                        passkey_count,
+                        history_count,
+                        deleted_at: None,
+                    });
                     continue;
                 }
                 let assigned = unique_import_name(&simulated, &stored.name);
-                if assigned != stored.name {
+                let is_conflict = assigned != stored.name;
+                if is_conflict {
                     stats.name_conflicts += 1;
                     if stats.conflict_renames.len() < 6 {
                         stats
@@ -1356,9 +1382,67 @@ impl Vault {
                             .push(format!("{} → {}", stored.name, assigned));
                     }
                 }
-                stored.name = assigned;
+                stored.name = assigned.clone();
                 simulated.push(stored);
                 stats.new_items += 1;
+                stats.items.push(crate::backup::BackupPreviewItem {
+                    index,
+                    kind: "item".to_owned(),
+                    id: item_id,
+                    name: original_name,
+                    item_type,
+                    folder,
+                    summary,
+                    status: if is_conflict {
+                        "conflict".to_owned()
+                    } else {
+                        "new".to_owned()
+                    },
+                    assigned_name: is_conflict.then_some(assigned),
+                    passkey_count,
+                    history_count,
+                    deleted_at: None,
+                });
+            }
+            for (index, entry) in trash.iter().enumerate() {
+                let stored = stored_from_portable(&entry.connection, &entry.secrets, key)?;
+                let public_view = stored.public(Some(&entry.secrets));
+                let summary = backup_preview_summary(&public_view);
+                let mut duplicate = false;
+                for existing in simulated_trash.iter().map(|e| &e.connection) {
+                    if same_item_name(&existing.name, &stored.name) {
+                        let existing_secrets: SecretBundle =
+                            key.decrypt(&existing.encrypted_secrets)?;
+                        if same_portable_content(existing, &existing_secrets, &stored, &entry.secrets)
+                        {
+                            duplicate = true;
+                            break;
+                        }
+                    }
+                }
+                let status = if duplicate {
+                    "duplicate".to_owned()
+                } else {
+                    simulated_trash.push(crate::model::StoredTrashItem {
+                        deleted_at: entry.deleted_at.clone(),
+                        connection: stored.clone(),
+                    });
+                    "new".to_owned()
+                };
+                stats.items.push(crate::backup::BackupPreviewItem {
+                    index,
+                    kind: "trash".to_owned(),
+                    id: stored.id.to_string(),
+                    name: stored.name,
+                    item_type: public_view.item_type,
+                    folder: public_view.folder,
+                    summary,
+                    status,
+                    assigned_name: None,
+                    passkey_count: entry.secrets.passkeys.len(),
+                    history_count: entry.secrets.password_history.len(),
+                    deleted_at: Some(entry.deleted_at.clone()),
+                });
             }
             Ok(stats)
         })
@@ -1932,6 +2016,56 @@ fn split_numbered_import_name(name: &str) -> Option<(&str, usize)> {
     let index = without_closing[opening + 1..].parse::<usize>().ok()?;
     ((2..usize::MAX).contains(&index) && opening > 0)
         .then_some((&without_closing[..opening], index))
+}
+
+fn backup_preview_summary(public: &PublicConnection) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    let host = public
+        .modules
+        .iter()
+        .find(|m| m.kind == "host" && !m.value.trim().is_empty())
+        .map(|m| m.value.trim());
+    let port = public
+        .modules
+        .iter()
+        .find(|m| m.kind == "port" && !m.value.trim().is_empty())
+        .map(|m| m.value.trim());
+    let url = public
+        .modules
+        .iter()
+        .find(|m| m.kind == "url" && !m.value.trim().is_empty())
+        .map(|m| m.value.trim())
+        .or_else(|| {
+            public
+                .login_uris
+                .iter()
+                .map(|u| u.uri.trim())
+                .find(|u| !u.is_empty())
+        });
+
+    if let Some(h) = host {
+        if let Some(p) = port {
+            parts.push(format!("{h}:{p}"));
+        } else {
+            parts.push(h.to_owned());
+        }
+    } else if let Some(u) = url {
+        let compact = u
+            .strip_prefix("https://")
+            .or_else(|| u.strip_prefix("http://"))
+            .unwrap_or(u)
+            .trim_end_matches('/');
+        if !compact.is_empty() {
+            parts.push(compact.chars().take(64).collect());
+        }
+    }
+
+    let desc = public.description.trim();
+    if !desc.is_empty() && parts.is_empty() {
+        parts.push(desc.chars().take(64).collect());
+    }
+
+    parts.join(" · ")
 }
 
 fn unique_import_name(connections: &[StoredConnection], requested: &str) -> String {

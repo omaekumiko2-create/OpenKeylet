@@ -1,18 +1,12 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400">
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#19191e"/>
+      <stop offset="0%" stop-color="#1b1b21"/>
       <stop offset="100%" stop-color="#09090b"/>
     </linearGradient>
-    <linearGradient id="rim" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="rgba(255,255,255,0.22)"/>
-      <stop offset="100%" stop-color="rgba(255,255,255,0.06)"/>
-    </linearGradient>
   </defs>
-  <rect x="12" y="12" width="376" height="376" rx="88" fill="url(#bg)"/>
-  <rect x="15" y="15" width="370" height="370" rx="85" fill="none" stroke="url(#rim)" stroke-width="6"/>
-  <g transform="translate(80 80) scale(0.6)">
-    <path fill="#f4f4f5" fill-rule="evenodd" d="M24 8H276A16 16 0 0 1 292 24V276A16 16 0 0 1 276 292H24A16 16 0 0 1 8 276V24A16 16 0 0 1 24 8ZM124 108H176A16 16 0 0 1 192 124V176A16 16 0 0 1 176 192H124A16 16 0 0 1 108 176V124A16 16 0 0 1 124 108Z"/>
-    <path fill="#a1a1aa" d="M324 208H376A16 16 0 0 1 392 224V376A16 16 0 0 1 376 392H224A16 16 0 0 1 208 376V324A16 16 0 0 1 224 308H292A16 16 0 0 0 308 292V224A16 16 0 0 1 324 208Z"/>
-  </g>
+  <rect x="8" y="8" width="240" height="240" rx="55" fill="url(#bg)"/>
+  <rect x="10" y="10" width="236" height="236" rx="53" fill="none" stroke="rgba(255,255,255,0.20)" stroke-width="4"/>
+  <path fill="#f4f4f5" fill-rule="evenodd" d="M54 46H156A8 8 0 0 1 164 54V156A8 8 0 0 1 156 164H54A8 8 0 0 1 46 156V54A8 8 0 0 1 54 46ZM90 85H120A5 5 0 0 1 125 90V120A5 5 0 0 1 120 125H90A5 5 0 0 1 85 120V90A5 5 0 0 1 90 85Z"/>
+  <path fill="#a1a1aa" d="M177 131H203A7 7 0 0 1 210 138V203A7 7 0 0 1 203 210H138A7 7 0 0 1 131 203V177A7 7 0 0 1 138 170H163A7 7 0 0 0 170 163V138A7 7 0 0 1 177 131Z"/>
 </svg>

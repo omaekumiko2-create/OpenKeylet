@@ -5,16 +5,24 @@ let connectTask;
 let forceReconnectAfterCurrent = false;
 const focusedFrameByTab = new Map();
 const JOB_TIMEOUT_MS = 35_000;
+const EXTENSION_VERSION = chrome.runtime.getManifest?.().version || "";
 // Pairing tokens belong to the worker and extension UI, never content scripts.
 const storageReady = chrome.storage.local.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" });
 
-chrome.runtime.onMessage.addListener((message, sender) => {
+chrome.runtime.onMessage.addListener((message, sender, respond) => {
   if (["openkeylet-focus", "kru-focus"].includes(message?.type) && sender.tab?.id != null) {
     focusedFrameByTab.set(sender.tab.id, sender.frameId ?? 0);
     return;
   }
   if (message?.type === "bridge-config-updated" && trustedUi(sender, "popup.html")) {
     requestConnect({ force: true });
+    respond({ ok: true });
+    return;
+  }
+  if (message?.type === "reload-extension" && trustedUi(sender, "popup.html")) {
+    respond({ ok: true });
+    setTimeout(() => chrome.runtime.reload(), 20);
+    return;
   }
 });
 
@@ -93,11 +101,41 @@ function disposeSocket(ws, close = false) {
   return true;
 }
 
+function normalizeBridgeHost(raw) {
+  const host = String(raw || "127.0.0.1").trim();
+  if (!host || /\s|[/@?#\\]/.test(host)) return "127.0.0.1";
+  return host;
+}
+
+function formatHostForUrl(host) {
+  return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+}
+
+function resolveBridgeTarget(stored = {}) {
+  const host = normalizeBridgeHost(stored.bridgeHost);
+  const port = Number.isInteger(stored.bridgePort) && stored.bridgePort >= 1 && stored.bridgePort <= 65535
+    ? stored.bridgePort
+    : 39272;
+  const tls = stored.bridgeTls === true;
+  const urlHost = formatHostForUrl(host);
+  const httpScheme = tls ? "https" : "http";
+  const wsScheme = tls ? "wss" : "ws";
+  return {
+    host,
+    port,
+    tls,
+    httpOrigin: `${httpScheme}://${urlHost}:${port}`,
+    wsUrl: `${wsScheme}://${urlHost}:${port}/extension`,
+    label: `${tls ? "wss://" : ""}${urlHost}:${port}`,
+  };
+}
+
 async function handleDisconnect(ws) {
   if (!disposeSocket(ws, true)) return;
   failBridgeRequests();
-  const { bridgePort = 39272 } = await chrome.storage.local.get("bridgePort");
-  await setStatus("disconnected", `127.0.0.1:${bridgePort}`);
+  const stored = await chrome.storage.local.get(["bridgeHost", "bridgePort", "bridgeTls"]);
+  const target = resolveBridgeTarget(stored);
+  await setStatus("disconnected", target.label);
   reconnectAfter();
 }
 
@@ -116,9 +154,9 @@ function startHeartbeat(ws) {
   }, 20000);
 }
 
-async function claimPairing(port) {
+async function claimPairing(target) {
   try {
-    const response = await fetch(`http://127.0.0.1:${port}/claim`, { method: "POST" });
+    const response = await fetch(`${target.httpOrigin}/claim`, { method: "POST" });
     if (!response.ok) return false;
     const payload = await response.json();
     if (!payload?.token || !payload?.port) return false;
@@ -136,23 +174,31 @@ async function connectOnce(force = false) {
   if (socket) {
     disposeSocket(socket, true);
   }
-  const { bridgePort = 39272, bridgeToken = "" } = await chrome.storage.local.get([
+  const stored = await chrome.storage.local.get([
+    "bridgeHost",
     "bridgePort",
+    "bridgeTls",
     "bridgeToken",
   ]);
+  const target = resolveBridgeTarget(stored);
+  const bridgeToken = stored.bridgeToken || "";
   if (!bridgeToken) {
-    await setStatus("waiting", `127.0.0.1:${bridgePort}`);
-    if (await claimPairing(bridgePort)) {
+    await setStatus("waiting", target.label);
+    if (await claimPairing(target)) {
       reconnectAfter(50);
       return;
     }
     reconnectAfter();
     return;
   }
-  await setStatus("connecting", `127.0.0.1:${bridgePort}`);
-  const ws = new WebSocket(`ws://127.0.0.1:${bridgePort}/extension`);
+  await setStatus("connecting", target.label);
+  const ws = new WebSocket(target.wsUrl);
   socket = ws;
-  ws.onopen = () => ws.send(JSON.stringify({ type: "auth", token: bridgeToken }));
+  ws.onopen = () => ws.send(JSON.stringify({
+    type: "auth",
+    token: bridgeToken,
+    extensionVersion: EXTENSION_VERSION,
+  }));
   ws.onmessage = async (event) => {
     let message;
     try {
@@ -161,8 +207,27 @@ async function connectOnce(force = false) {
       return;
     }
     if (message.type === "rpc-result") { finishBridgeRequest(message); return; }
+    if (message.type === "reload") {
+      chrome.runtime.reload();
+      return;
+    }
     if (message.type === "ready") {
-      await setStatus("connected", `127.0.0.1:${bridgePort}`);
+      const appVersion = typeof message.appVersion === "string" ? message.appVersion.trim() : "";
+      await chrome.storage.local.set({
+        desktopAppVersion: appVersion,
+        extensionVersion: EXTENSION_VERSION,
+      });
+      if (appVersion && EXTENSION_VERSION && appVersion !== EXTENSION_VERSION) {
+        const { lastAutoReloadedForVersion = "" } = await chrome.storage.local.get("lastAutoReloadedForVersion");
+        if (lastAutoReloadedForVersion !== appVersion) {
+          await chrome.storage.local.set({ lastAutoReloadedForVersion: appVersion });
+          chrome.runtime.reload();
+          return;
+        }
+      } else if (appVersion && appVersion === EXTENSION_VERSION) {
+        await chrome.storage.local.remove("lastAutoReloadedForVersion");
+      }
+      await setStatus("connected", target.label);
       startHeartbeat(ws);
       await announceIfFocused();
       return;
@@ -170,7 +235,7 @@ async function connectOnce(force = false) {
     if (message.type === "pong") return;
     if (message.type === "auth-error") {
       await chrome.storage.local.remove("bridgeToken");
-      await setStatus("waiting", `127.0.0.1:${bridgePort}`);
+      await setStatus("waiting", target.label);
       disposeSocket(ws, true);
       reconnectAfter();
       return;
@@ -266,5 +331,5 @@ function writeToFocusedControl(value, expiresAt, submit = false) {
   }
 }
 
-importScripts("form-reader.js", "provider.js", "capture.js", "agent-actions.js");
+importScripts("qr-decoder.js", "form-reader.js", "provider.js", "capture.js", "agent-actions.js");
 requestConnect();

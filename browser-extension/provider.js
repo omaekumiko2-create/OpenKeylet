@@ -33,60 +33,227 @@ function getQuickCapture(id) {
   return draft;
 }
 
+async function decodeVisibleTabQr(windowId, regions = []) {
+  if (typeof OffscreenCanvas !== "function" || typeof createImageBitmap !== "function" || !self.OpenKeyletQRDecoder) {
+    return null;
+  }
+  const dataUrl = await chrome.tabs.captureVisibleTab(windowId, { format: "png" }).catch(() => null);
+  if (!dataUrl) return null;
+  const blob = await (await fetch(dataUrl)).blob();
+  const bitmap = await createImageBitmap(blob);
+  try {
+    const bw = bitmap.width;
+    const bh = bitmap.height;
+    const tryCrop = (sx, sy, sw, sh) => {
+      if (sw < 24 || sh < 24) return null;
+      const maxSide = 480;
+      const scale = Math.min(1, maxSide / Math.max(sw, sh));
+      const dw = Math.max(24, Math.round(sw * scale));
+      const dh = Math.max(24, Math.round(sh * scale));
+      const pad = 16;
+      const canvas = new OffscreenCanvas(dw + pad * 2, dh + pad * 2);
+      const ctx = canvas.getContext("2d", { willReadFrequently: true });
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.imageSmoothingEnabled = scale < 1;
+      ctx.drawImage(bitmap, sx, sy, sw, sh, pad, pad, dw, dh);
+      const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      return self.OpenKeyletQRDecoder.decode(imgData);
+    };
+
+    const found = [];
+    // 1. Scan candidate bounding boxes first (fast & high-precision)
+    for (const r of regions.slice(0, 12)) {
+      const dpr = r.dpr || 1;
+      const padPx = Math.round(16 * dpr);
+      const sx = Math.max(0, Math.floor(r.x * dpr) - padPx);
+      const sy = Math.max(0, Math.floor(r.y * dpr) - padPx);
+      const sw = Math.min(bw - sx, Math.ceil(r.width * dpr) + padPx * 2);
+      const sh = Math.min(bh - sy, Math.ceil(r.height * dpr) + padPx * 2);
+      const val = tryCrop(sx, sy, sw, sh);
+      if (val) found.push(val.trim());
+    }
+    if (found.some(v => v.toLowerCase().startsWith("otpauth://"))) {
+      return found.find(v => v.toLowerCase().startsWith("otpauth://"));
+    }
+
+    // 2. Scan full visible viewport (handles CSS-grid/table QR codes and Shadow DOM)
+    for (const maxSide of [1200, 720]) {
+      const scale = Math.min(1, maxSide / Math.max(bw, bh));
+      const dw = Math.round(bw * scale);
+      const dh = Math.round(bh * scale);
+      const canvas = new OffscreenCanvas(dw, dh);
+      const ctx = canvas.getContext("2d", { willReadFrequently: true });
+      ctx.drawImage(bitmap, 0, 0, dw, dh);
+      const val = self.OpenKeyletQRDecoder.decode(ctx.getImageData(0, 0, dw, dh));
+      if (val) {
+        const trimmed = val.trim();
+        if (trimmed.toLowerCase().startsWith("otpauth://")) return trimmed;
+        found.push(trimmed);
+      }
+    }
+    return found[0] || null;
+  } finally {
+    bitmap.close?.();
+  }
+}
+
 async function scanQrOnTab(tabId, targetSrcUrl = "") {
+  // Inject offline pure-JS QR decoder into isolated world (works on Windows/Linux/macOS)
+  await chrome.scripting.executeScript({
+    target: { tabId, frameIds: [0] },
+    files: ["qr-decoder.js"],
+  }).catch(() => {});
+
   const [execution] = await chrome.scripting.executeScript({
     target: { tabId, frameIds: [0] },
     func: async (srcFilter) => {
-      if (typeof BarcodeDetector !== "function") {
-        return { error: "当前浏览器不支持二维码扫描 / BarcodeDetector unavailable" };
+      const found = [];
+      const regions = [];
+      const dpr = window.devicePixelRatio || 1;
+      const recordRegion = (el) => {
+        const r = el.getBoundingClientRect();
+        if (r.width >= 40 && r.height >= 40 && r.width <= 900 && r.height <= 900
+            && r.bottom > 0 && r.right > 0 && r.top < window.innerHeight && r.left < window.innerWidth) {
+          regions.push({ x: r.left, y: r.top, width: r.width, height: r.height, dpr });
+        }
+      };
+
+      // Pass 0: Check direct otpauth:// links or query parameters
+      for (const a of document.querySelectorAll('a[href^="otpauth://"]')) {
+        const href = String(a.getAttribute("href") || "").trim();
+        if (href) found.push(href);
       }
-      const detector = new BarcodeDetector({ formats: ["qr_code"] });
-      const candidates = [];
-      const imgs = [...document.querySelectorAll("img")].filter((el) => el.complete && el.naturalWidth > 20 && el.naturalHeight > 20);
+      if (found.length) return { value: found[0] };
+
+      const extractOtpauthFromUrl = (rawUrl) => {
+        if (!rawUrl || rawUrl.length > 4096) return null;
+        try {
+          if (rawUrl.toLowerCase().startsWith("otpauth://")) return rawUrl;
+          const u = new URL(rawUrl, location.href);
+          for (const [, v] of u.searchParams.entries()) {
+            if (v && v.toLowerCase().startsWith("otpauth://")) return v.trim();
+          }
+        } catch {}
+        return null;
+      };
+
+      const nativeDetector = typeof BarcodeDetector === "function"
+        ? new BarcodeDetector({ formats: ["qr_code"] })
+        : null;
+      const jsDecoder = window.OpenKeyletQRDecoder?.decode;
+
+      const decodeElementWithCanvas = (el, natW, natH) => {
+        if (!jsDecoder || !natW || !natH) return null;
+        try {
+          const pad = 20;
+          const targetMax = 440;
+          const targetMin = 240;
+          let scale = 1;
+          const maxDim = Math.max(natW, natH);
+          if (maxDim > targetMax) scale = targetMax / maxDim;
+          else if (maxDim < targetMin) scale = Math.ceil(targetMin / maxDim);
+          const dw = Math.round(natW * scale);
+          const dh = Math.round(natH * scale);
+          const canvas = document.createElement("canvas");
+          canvas.width = dw + pad * 2;
+          canvas.height = dh + pad * 2;
+          const ctx = canvas.getContext("2d", { willReadFrequently: true });
+          ctx.fillStyle = "#ffffff";
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.imageSmoothingEnabled = scale < 1;
+          ctx.drawImage(el, pad, pad, dw, dh);
+          const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          return jsDecoder(imageData);
+        } catch {
+          return null; // Tainted cross-origin image -> handled by screenshot fallback
+        }
+      };
+
+      const tryDetect = async (el, natW, natH) => {
+        if (nativeDetector) {
+          try {
+            const codes = await nativeDetector.detect(el);
+            for (const c of codes) if (c?.rawValue) found.push(String(c.rawValue).trim());
+            if (found.some(v => v.toLowerCase().startsWith("otpauth://"))) return true;
+          } catch {}
+        }
+        const jsVal = decodeElementWithCanvas(el, natW, natH);
+        if (jsVal) {
+          found.push(String(jsVal).trim());
+          if (jsVal.toLowerCase().startsWith("otpauth://")) return true;
+        }
+        return false;
+      };
+
+      const imgs = [...document.querySelectorAll("img")].filter(el => el.complete && el.naturalWidth > 20 && el.naturalHeight > 20);
+      const orderedImgs = [];
       if (srcFilter) {
-        const exact = imgs.find((el) => el.currentSrc === srcFilter || el.src === srcFilter);
-        if (exact) candidates.push(exact);
+        const exact = imgs.find(el => el.currentSrc === srcFilter || el.src === srcFilter);
+        if (exact) orderedImgs.push(exact);
       }
       for (const el of imgs) {
-        if (!candidates.includes(el) && el.getClientRects().length) candidates.push(el);
+        const embedded = extractOtpauthFromUrl(el.currentSrc || el.src);
+        if (embedded) return { value: embedded };
+        if (!orderedImgs.includes(el) && el.getClientRects().length) orderedImgs.push(el);
       }
-      for (const canvas of document.querySelectorAll("canvas")) {
-        if (canvas.width > 20 && canvas.height > 20 && canvas.getClientRects().length) candidates.push(canvas);
+
+      for (const el of orderedImgs.slice(0, 24)) {
+        recordRegion(el);
+        if (await tryDetect(el, el.naturalWidth, el.naturalHeight)) break;
       }
-      const svgs = [...document.querySelectorAll("svg")].filter((el) => {
-        const r = el.getBoundingClientRect();
-        return r.width >= 48 && r.height >= 48 && r.width <= 800 && r.height <= 800;
-      });
-      const found = [];
-      for (const el of candidates.slice(0, 24)) {
-        try {
-          const codes = await detector.detect(el);
-          for (const c of codes) if (c?.rawValue) found.push(String(c.rawValue).trim());
-        } catch {
-          // Cross-origin tainted images are skipped safely.
+
+      if (!found.some(v => v.toLowerCase().startsWith("otpauth://"))) {
+        for (const canvas of [...document.querySelectorAll("canvas")].slice(0, 16)) {
+          if (canvas.width > 20 && canvas.height > 20 && canvas.getClientRects().length) {
+            recordRegion(canvas);
+            if (await tryDetect(canvas, canvas.width, canvas.height)) break;
+          }
         }
       }
-      if (!found.some((v) => v.toLowerCase().startsWith("otpauth://"))) {
+
+      if (!found.some(v => v.toLowerCase().startsWith("otpauth://"))) {
+        const svgs = [...document.querySelectorAll("svg")].filter(el => {
+          const r = el.getBoundingClientRect();
+          return r.width >= 48 && r.height >= 48 && r.width <= 800 && r.height <= 800;
+        });
         for (const svg of svgs.slice(0, 12)) {
+          recordRegion(svg);
           try {
-            const xml = new XMLSerializer().serializeToString(svg);
+            const rect = svg.getBoundingClientRect();
+            const clone = svg.cloneNode(true);
+            if (!clone.getAttribute("xmlns")) clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+            if (!clone.getAttribute("width")) clone.setAttribute("width", String(Math.round(rect.width)));
+            if (!clone.getAttribute("height")) clone.setAttribute("height", String(Math.round(rect.height)));
+            const xml = new XMLSerializer().serializeToString(clone);
             const url = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(xml)}`;
             const img = new Image();
             await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = url; });
-            const codes = await detector.detect(img);
-            for (const c of codes) if (c?.rawValue) found.push(String(c.rawValue).trim());
+            if (await tryDetect(img, img.naturalWidth || Math.round(rect.width), img.naturalHeight || Math.round(rect.height))) break;
           } catch {}
         }
       }
-      if (!found.length) return { error: "未在当前网页检测到可读的 2FA 二维码 / No readable QR code found on this page" };
-      const totp = found.find((v) => v.toLowerCase().startsWith("otpauth://"));
-      return { value: totp || found[0] };
+
+      if (found.length) {
+        const totp = found.find(v => v.toLowerCase().startsWith("otpauth://"));
+        return { value: totp || found[0] };
+      }
+      return { value: null, regions };
     },
     args: [targetSrcUrl || ""],
   });
+
   const res = execution?.result;
-  if (!res || res.error) throw new Error(res?.error || "扫描二维码失败 / Could not scan QR code");
-  return res.value;
+  if (res?.value) return res.value;
+
+  // Pass 2: Visible tab screenshot fallback (handles cross-origin images, CSS tables, Shadow DOM)
+  const tab = await chrome.tabs.get(tabId).catch(() => null);
+  if (tab?.windowId != null) {
+    const shotVal = await decodeVisibleTabQr(tab.windowId, res?.regions || []);
+    if (shotVal) return shotVal;
+  }
+
+  throw new Error("未在当前网页检测到可读的 2FA 二维码 / No readable QR code found on this page");
 }
 
 function registerContextMenus() {

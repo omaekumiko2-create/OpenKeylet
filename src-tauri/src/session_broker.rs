@@ -134,8 +134,8 @@ impl Drop for SessionBroker {
 }
 
 fn handle_client(mut stream: TcpStream, expected_token: &str, session_id: &str, vault: &Vault) {
-    let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
-    let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(1500)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(1500)));
     let mut reader = BufReader::new(&stream);
     let mut line = String::new();
     if reader.read_line(&mut line).is_err() || line.len() > 256 {
@@ -190,9 +190,9 @@ pub fn try_fetch_ram_key(data_dir: &Path) -> Option<(Zeroizing<[u8; 32]>, String
     let bytes = fs::read(data_dir.join(BROKER_FILE)).ok()?;
     let descriptor: BrokerDescriptor = serde_json::from_slice(&bytes).ok()?;
     let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, descriptor.port));
-    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_millis(250)).ok()?;
-    let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
-    let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_millis(1000)).ok()?;
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(1500)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(1500)));
     let req = Zeroizing::new(format!("{}\n", descriptor.token));
     stream.write_all(req.as_bytes()).ok()?;
     stream.flush().ok()?;

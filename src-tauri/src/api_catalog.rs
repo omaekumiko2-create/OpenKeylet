@@ -289,6 +289,56 @@ const PROFILES: &[ApiProfileEntry] = &[
             ..UNKNOWN
         },
     ),
+    (
+        &["api.sendgrid.com"],
+        &["sendgrid"],
+        &["SG."],
+        ApiProfile {
+            display_name: "SendGrid",
+            default_base_url: "https://api.sendgrid.com/v3/",
+            ..UNKNOWN
+        },
+    ),
+    (
+        &["dashscope.aliyuncs.com"],
+        &["dashscope", "qwen", "tongyi"],
+        &[],
+        ApiProfile {
+            display_name: "DashScope",
+            default_base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1/",
+            ..UNKNOWN
+        },
+    ),
+    (
+        &["api.moonshot.cn"],
+        &["moonshot", "kimi"],
+        &[],
+        ApiProfile {
+            display_name: "Moonshot",
+            default_base_url: "https://api.moonshot.cn/v1/",
+            ..UNKNOWN
+        },
+    ),
+    (
+        &["api.siliconflow.cn"],
+        &["siliconflow"],
+        &[],
+        ApiProfile {
+            display_name: "SiliconFlow",
+            default_base_url: "https://api.siliconflow.cn/v1/",
+            ..UNKNOWN
+        },
+    ),
+    (
+        &["open.bigmodel.cn"],
+        &["zhipu", "bigmodel", "glm"],
+        &[],
+        ApiProfile {
+            display_name: "Zhipu AI",
+            default_base_url: "https://open.bigmodel.cn/api/paas/v4/",
+            ..UNKNOWN
+        },
+    ),
 ];
 
 pub fn infer(name: &str, base_url: &str, secret: &str) -> ApiProfile {

@@ -75,7 +75,8 @@ async function announceLoginCapture(draft) {
   const current = await chrome.tabs.get(draft.tabId).catch(() => null);
   if (!current?.url || new URL(current.url).origin !== draft.origin) { clearLoginCapture(draft.tabId, draft.id); return; }
   if (getLoginCapture(draft.tabId)?.id !== draft.id) return;
-  await chrome.action.setBadgeBackgroundColor({ tabId: draft.tabId, color: "#d46b45" });
+  await chrome.action.setBadgeBackgroundColor({ tabId: draft.tabId, color: "#111114" });
+  await chrome.action.setBadgeTextColor?.({ tabId: draft.tabId, color: "#f4f4f5" }).catch?.(() => {});
   await chrome.action.setBadgeText({ tabId: draft.tabId, text: "+" });
   chrome.tabs.sendMessage(draft.tabId, { type: "openkeylet-capture-notice", available: true }, { frameId: 0 }).catch(() => {});
 }

@@ -98,6 +98,7 @@ try {
   assert.equal(await count(), 0, "Save suggestions are disabled before explicit opt-in");
   const preferences = await context.newPage();
   await preferences.goto(`chrome-extension://${extensionId}/popup.html`);
+  await preferences.locator("#status-pill").click();
   await preferences.locator("#capture-enabled").check();
   await until(() => worker.evaluate(() => captureEnabled), "explicit consent stored");
   await preferences.close();

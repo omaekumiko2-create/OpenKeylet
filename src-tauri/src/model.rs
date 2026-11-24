@@ -818,7 +818,17 @@ pub struct SecurityState {
     pub strong_mode: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeClientInfo {
+    pub peer_ip: String,
+    pub connected_at: String,
+    pub last_used_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extension_version: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BrowserBridgeState {
     pub enabled: bool,
@@ -829,6 +839,23 @@ pub struct BrowserBridgeState {
     pub status: String,
     pub error: String,
     pub endpoint: String,
+    pub app_version: String,
+    pub extension_version: Option<String>,
+    pub extension_outdated: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub bind_address: String,
+    #[serde(default)]
+    pub lan_mode: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ip_allowlist: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_origins: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub clients: Vec<BridgeClientInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_client_ip: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_used_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

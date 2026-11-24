@@ -9,21 +9,25 @@ use mcp_vault::crypto::MasterKey;
 #[cfg(feature = "gui")]
 use mcp_vault::run_gui;
 use mcp_vault::{
+    admin_server::{self, AdminServerConfig, DEFAULT_ADMIN_PORT},
     backup,
     browser::BrowserBridge,
     mcp,
     migration,
     model::{ItemModule, SecretBundle, SettingsPatch},
     smart_ingest,
-    storage::{app_data_dir, resolve_user_path},
+    storage::{app_data_dir, resolve_user_path, uses_explicit_data_dir},
     updater,
     vault::Vault,
 };
 use std::env;
-use std::io::Read;
+use std::io::{BufRead, IsTerminal, Read, Write};
+use std::net::IpAddr;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use tokio::time::sleep;
+use uuid::Uuid;
+use zeroize::Zeroizing;
 
 #[tokio::main]
 async fn main() {
@@ -43,7 +47,7 @@ async fn dispatch() -> Result<()> {
         }
         #[cfg(not(feature = "gui"))]
         anyhow::bail!(
-            "This is the headless version of OpenKeylet; use the mcp stdio, config, browser, or backup subcommand"
+            "This is the headless version of OpenKeylet; use the mcp stdio, config, vault, admin, browser, or backup subcommand"
         );
     }
 
@@ -71,16 +75,16 @@ async fn dispatch() -> Result<()> {
             Ok(())
         }
         [command, action] if command == "browser" && action == "status" => {
-            print_browser_status(&vault)
+            print_browser_status(&vault).await
         }
         [command, action] if command == "browser" && action == "enable" => {
-            set_browser_enabled(&vault, true, None)
+            set_browser_enabled(&vault, true, None).await
         }
         [command, action, port] if command == "browser" && action == "enable" => {
-            set_browser_enabled(&vault, true, Some(parse_port(port)?))
+            set_browser_enabled(&vault, true, Some(parse_port(port)?)).await
         }
         [command, action] if command == "browser" && action == "disable" => {
-            set_browser_enabled(&vault, false, None)
+            set_browser_enabled(&vault, false, None).await
         }
         [command, action] if command == "browser" && action == "pair" => {
             pair_browser(&vault, None).await
@@ -91,19 +95,9 @@ async fn dispatch() -> Result<()> {
         [command, action] if command == "browser" && action == "reset" => {
             reset_browser(&vault).await
         }
-        [command, action, file] if command == "backup" && action == "export" => {
-            backup::export_to_file(&vault, file)?;
-            println!("Backup written to {file}");
-            Ok(())
-        }
-        [command, action, file] if command == "backup" && action == "import" => {
-            let summary = backup::import_from_file(&vault, file)?;
-            println!(
-                "Imported: added {}, merged duplicates {}",
-                summary.added, summary.merged
-            );
-            Ok(())
-        }
+        [command, rest @ ..] if command == "backup" => run_cli_backup(&vault, rest),
+        [command, rest @ ..] if command == "vault" => run_cli_vault(&vault, rest),
+        [command, rest @ ..] if command == "admin" => run_cli_admin(vault, rest).await,
         [command, action] if command == "update" && action == "check" => {
             run_cli_update(&vault, false).await
         }
@@ -115,7 +109,7 @@ async fn dispatch() -> Result<()> {
         [command, rest @ ..] if command == "import-ssh" => run_cli_import_ssh(&vault, rest),
         [command, rest @ ..] if command == "keygen" => run_cli_keygen(&vault, rest),
         _ => anyhow::bail!(
-            "Usage: openkeylet [gui] | mcp stdio | config <stdio-json|stdio-toml> | add [--name <NAME>] [--folder <FOLDER>] [--file <PATH>] | import-env <FILE> [--name <NAME>] [--folder <FOLDER>] [--seal [TEMPLATE]] | import-ssh [CONFIG_FILE] | keygen <NAME> [--host <HOST>] [--port <PORT>] [--user <USER>] [--comment <COMMENT>] [--folder <FOLDER>] | browser <status|enable [port]|disable|pair [port]|reset> | backup <export|import> <file> | update <check|install> | key migrate (macOS)"
+            "Usage: openkeylet [gui] | mcp stdio | config <stdio-json|stdio-toml> | vault <status|list [--all]|show <ITEM>|enable <ITEM>|disable <ITEM>|trash <ITEM>|restore <ITEM>|pin <status|set|clear>> | admin serve [--port <PORT>] [--bind <IP>] [--token-env <VAR>] | add [--name <NAME>] [--folder <FOLDER>] [--file <PATH>] | import-env <FILE> [--name <NAME>] [--folder <FOLDER>] [--seal [TEMPLATE]] | import-ssh [CONFIG_FILE] | keygen <NAME> [--host <HOST>] [--port <PORT>] [--user <USER>] [--comment <COMMENT>] [--folder <FOLDER>] | browser <status|enable [port]|disable|pair [port]|reset> | backup <export|import> <file> [--passphrase | --passphrase-env <VAR> | --passphrase-stdin] | update <check|install> | key migrate (macOS)"
         ),
     }
 }
@@ -471,26 +465,19 @@ fn parse_port(value: &str) -> Result<u16> {
     Ok(port)
 }
 
-fn set_browser_enabled(vault: &Vault, enabled: bool, port: Option<u16>) -> Result<()> {
+async fn set_browser_enabled(vault: &Vault, enabled: bool, port: Option<u16>) -> Result<()> {
     vault.update_settings_patch(SettingsPatch {
         browser_enabled: Some(enabled),
         browser_port: port,
         ..SettingsPatch::default()
     })?;
-    print_browser_status(vault)
+    print_browser_status(vault).await
 }
 
-fn print_browser_status(vault: &Vault) -> Result<()> {
-    let settings = vault.settings()?;
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&serde_json::json!({
-            "enabled": settings.browser_enabled,
-            "paired": settings.browser_paired,
-            "port": settings.browser_port,
-            "endpoint": format!("ws://127.0.0.1:{}/extension", settings.browser_port),
-        }))?
-    );
+async fn print_browser_status(vault: &Vault) -> Result<()> {
+    let bridge = BrowserBridge::new(vault.clone());
+    let state = bridge.probe_live_status().await?;
+    println!("{}", serde_json::to_string_pretty(&state)?);
     Ok(())
 }
 
@@ -502,12 +489,22 @@ async fn pair_browser(vault: &Vault, port: Option<u16>) -> Result<()> {
     })?;
 
     let bridge = BrowserBridge::new(vault.clone());
+    let net_cfg = bridge.network_config()?;
     bridge.sync().await;
     bridge.start_quick_pairing().await?;
     eprintln!(
-        "A 120-second automatic pairing window is open; load or wake the OpenKeylet Chromium extension (port {}）…",
-        settings.browser_port
+        "A 120-second automatic pairing window is open; load or wake the OpenKeylet Chromium extension ({})…",
+        net_cfg.advertised_endpoint(settings.browser_port)
     );
+    if net_cfg.is_lan_mode() {
+        eprintln!(
+            "LAN mode active (bind={}, ipAllowlist={:?}). Configure the workstation extension host to '{}' and port {}.",
+            net_cfg.bind_addr(settings.browser_port),
+            net_cfg.ip_allowlist_strings(),
+            net_cfg.advertised_host,
+            settings.browser_port
+        );
+    }
     let started = Instant::now();
     while started.elapsed() < Duration::from_secs(120) {
         if vault.settings()?.browser_paired {
@@ -519,7 +516,7 @@ async fn pair_browser(vault: &Vault, port: Option<u16>) -> Result<()> {
     }
     bridge.stop().await;
     anyhow::bail!(
-        "Browser extension pairing timed out; confirm that the extension port matches OpenKeylet and try again"
+        "Browser extension pairing timed out; confirm that the extension host/port matches OpenKeylet and try again"
     )
 }
 
@@ -527,5 +524,538 @@ async fn reset_browser(vault: &Vault) -> Result<()> {
     let bridge = BrowserBridge::new(vault.clone());
     bridge.reset_pairing().await?;
     bridge.stop().await;
-    print_browser_status(vault)
+    print_browser_status(vault).await
+}
+
+enum PassphraseSource {
+    None,
+    Prompt,
+    Env(String),
+    Stdin,
+}
+
+fn read_secret_line_hidden(prompt: &str) -> Result<Zeroizing<String>> {
+    eprint!("{prompt}");
+    let _ = std::io::stderr().flush();
+
+    #[cfg(windows)]
+    let _echo_guard = {
+        if std::io::stdin().is_terminal() {
+            windows_echo::disable_console_echo()
+        } else {
+            None
+        }
+    };
+    #[cfg(unix)]
+    let _echo_guard = {
+        if std::io::stdin().is_terminal() {
+            unix_echo::disable_tty_echo()
+        } else {
+            None
+        }
+    };
+
+    let mut line = String::new();
+    std::io::stdin()
+        .lock()
+        .read_line(&mut line)
+        .context("Unable to read passphrase from stdin")?;
+    if std::io::stdin().is_terminal() {
+        eprintln!();
+    }
+    let trimmed = line.trim_end_matches(&['\r', '\n'][..]).to_owned();
+    Ok(Zeroizing::new(trimmed))
+}
+
+#[cfg(windows)]
+mod windows_echo {
+    const STD_INPUT_HANDLE: u32 = (-10_i32) as u32;
+    const ENABLE_ECHO_INPUT: u32 = 0x0004;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetStdHandle(n_std_handle: u32) -> isize;
+        fn GetConsoleMode(h_console_handle: isize, lp_mode: *mut u32) -> i32;
+        fn SetConsoleMode(h_console_handle: isize, dw_mode: u32) -> i32;
+    }
+
+    pub struct EchoGuard {
+        handle: isize,
+        original_mode: u32,
+    }
+
+    impl Drop for EchoGuard {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = SetConsoleMode(self.handle, self.original_mode);
+            }
+        }
+    }
+
+    pub fn disable_console_echo() -> Option<EchoGuard> {
+        unsafe {
+            let handle = GetStdHandle(STD_INPUT_HANDLE);
+            if handle == 0 || handle == -1 {
+                return None;
+            }
+            let mut mode: u32 = 0;
+            if GetConsoleMode(handle, &mut mode) == 0 {
+                return None;
+            }
+            if SetConsoleMode(handle, mode & !ENABLE_ECHO_INPUT) == 0 {
+                return None;
+            }
+            Some(EchoGuard {
+                handle,
+                original_mode: mode,
+            })
+        }
+    }
+}
+
+#[cfg(unix)]
+mod unix_echo {
+    use std::process::Command;
+
+    pub struct EchoGuard;
+
+    impl Drop for EchoGuard {
+        fn drop(&mut self) {
+            let _ = Command::new("stty").arg("echo").status();
+        }
+    }
+
+    pub fn disable_tty_echo() -> Option<EchoGuard> {
+        if Command::new("stty")
+            .arg("-echo")
+            .status()
+            .is_ok_and(|s| s.success())
+        {
+            Some(EchoGuard)
+        } else {
+            None
+        }
+    }
+}
+
+fn obtain_passphrase(source: &PassphraseSource, confirm: bool) -> Result<Zeroizing<String>> {
+    match source {
+        PassphraseSource::Env(var_name) => {
+            let val = env::var(var_name)
+                .with_context(|| format!("Environment variable '{var_name}' is not set"))?;
+            Ok(Zeroizing::new(val))
+        }
+        PassphraseSource::Stdin => {
+            let mut line = String::new();
+            std::io::stdin()
+                .lock()
+                .read_line(&mut line)
+                .context("Unable to read passphrase from stdin")?;
+            Ok(Zeroizing::new(
+                line.trim_end_matches(&['\r', '\n'][..]).to_owned(),
+            ))
+        }
+        PassphraseSource::Prompt => {
+            let first = read_secret_line_hidden("Enter backup passphrase (min 12 chars): ")?;
+            if confirm {
+                let second = read_secret_line_hidden("Confirm backup passphrase: ")?;
+                if *first != *second {
+                    anyhow::bail!("Backup passphrases do not match");
+                }
+            }
+            Ok(first)
+        }
+        PassphraseSource::None => {
+            anyhow::bail!(
+                "This .mvault backup is passphrase-protected. Pass --passphrase, --passphrase-env <VAR>, or --passphrase-stdin."
+            )
+        }
+    }
+}
+
+fn parse_backup_args(args: &[String]) -> Result<(String, String, PassphraseSource)> {
+    let action = args
+        .first()
+        .context("Usage: openkeylet backup <export|import> <file> [--passphrase | --passphrase-env <VAR> | --passphrase-stdin]")?
+        .as_str();
+    if !matches!(action, "export" | "import") {
+        anyhow::bail!(
+            "Usage: openkeylet backup <export|import> <file> [--passphrase | --passphrase-env <VAR> | --passphrase-stdin]"
+        );
+    }
+    let mut file_arg: Option<String> = None;
+    let mut source = PassphraseSource::None;
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--passphrase" | "-p" => source = PassphraseSource::Prompt,
+            "--passphrase-stdin" => source = PassphraseSource::Stdin,
+            "--passphrase-env" => {
+                i += 1;
+                let var = args
+                    .get(i)
+                    .context("--passphrase-env requires an environment variable name")?
+                    .clone();
+                source = PassphraseSource::Env(var);
+            }
+            other if !other.starts_with('-') && file_arg.is_none() => {
+                file_arg = Some(other.to_owned());
+            }
+            other => anyhow::bail!("Unknown argument for `openkeylet backup {action}`: {other}"),
+        }
+        i += 1;
+    }
+    let file = file_arg.context(
+        "Usage: openkeylet backup <export|import> <file> [--passphrase | --passphrase-env <VAR> | --passphrase-stdin]",
+    )?;
+    Ok((action.to_owned(), file, source))
+}
+
+fn run_cli_backup(vault: &Vault, args: &[String]) -> Result<()> {
+    let (action, file, source) = parse_backup_args(args)?;
+    let path = resolve_user_path(&file)?;
+    match action.as_str() {
+        "export" => match source {
+            PassphraseSource::None => {
+                backup::export_to_file(vault, &path)?;
+                eprintln!(
+                    "Note: exported a convenient self-unlocking .mvault backup (must be protected like plaintext secrets). Use --passphrase for Argon2id passphrase-protected storage."
+                );
+                println!("Backup written to {file}");
+                Ok(())
+            }
+            _ => {
+                let passphrase = obtain_passphrase(&source, matches!(source, PassphraseSource::Prompt))?;
+                backup::export_protected(vault, &path, &passphrase)?;
+                eprintln!(
+                    "Warning: losing this passphrase makes the backup permanently unrecoverable."
+                );
+                println!("Passphrase-protected backup written to {file}");
+                Ok(())
+            }
+        },
+        "import" => {
+            let requires_password = backup::inspect_file_requires_password(&path)?;
+            if requires_password {
+                let effective_source = match source {
+                    PassphraseSource::None if std::io::stdin().is_terminal() => {
+                        PassphraseSource::Prompt
+                    }
+                    other => other,
+                };
+                let passphrase = obtain_passphrase(&effective_source, false)?;
+                let summary = backup::import_with_password(vault, &path, &passphrase)?;
+                println!(
+                    "Imported protected backup: added {}, merged duplicates {}",
+                    summary.added, summary.merged
+                );
+                Ok(())
+            } else {
+                let summary = backup::import_from_file(vault, &path)?;
+                eprintln!(
+                    "Note: imported a legacy self-unlocking .mvault backup. Consider re-exporting with --passphrase."
+                );
+                println!(
+                    "Imported: added {}, merged duplicates {}",
+                    summary.added, summary.merged
+                );
+                Ok(())
+            }
+        }
+        _ => unreachable!(),
+    }
+}
+
+fn resolve_cli_item_id(vault: &Vault, query: &str) -> Result<Uuid> {
+    let trimmed = query.trim();
+    if let Ok(id) = Uuid::parse_str(trimmed) {
+        return Ok(id);
+    }
+    let items = vault.list_connections()?;
+    let exact: Vec<_> = items
+        .iter()
+        .filter(|c| c.name.eq_ignore_ascii_case(trimmed))
+        .collect();
+    if exact.len() == 1 {
+        return Ok(exact[0].id);
+    }
+    let contains: Vec<_> = items
+        .iter()
+        .filter(|c| c.name.to_lowercase().contains(&trimmed.to_lowercase()))
+        .collect();
+    match contains.len() {
+        0 => anyhow::bail!("No vault item found matching '{trimmed}'"),
+        1 => Ok(contains[0].id),
+        _ => anyhow::bail!(
+            "Multiple items match '{trimmed}': {}. Specify the exact name or UUID.",
+            contains
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
+fn run_cli_vault(vault: &Vault, args: &[String]) -> Result<()> {
+    match args {
+        [action] if action == "status" => {
+            let items = vault.list_connections()?;
+            let trash = vault.trash_items()?;
+            let settings = vault.settings()?;
+            let enabled_count = items.iter().filter(|i| i.enabled).count();
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "dataDir": vault.data_dir().to_string_lossy(),
+                    "explicitDataDir": uses_explicit_data_dir(vault.data_dir()),
+                    "keySource": vault.storage_label(),
+                    "strongMode": vault.is_strong_mode(),
+                    "strongUnlocked": vault.is_strong_unlocked(),
+                    "ownerPinConfigured": vault.owner_pin_configured()?,
+                    "itemCount": items.len(),
+                    "enabledItemCount": enabled_count,
+                    "trashCount": trash.len(),
+                    "browserEnabled": settings.browser_enabled,
+                    "browserPaired": settings.browser_paired,
+                    "browserPort": settings.browser_port,
+                }))?
+            );
+            Ok(())
+        }
+        [action, rest @ ..] if action == "list" => {
+            let include_trash = rest.iter().any(|a| a == "--all");
+            let items = vault.list_connections()?;
+            if include_trash {
+                let trash = vault.trash_items()?;
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "items": items,
+                        "trash": trash,
+                    }))?
+                );
+            } else {
+                println!("{}", serde_json::to_string_pretty(&items)?);
+            }
+            Ok(())
+        }
+        [action, query] if action == "show" => {
+            let id = resolve_cli_item_id(vault, query)?;
+            let item = vault.get_connection(id)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&item.stored.public(Some(&item.secrets)))?
+            );
+            Ok(())
+        }
+        [action, query] if action == "enable" => {
+            let id = resolve_cli_item_id(vault, query)?;
+            vault.set_connection_enabled(id, true)?;
+            println!("Enabled item {id}");
+            Ok(())
+        }
+        [action, query] if action == "disable" => {
+            let id = resolve_cli_item_id(vault, query)?;
+            vault.set_connection_enabled(id, false)?;
+            println!("Disabled item {id}");
+            Ok(())
+        }
+        [action, query] if action == "trash" => {
+            let id = resolve_cli_item_id(vault, query)?;
+            vault.trash_connection(id, None)?;
+            println!("Moved item {id} to trash");
+            Ok(())
+        }
+        [action, query] if action == "restore" => {
+            let trash = vault.trash_items()?;
+            let trimmed = query.trim();
+            let matched: Vec<_> = trash
+                .iter()
+                .filter(|t| {
+                    t.item.id.to_string().eq_ignore_ascii_case(trimmed)
+                        || t.item.name.eq_ignore_ascii_case(trimmed)
+                })
+                .collect();
+            if matched.len() != 1 {
+                anyhow::bail!(
+                    "Expected exactly one trash item matching '{trimmed}', found {}",
+                    matched.len()
+                );
+            }
+            vault.restore_connection(matched[0].item.id, &matched[0].deleted_at)?;
+            println!(
+                "Restored item {} ({})",
+                matched[0].item.name, matched[0].item.id
+            );
+            Ok(())
+        }
+        [action, sub, rest @ ..] if action == "pin" => match sub.as_str() {
+            "status" => {
+                println!(
+                    "{}",
+                    serde_json::json!({ "ownerPinConfigured": vault.owner_pin_configured()? })
+                );
+                Ok(())
+            }
+            "set" => {
+                let pin = match rest {
+                    [flag, var] if flag == "--pin-env" => Zeroizing::new(
+                        env::var(var)
+                            .with_context(|| format!("Environment variable '{var}' is not set"))?,
+                    ),
+                    [] => {
+                        let first = read_secret_line_hidden("Enter 6-digit Owner PIN: ")?;
+                        let second = read_secret_line_hidden("Confirm 6-digit Owner PIN: ")?;
+                        if *first != *second {
+                            anyhow::bail!("PINs do not match");
+                        }
+                        first
+                    }
+                    _ => anyhow::bail!("Usage: openkeylet vault pin set [--pin-env <VAR>]"),
+                };
+                vault.set_owner_pin(pin.trim())?;
+                println!("Owner PIN configured");
+                Ok(())
+            }
+            "clear" => {
+                vault.disable_owner_pin()?;
+                println!("Owner PIN cleared");
+                Ok(())
+            }
+            _ => anyhow::bail!("Usage: openkeylet vault pin <status|set [--pin-env <VAR>]|clear>"),
+        },
+        _ => anyhow::bail!(
+            "Usage: openkeylet vault <status|list [--all]|show <ITEM>|enable <ITEM>|disable <ITEM>|trash <ITEM>|restore <ITEM>|pin <status|set|clear>>"
+        ),
+    }
+}
+
+async fn run_cli_admin(vault: Vault, args: &[String]) -> Result<()> {
+    let Some(first) = args.first() else {
+        anyhow::bail!(
+            "Usage: openkeylet admin serve [--port <PORT>] [--bind <IP>] [--allow-non-loopback] [--token-env <VAR>]"
+        );
+    };
+    if first != "serve" {
+        anyhow::bail!(
+            "Usage: openkeylet admin serve [--port <PORT>] [--bind <IP>] [--allow-non-loopback] [--token-env <VAR>]"
+        );
+    }
+    let mut config = AdminServerConfig {
+        port: DEFAULT_ADMIN_PORT,
+        ..AdminServerConfig::default()
+    };
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--port" | "-p" => {
+                i += 1;
+                config.port = parse_port(args.get(i).context("--port requires a value")?)?;
+            }
+            "--bind" => {
+                i += 1;
+                let raw = args.get(i).context("--bind requires an IP address")?;
+                config.bind_ip = raw
+                    .parse::<IpAddr>()
+                    .with_context(|| format!("Invalid --bind IP address: '{raw}'"))?;
+            }
+            "--allow-non-loopback" => {
+                config.allow_non_loopback = true;
+            }
+            "--token-env" => {
+                i += 1;
+                let var = args
+                    .get(i)
+                    .context("--token-env requires an environment variable name")?;
+                let val = env::var(var)
+                    .with_context(|| format!("Environment variable '{var}' is not set"))?;
+                config.initial_token = Some(Zeroizing::new(val));
+            }
+            other => anyhow::bail!("Unknown flag for `openkeylet admin serve`: {other}"),
+        }
+        i += 1;
+    }
+    admin_server::serve_until_ctrl_c(vault, config).await
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn cli_backup_parse_supports_passphrase_flags() {
+        let args = vec![
+            "export".to_owned(),
+            "protected.mvault".to_owned(),
+            "--passphrase".to_owned(),
+        ];
+        let (action, file, src) = parse_backup_args(&args).unwrap();
+        assert_eq!(action, "export");
+        assert_eq!(file, "protected.mvault");
+        assert!(matches!(src, PassphraseSource::Prompt));
+
+        let env_args = vec![
+            "import".to_owned(),
+            "protected.mvault".to_owned(),
+            "--passphrase-env".to_owned(),
+            "TEST_BACKUP_PW".to_owned(),
+        ];
+        let (action, file, src) = parse_backup_args(&env_args).unwrap();
+        assert_eq!(action, "import");
+        assert_eq!(file, "protected.mvault");
+        assert!(matches!(src, PassphraseSource::Env(ref v) if v == "TEST_BACKUP_PW"));
+    }
+
+    #[test]
+    fn cli_vault_enable_disable_trash_restore_work_without_gui() {
+        let dir = tempdir().unwrap();
+        let vault = Vault::open(dir.path().join("vault")).unwrap();
+        let mut secrets = SecretBundle::default();
+        secrets
+            .named_secrets
+            .insert("password".to_owned(), "s3cr3t-password".to_owned());
+        let saved = vault
+            .save_connection(mcp_vault::model::ConnectionInput {
+                login_uris: Vec::new(),
+                item_type: "login".to_owned(),
+                folder: String::new(),
+                favorite: false,
+                id: None,
+                modules: vec![ItemModule {
+                    kind: "password".to_owned(),
+                    name: "password".to_owned(),
+                    value: String::new(),
+                    agent_visible: Some(false),
+                }],
+                name: "Headless Test".to_owned(),
+                enabled: true,
+                description: String::new(),
+                http_auth_type: String::new(),
+                private_key_import_path: String::new(),
+                auth_header: String::new(),
+                auth_location: String::new(),
+                auth_prefix: String::new(),
+                api_auth_headers: Vec::new(),
+                test_path: String::new(),
+                remove_secret_names: Vec::new(),
+                secrets,
+            })
+            .unwrap();
+
+        run_cli_vault(&vault, &["disable".to_owned(), "Headless Test".to_owned()]).unwrap();
+        assert!(!vault.get_connection(saved.id).unwrap().stored.enabled);
+
+        run_cli_vault(&vault, &["enable".to_owned(), "Headless Test".to_owned()]).unwrap();
+        assert!(vault.get_connection(saved.id).unwrap().stored.enabled);
+
+        run_cli_vault(&vault, &["trash".to_owned(), saved.id.to_string()]).unwrap();
+        assert!(vault.list_connections().unwrap().is_empty());
+        assert_eq!(vault.trash_items().unwrap().len(), 1);
+
+        run_cli_vault(&vault, &["restore".to_owned(), "Headless Test".to_owned()]).unwrap();
+        assert_eq!(vault.list_connections().unwrap().len(), 1);
+    }
 }

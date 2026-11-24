@@ -1,278 +1,740 @@
 // Vault access is handled by the authenticated extension service worker.
 const $ = s => document.querySelector(s);
+const { t, localizeMessage, icon } = OpenKeyletUI;
+
 let currentOrigin = "", entries = [], saving = false, reading = false, loading = false, editingVersion = "";
 let refreshError = false;
-let personalEntries = [], personalEdit = null;
+let personalEntries = [];
+let bridgeConnected = false;
+let vaultLocked = true;
+let pageAvailableState = false;
+let activeTab = "site";
+let settingsOverlayWhenUnavailable = false;
+let toastTimer = null;
+
 const captureParams = new URLSearchParams(location.search);
 let captureContext = captureParams.get("capture") || "";
 let quickContext = captureParams.get("quick") || "";
 document.body.classList.toggle("capture-page", Boolean(captureContext));
+document.body.classList.toggle("quick-page", Boolean(quickContext));
 const captureTabId = captureParams.has("tab") ? Number(captureParams.get("tab")) : undefined;
+
 let pendingCapture = null, savingCapture = null, saveEntries = [], detectedForms = [], readSource = null, openedCapture = "";
 let quickParsed = null, quickParseTimer = null, openedQuick = "", quickOrigin = "";
-const showError = (e, tone = "") => {
+let genDebounceTimer = null;
+
+function showError(e, tone = "") {
   refreshError = false;
+  clearTimeout(toastTimer);
   const el = $("#error");
-  el.dataset.tone = tone || (e instanceof Error ? "error" : "info");
-  el.textContent = e?.message || String(e || "");
-};
+  const isErr = tone === "error" || (e instanceof Error && !tone);
+  const resolvedTone = tone || (isErr ? "error" : "info");
+  const text = localizeMessage(e);
+  el.dataset.tone = resolvedTone;
+  el.textContent = text;
+  if (text && resolvedTone !== "error") {
+    toastTimer = setTimeout(() => {
+      if (el.textContent === text) el.textContent = "";
+    }, 3200);
+  }
+}
+
 async function call(action, fields = {}) {
-  const reply = await chrome.runtime.sendMessage({ type: "vault-ui", action, origin: currentOrigin,
-    captureId: captureContext || undefined, quickId: quickContext || undefined, captureTabId, ...fields });
+  const reply = await chrome.runtime.sendMessage({
+    type: "vault-ui",
+    action,
+    origin: currentOrigin,
+    captureId: captureContext || undefined,
+    quickId: quickContext || undefined,
+    captureTabId,
+    ...fields,
+  });
   if (!reply?.ok) throw new Error(reply?.error || "OpenKeylet unavailable");
   return reply.result;
 }
+
+function hasOpenSheet() {
+  return !$("#save-form").hidden
+    || !$("#quick-store-form").hidden
+    || !$("#vault-editor").hidden
+    || !$("#vault-history").hidden;
+}
+
+function isStandaloneWindow() {
+  return document.body.classList.contains("capture-page")
+    || document.body.classList.contains("quick-page");
+}
+
+function syncChromeVisibility() {
+  const sheetOpen = hasOpenSheet();
+  const standalone = isStandaloneWindow();
+  const unlockedReady = bridgeConnected && !vaultLocked;
+  const showingSettings = unlockedReady
+    ? (!sheetOpen && activeTab === "settings")
+    : settingsOverlayWhenUnavailable;
+
+  // Nav bar: shown when unlocked & connected & not in sheet or standalone window
+  $("#main-nav").hidden = !unlockedReady || sheetOpen || standalone;
+  $("#main-nav").dataset.active = activeTab;
+  for (const btn of document.querySelectorAll("#main-nav .nav-item")) {
+    const isAct = btn.dataset.tab === activeTab;
+    btn.classList.toggle("active", isAct);
+    if (isAct) btn.setAttribute("aria-current", "page");
+    else btn.removeAttribute("aria-current");
+  }
+
+  // Offline & Lock panels
+  const wasLockHidden = $("#unlock-form").hidden;
+  $("#offline-panel").hidden = bridgeConnected || showingSettings;
+  $("#unlock-form").hidden = !bridgeConnected || !vaultLocked || showingSettings;
+  $("#vault-panel").hidden = !unlockedReady || showingSettings;
+  if (wasLockHidden && !$("#unlock-form").hidden) {
+    $("#pin")?.focus();
+  }
+
+  // Page hint visibility:
+  // - When connected & locked on non-web page: show compact hint above unlock card
+  // - When unlocked on Site tab & non-web page & no sheet open: show hint with quick buttons
+  const showHintLocked = bridgeConnected && vaultLocked && !pageAvailableState && !showingSettings && !standalone;
+  const showHintSite = unlockedReady && !sheetOpen && activeTab === "site" && !pageAvailableState && !standalone;
+  $("#page-hint").hidden = !(showHintLocked || showHintSite);
+  $("#page-hint-actions").hidden = vaultLocked;
+
+  // Capture notice banner (hidden while in settings or save sheet)
+  $("#capture-notice").hidden = !pendingCapture || showingSettings || !$("#save-form").hidden || !$("#capture-complete").hidden;
+
+  // Tab views inside #vault-panel
+  for (const view of document.querySelectorAll("#vault-panel > .tab-view")) {
+    view.hidden = sheetOpen || view.dataset.tabView !== activeTab;
+  }
+
+  // Settings tab (lives outside #vault-panel so it works when locked or offline)
+  $("#tab-settings").hidden = !showingSettings;
+}
+
+function setActiveTab(tab) {
+  if (!["site", "vault", "generator", "settings"].includes(tab)) return;
+  if (!bridgeConnected || vaultLocked) {
+    settingsOverlayWhenUnavailable = tab === "settings";
+    syncChromeVisibility();
+    return;
+  }
+  activeTab = tab;
+  settingsOverlayWhenUnavailable = false;
+  syncChromeVisibility();
+  if (tab === "generator" && !$("#generator-output").value) {
+    void triggerGeneratePassword();
+  }
+}
+
+function updateBridgeStatusUI(statusKey, lampClass, stripClass) {
+  const label = t(statusKey);
+  $("#status").textContent = label;
+  $("#lamp").className = `lamp ${lampClass}`.trim();
+  $("#settings-status").textContent = label;
+  $("#settings-status-strip").className = `status-strip ${stripClass}`.trim();
+}
+
+function updateStrengthMeter() {
+  const pw = $("#generator-output").value || "";
+  const len = pw.length;
+  let pool = 0;
+  if (/[A-Z]/.test(pw)) pool += 26;
+  if (/[a-z]/.test(pw)) pool += 26;
+  if (/[0-9]/.test(pw)) pool += 10;
+  if (/[^A-Za-z0-9]/.test(pw)) pool += 32;
+  const entropy = len > 0 && pool > 0 ? len * Math.log2(pool) : 0;
+  const fill = $("#gen-strength-fill");
+  const label = $("#gen-strength-label");
+  if (!len) {
+    fill.style.width = "0%";
+    fill.className = "";
+    label.textContent = "";
+    return;
+  }
+  const pct = Math.min(100, Math.max(15, Math.round((entropy / 120) * 100)));
+  fill.style.width = `${pct}%`;
+  if (entropy >= 90) {
+    fill.className = "";
+    label.textContent = t("gen.strengthMax");
+  } else if (entropy >= 60) {
+    fill.className = "warn";
+    label.textContent = t("gen.strengthGood");
+  } else {
+    fill.className = "danger";
+    label.textContent = t("gen.strengthWeak");
+  }
+}
+
+function renderSiteEntries() {
+  const container = $("#entries");
+  container.replaceChildren();
+
+  const countPill = $("#website-count");
+  if (entries.length) {
+    countPill.textContent = t(entries.length === 1 ? "site.loginCount" : "site.loginCountPlural", { count: entries.length });
+    countPill.hidden = false;
+  } else {
+    countPill.hidden = true;
+  }
+
+  if (!entries.length) {
+    const empty = document.createElement("div");
+    empty.className = "entries-empty";
+    empty.textContent = t("site.noLogins");
+    container.append(empty);
+    return;
+  }
+
+  for (const item of entries) {
+    const row = document.createElement("div");
+    row.className = "login-entry-row";
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "login-entry";
+
+    const avatar = document.createElement("span");
+    avatar.className = "entry-avatar";
+    avatar.append(icon("login"));
+
+    const copy = document.createElement("div");
+    copy.className = "entry-copy";
+    const title = document.createElement("strong");
+    title.textContent = item.name;
+    const sub = document.createElement("small");
+    sub.textContent = item.username || t("site.fillHint");
+    copy.append(title, sub);
+
+    const cue = document.createElement("span");
+    cue.className = "entry-fill-cue";
+    cue.append(icon("fill"));
+
+    button.append(avatar, copy, cue);
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      try {
+        await call("fill", { id: item.id });
+        showError(t("site.filled"), "success");
+      } catch (e) {
+        showError(e);
+      } finally {
+        button.disabled = false;
+      }
+    });
+    row.append(button);
+
+    if (item.hasTotp) {
+      const totpBtn = document.createElement("button");
+      totpBtn.type = "button";
+      totpBtn.className = "button secondary totp-copy-button";
+      totpBtn.textContent = "2FA";
+      totpBtn.title = t("site.totpTitle");
+      totpBtn.addEventListener("click", async () => {
+        totpBtn.disabled = true;
+        try {
+          const res = await call("totp", { id: item.id });
+          await navigator.clipboard.writeText(res.code);
+          showError(t("site.totpCopied", { seconds: res.remainingSeconds }), "success");
+        } catch (e) {
+          showError(e);
+        } finally {
+          totpBtn.disabled = false;
+        }
+      });
+      row.append(totpBtn);
+    }
+    container.append(row);
+  }
+}
+
+function renderSiteAutofill() {
+  const section = $("#site-autofill");
+  const list = $("#site-autofill-list");
+  list.replaceChildren();
+
+  const fillable = personalEntries
+    .filter(item => item.itemType === "card" || item.itemType === "identity")
+    .sort((a, b) => Number(b.favorite) - Number(a.favorite));
+
+  if (!pageAvailableState || !fillable.length) {
+    section.hidden = true;
+    return;
+  }
+
+  section.hidden = false;
+  for (const item of fillable.slice(0, 4)) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "quick-fill-chip";
+
+    const ico = document.createElement("span");
+    ico.className = "chip-ico";
+    ico.append(icon(item.itemType));
+
+    const txt = document.createElement("div");
+    txt.className = "chip-text";
+    const strong = document.createElement("strong");
+    strong.textContent = item.name;
+    const small = document.createElement("small");
+    small.textContent = [t(`type.${item.itemType}`), item.subtitle].filter(Boolean).join(" · ");
+    txt.append(strong, small);
+
+    const actionTag = document.createElement("span");
+    actionTag.className = "chip-action";
+    actionTag.textContent = t("vault.fill");
+
+    chip.append(ico, txt, actionTag);
+    chip.addEventListener("click", async () => {
+      chip.disabled = true;
+      try {
+        const res = await call("personal-fill", { id: item.id });
+        showError(t("site.fieldsFilled", { count: res.filled }), "success");
+      } catch (e) {
+        showError(e);
+      } finally {
+        chip.disabled = false;
+      }
+    });
+    list.append(chip);
+  }
+}
+
 async function refresh() {
   if (loading || saving || reading) return;
   loading = true;
   try {
-    const stored = await chrome.storage.local.get(["bridgePort", "captureEnabled"]);
+    const stored = await chrome.storage.local.get(["bridgeHost", "bridgePort", "bridgeTls", "captureEnabled", "desktopAppVersion"]);
+    const extVersion = chrome.runtime.getManifest?.().version || "";
+    const appVersion = stored.desktopAppVersion || "";
+    const verLabel = $("#ext-version-label");
+    if (verLabel && extVersion) {
+      verLabel.textContent = `OpenKeylet v${extVersion} · ${t("settings.footerVault")}`;
+    }
+
+    const mismatchEl = $("#version-mismatch");
+    if (mismatchEl) {
+      const outdated = Boolean(appVersion && extVersion && appVersion !== extVersion);
+      mismatchEl.hidden = !outdated;
+      if (outdated) {
+        $("#version-mismatch-detail").textContent = t("update.detail", { app: appVersion, ext: extVersion });
+      }
+    }
+
+    const bridgeHost = (stored.bridgeHost || "127.0.0.1").trim() || "127.0.0.1";
+    const bridgePort = stored.bridgePort || 39272;
+    const bridgeTls = stored.bridgeTls === true;
+    const isRemote = !["127.0.0.1", "localhost", "::1"].includes(bridgeHost.toLowerCase());
+
     $("#capture-enabled").checked = stored.captureEnabled === true;
-    $("#port").value = stored.bridgePort || 39272;
-    $("#detail").textContent = `127.0.0.1:${stored.bridgePort || 39272}`;
+    if (document.activeElement !== $("#host")) $("#host").value = bridgeHost;
+    if (document.activeElement !== $("#port")) $("#port").value = bridgePort;
+    $("#bridge-tls").checked = bridgeTls;
+    $("#lan-warning").hidden = !isRemote;
+
+    const formattedHost = bridgeHost.includes(":") && !bridgeHost.startsWith("[") ? `[${bridgeHost}]` : bridgeHost;
+    $("#detail").textContent = `${bridgeTls ? "wss://" : ""}${formattedHost}:${bridgePort}`;
+
     const state = await call("list");
     if (saving || reading) return;
+
+    bridgeConnected = true;
+    vaultLocked = Boolean(state.locked);
+    pageAvailableState = Boolean(state.pageAvailable);
+
     if (state.captureExpired) { captureContext = ""; closeSave(); }
     if (state.quickExpired) { quickContext = ""; closeQuickStore(); }
-    $("#status").textContent = "已连接本地密码库 / CONNECTED";
-    $("#lamp").classList.add("on");
-    if (state.locked) { closeSave(); closeQuickStore(); closePersonal(); OpenKeyletVaultUI.close(); }
-    else if (!$("#save-form").hidden || !$("#quick-store-form").hidden || !$("#personal-form").hidden || OpenKeyletVaultUI.isEditing()) return;
-    OpenKeyletVaultUI.apply(state.vault);
-    if (refreshError || currentOrigin !== state.origin) showError("");
-    if (state.captureExpired) showError("待保存信息已过期或来源网页已变化 / The save suggestion expired or its source changed");
-    const entriesChanged = currentOrigin !== state.origin || JSON.stringify(entries) !== JSON.stringify(state.entries);
-    currentOrigin = state.origin; entries = state.entries;
-    $("#website").textContent = currentOrigin;
-    $("#website").hidden = !state.pageAvailable;
-    $("#page-hint").hidden = state.pageAvailable;
-    $("#scan-page-qr").hidden = !state.pageAvailable;
-    $("#save-generated-password").hidden = !state.pageAvailable || !$("#generator-output").value;
-    $("#unlock-form").hidden = !state.locked;
-    $("#vault-panel").hidden = state.locked;
-    $("#entries").hidden = !state.pageAvailable;
-    $("#read-form").hidden = !state.pageAvailable;
-    $("#lock").hidden = !state.pinConfigured;
-    pendingCapture = state.capture;
-    $("#capture-notice").hidden = !pendingCapture;
-    $("#capture-source").textContent = pendingCapture ? `来源网站 / Source: ${pendingCapture.origin}` : "";
-    $("#capture-review").disabled = state.locked;
-    if (state.locked) $("#generator-output").value = "";
-    if (entriesChanged || JSON.stringify(personalEntries) !== JSON.stringify(state.personal)) {
-      personalEntries = state.personal;
-      renderPersonal();
+
+    updateBridgeStatusUI("status.connected", "on", "online");
+
+    if (state.locked) {
+      closeSave();
+      closeQuickStore();
+      OpenKeyletVaultUI.close();
+      $("#generator-output").value = "";
+      updateStrengthMeter();
+    } else if (hasOpenSheet() || OpenKeyletVaultUI.isEditing()) {
+      syncChromeVisibility();
+      return;
     }
-    if (captureContext && pendingCapture && !state.locked && openedCapture !== pendingCapture.id) {
+
+    OpenKeyletVaultUI.apply(state.vault, state.personal, pageAvailableState);
+
+    if (refreshError || currentOrigin !== state.origin) showError("");
+    if (state.captureExpired) showError(t("capture.expired"));
+
+    const entriesChanged = currentOrigin !== state.origin || JSON.stringify(entries) !== JSON.stringify(state.entries);
+    const personalChanged = JSON.stringify(personalEntries) !== JSON.stringify(state.personal);
+    currentOrigin = state.origin;
+    entries = state.entries;
+    personalEntries = state.personal || [];
+
+    // Website bar
+    $("#website").textContent = currentOrigin;
+    $("#website-bar").hidden = !pageAvailableState;
+    $("#website-icon").classList.toggle("secure", currentOrigin.startsWith("https://"));
+
+    // Site actions visibility
+    $("#entries").hidden = !pageAvailableState;
+    $("#read-form").hidden = !pageAvailableState;
+    $("#scan-page-qr").hidden = !pageAvailableState;
+    $("#site-actions").hidden = !pageAvailableState;
+    $("#save-generated-password").hidden = !pageAvailableState || !$("#generator-output").value;
+
+    // Header lock button
+    $("#lock").hidden = !state.pinConfigured || vaultLocked;
+
+    // Capture notice
+    pendingCapture = state.capture;
+    $("#capture-source").textContent = pendingCapture ? t("capture.source", { origin: pendingCapture.origin }) : "";
+    $("#capture-review").disabled = vaultLocked;
+
+    syncChromeVisibility();
+
+    if (entriesChanged) renderSiteEntries();
+    if (entriesChanged || personalChanged) renderSiteAutofill();
+
+    if (captureContext && pendingCapture && !vaultLocked && openedCapture !== pendingCapture.id) {
       openedCapture = pendingCapture.id;
       reviewCapture();
     }
-    if (quickContext && !state.locked && openedQuick !== quickContext) {
+    if (quickContext && !vaultLocked && openedQuick !== quickContext) {
       openedQuick = quickContext;
       openQuickFromCapture();
     }
-    if (!entriesChanged) return;
+  } catch (e) {
+    bridgeConnected = false;
+    vaultLocked = true;
+    pageAvailableState = false;
+    closeSave();
+    closeQuickStore();
+    OpenKeyletVaultUI.close();
+    updateBridgeStatusUI("status.unavailable", "error", "error");
+    currentOrigin = "";
+    entries = [];
+    personalEntries = [];
+    pendingCapture = null;
     $("#entries").replaceChildren();
-    if (!entries.length) { const p=document.createElement("p"); p.textContent="这个网站还没有保存的密码 / No saved logins"; $("#entries").append(p); }
-    for (const item of entries) {
-      const row = document.createElement("div"); row.className = "login-entry-row";
-      const button = document.createElement("button"); button.type = "button"; button.className = "login-entry";
-      const title = document.createElement("strong"); title.textContent = item.name;
-      const sub = document.createElement("small"); sub.textContent = item.username || "填写 / Fill";
-      button.append(title, sub); button.addEventListener("click", async () => { button.disabled=true; try { await call("fill",{id:item.id}); showError("已填写 / Filled"); } catch(e) { showError(e); } finally { button.disabled=false; } });
-      row.append(button);
-      if (item.hasTotp) {
-        const totpBtn = document.createElement("button"); totpBtn.type = "button"; totpBtn.className = "secondary totp-copy-button";
-        totpBtn.textContent = "2FA"; totpBtn.title = "复制当前 TOTP 验证码 / Copy live 2FA code";
-        totpBtn.addEventListener("click", async () => {
-          totpBtn.disabled = true;
-          try {
-            const res = await call("totp", { id: item.id });
-            await navigator.clipboard.writeText(res.code);
-            showError(`2FA 已复制 (${res.remainingSeconds}s) / 2FA code copied`);
-          } catch (e) { showError(e); }
-          finally { totpBtn.disabled = false; }
-        });
-        row.append(totpBtn);
-      }
-      $("#entries").append(row);
-    }
-  } catch(e) {
-    closeSave(); closePersonal(); OpenKeyletVaultUI.close();
-    $("#status").textContent = "暂不可用 / UNAVAILABLE";
-    $("#lamp").classList.remove("on");
-    $("#vault-panel").hidden = true; $("#unlock-form").hidden = true;
-    $("#website").hidden = true; $("#page-hint").hidden = true;
-    currentOrigin = ""; entries = []; $("#entries").replaceChildren();
-    personalEntries = []; $("#personal-entries").replaceChildren();
-    pendingCapture = null; $("#capture-notice").hidden = true;
+    $("#site-autofill-list").replaceChildren();
+    $("#site-autofill").hidden = true;
+    $("#lock").hidden = true;
     $("#generator-output").value = "";
-    showError(`请确认 OpenKeylet 已打开且浏览器连接已启用。 / Check that OpenKeylet and Browser Bridge are running.\n${e.message || e}`, "error");
+    updateStrengthMeter();
+    syncChromeVisibility();
+    showError(localizeMessage(e), "error");
     refreshError = true;
-  } finally { loading=false; }
+  } finally {
+    loading = false;
+  }
 }
-$("#unlock-form").addEventListener("submit", async e => { e.preventDefault(); try { await call("unlock",{pin:$("#pin").value}); $("#pin").value=""; showError(""); await refresh(); } catch(e) { showError(e); } });
-$("#lock").addEventListener("click",async () => { closeSave(); closePersonal(); OpenKeyletVaultUI.close(); $("#generator-output").value=""; try { await call("lock"); await refresh(); } catch(e) { showError(e); } });
+
+// Header & Navigation controls
+$("#theme-toggle").addEventListener("click", () => OpenKeyletUI.toggleTheme());
+
+$("#status-pill").addEventListener("click", () => {
+  if (hasOpenSheet()) return;
+  if (!bridgeConnected || vaultLocked) {
+    settingsOverlayWhenUnavailable = !settingsOverlayWhenUnavailable;
+    syncChromeVisibility();
+  } else {
+    setActiveTab(activeTab === "settings" ? "site" : "settings");
+  }
+});
+
+$("#offline-retry").addEventListener("click", async () => {
+  settingsOverlayWhenUnavailable = false;
+  showError("");
+  await chrome.runtime.sendMessage({ type: "bridge-config-updated" }).catch(() => {});
+  setTimeout(() => void refresh(), 250);
+});
+$("#offline-settings").addEventListener("click", () => {
+  settingsOverlayWhenUnavailable = true;
+  syncChromeVisibility();
+});
+
+for (const btn of document.querySelectorAll("#main-nav .nav-item")) {
+  btn.addEventListener("click", () => setActiveTab(btn.dataset.tab));
+}
+
+$("#hint-open-vault").addEventListener("click", () => setActiveTab("vault"));
+$("#hint-smart-save").addEventListener("click", () => void openQuickStore("", currentOrigin));
+
+for (const btn of document.querySelectorAll("[data-lang-option]")) {
+  btn.addEventListener("click", () => OpenKeyletUI.setLanguage(btn.dataset.langOption));
+}
+
+$("#reload-extension")?.addEventListener("click", () => {
+  chrome.runtime.sendMessage({ type: "reload-extension" }).catch(() => chrome.runtime.reload());
+});
+
+// Unlock & Lock
+$("#unlock-form").addEventListener("submit", async e => {
+  e.preventDefault();
+  try {
+    await call("unlock", { pin: $("#pin").value });
+    $("#pin").value = "";
+    showError("");
+    await refresh();
+  } catch (err) {
+    showError(err);
+  }
+});
+
+$("#lock").addEventListener("click", async () => {
+  closeSave();
+  closeQuickStore();
+  OpenKeyletVaultUI.close();
+  $("#generator-output").value = "";
+  updateStrengthMeter();
+  try {
+    await call("lock");
+    await refresh();
+  } catch (err) {
+    showError(err);
+  }
+});
+
+// Save Login (Manual & Capture)
 $("#read-form").addEventListener("click", async () => {
   if (reading || saving) return;
   reading = true;
   try {
-    const form=await call("read-form");
-    savingCapture = null; saveEntries = entries;
+    const form = await call("read-form");
+    savingCapture = null;
+    saveEntries = entries;
     readSource = { sourceUrl: form.sourceUrl, sourceTabId: form.sourceTabId };
     detectedForms = form.forms;
     $("#detected-form").replaceChildren(...detectedForms.map((candidate, i) =>
-      new Option(`${i + 1} · ${candidate.username || "账号待确认 / Check account"} · ${{login:"登录",signup:"注册",change:"修改密码"}[candidate.kind]}`, String(i))));
+      new Option(`${i + 1} · ${candidate.username || t("save.checkAccount")} · ${t(`save.kind.${candidate.kind}`)}`, String(i))));
     $("#detected-form").value = String(form.selectedIndex);
     $("#detected-form").hidden = $("#detected-form-label").hidden = detectedForms.length < 2;
     presentLogin(form, currentOrigin);
-  } catch(e) { showError(e); } finally { reading = false; }
+  } catch (e) {
+    showError(e);
+  } finally {
+    reading = false;
+  }
 });
+
 function presentLogin(form, origin) {
-  $("#save-target").replaceChildren(new Option("新项目 / New item", ""), ...saveEntries.map(i=>new Option(`${i.name} · ${i.username}`,i.id)));
+  $("#save-sheet-title").textContent = savingCapture ? t("save.reviewTitle") : t("save.title");
+  $("#save-target").replaceChildren(
+    new Option(t("save.newItem"), ""),
+    ...saveEntries.map(i => new Option(`${i.name} · ${i.username}`, i.id)),
+  );
   const match = form.username ? saveEntries.filter(i => i.username === form.username) : [];
   $("#save-target").value = match.length === 1 ? match[0].id : "";
   $("#name").value = match.length === 1 ? match[0].name : new URL(origin).hostname;
-  $("#username").value = form.username; $("#password").value = form.password;
+  $("#username").value = form.username;
+  $("#password").value = form.password;
   $("#use-generated-password").hidden = Boolean(savingCapture);
-  $("#save-source").textContent = `来源网站 / Source: ${origin}`;
-  $("#save-warning").textContent = (form.warnings || []).join(" · ");
-  selectTarget(); $("#save-form").hidden = false; showError("");
+  $("#save-source").textContent = origin;
+  $("#save-warning").textContent = (form.warnings || []).map(localizeMessage).join(" · ");
+  selectTarget();
+  $("#save-form").hidden = false;
+  showError("");
+  syncChromeVisibility();
 }
+
 async function reviewCapture() {
   if (reading || saving || !pendingCapture) return;
   reading = true;
   try {
     const form = await call("capture-read", { captureId: pendingCapture.id });
-    savingCapture = form.capture; saveEntries = form.entries;
-    detectedForms = []; readSource = null;
+    savingCapture = form.capture;
+    saveEntries = form.entries;
+    detectedForms = [];
+    readSource = null;
     $("#detected-form").replaceChildren();
     $("#detected-form").hidden = $("#detected-form-label").hidden = true;
     presentLogin(form, form.capture.origin);
-    if (!document.body.classList.contains("capture-page")) $("#save-form").scrollIntoView({ block: "start" });
-  } catch (error) { showError(error); } finally { reading = false; }
+  } catch (error) {
+    showError(error);
+  } finally {
+    reading = false;
+  }
 }
+
 $("#capture-review").addEventListener("click", reviewCapture);
 $("#capture-dismiss").addEventListener("click", async () => {
   if (!pendingCapture) return;
   try {
-    await call("capture-dismiss", { captureId: pendingCapture.id }); captureContext = ""; closeSave();
+    await call("capture-dismiss", { captureId: pendingCapture.id });
+    captureContext = "";
+    closeSave();
     if (document.body.classList.contains("capture-page")) window.close();
     else await refresh();
+  } catch (error) {
+    showError(error);
   }
-  catch (error) { showError(error); }
 });
+
 $("#capture-enabled").addEventListener("change", async () => {
   await chrome.storage.local.set({ captureEnabled: $("#capture-enabled").checked });
-  if (!$("#capture-enabled").checked) { captureContext = ""; closeSave(); }
+  if (!$("#capture-enabled").checked) {
+    captureContext = "";
+    closeSave();
+  }
   await refresh();
 });
-$("#detected-form").addEventListener("change", () => presentLogin(detectedForms[Number($("#detected-form").value)], currentOrigin));
-function selectTarget() { const item=saveEntries.find(i=>i.id===$("#save-target").value); editingVersion=item?.updatedAt || ""; $("#name").disabled=Boolean(item); if(item) $("#name").value=item.name; }
-$("#save-target").addEventListener("change",selectTarget);
-function closeSave() {
-  $("#save-form").reset(); $("#save-form").hidden=true;
-  $("#password").type = "password"; $("#toggle-saved-password").textContent = "显示密码 / Show password";
-  $("#detected-form").replaceChildren(); $("#save-warning").textContent = ""; $("#save-source").textContent = "";
-  savingCapture = null; saveEntries = []; detectedForms = []; readSource = null;
+
+$("#detected-form").addEventListener("change", () => {
+  presentLogin(detectedForms[Number($("#detected-form").value)], currentOrigin);
+});
+
+function selectTarget() {
+  const item = saveEntries.find(i => i.id === $("#save-target").value);
+  editingVersion = item?.updatedAt || "";
+  $("#name").disabled = Boolean(item);
+  if (item) $("#name").value = item.name;
 }
-$("#cancel-save").addEventListener("click", async () => {
+$("#save-target").addEventListener("change", selectTarget);
+
+function closeSave() {
+  $("#save-form").reset();
+  $("#save-form").hidden = true;
+  $("#password").type = "password";
+  $("#toggle-saved-password").textContent = t("save.show");
+  $("#detected-form").replaceChildren();
+  $("#save-warning").textContent = "";
+  $("#save-source").textContent = "";
+  savingCapture = null;
+  saveEntries = [];
+  detectedForms = [];
+  readSource = null;
+  syncChromeVisibility();
+}
+
+async function cancelSaveFlow() {
   if (document.body.classList.contains("capture-page")) {
     if (pendingCapture) await call("capture-dismiss", { captureId: pendingCapture.id }).catch(() => {});
-    window.close(); return;
+    window.close();
+    return;
   }
-  closeSave(); refresh();
-});
+  closeSave();
+  refresh();
+}
+$("#cancel-save").addEventListener("click", cancelSaveFlow);
+$("#save-back").addEventListener("click", cancelSaveFlow);
+
 $("#toggle-saved-password").addEventListener("click", () => {
   const visible = $("#password").type === "password";
   $("#password").type = visible ? "text" : "password";
-  $("#toggle-saved-password").textContent = visible ? "隐藏密码 / Hide password" : "显示密码 / Show password";
+  $("#toggle-saved-password").textContent = t(visible ? "save.hide" : "save.show");
 });
+
 $("#capture-close").addEventListener("click", () => window.close());
-$("#save-form").addEventListener("submit",async e=>{
-  e.preventDefault(); if(saving)return; saving=true;
+
+$("#save-form").addEventListener("submit", async e => {
+  e.preventDefault();
+  if (saving) return;
+  saving = true;
   try {
-    await call(savingCapture ? "capture-save" : "save", { captureId: savingCapture?.id, ...readSource,
-      id:$("#save-target").value,expectedUpdatedAt:editingVersion,name:$("#name").value,username:$("#username").value,password:$("#password").value });
+    await call(savingCapture ? "capture-save" : "save", {
+      captureId: savingCapture?.id,
+      ...readSource,
+      id: $("#save-target").value,
+      expectedUpdatedAt: editingVersion,
+      name: $("#name").value,
+      username: $("#username").value,
+      password: $("#password").value,
+    });
     if (savingCapture) {
       captureContext = "";
       $("#capture-complete").hidden = !document.body.classList.contains("capture-page");
     }
-    closeSave(); showError("已保存到本地密码库 / Saved to OpenKeylet");
+    closeSave();
+    showError(t("save.saved"), "success");
+  } catch (err) {
+    showError(err);
+  } finally {
+    saving = false;
+    refresh();
   }
-  catch(e){showError(e);} finally {saving=false;refresh();}
 });
-$("#pair-form").addEventListener("submit",async e=>{ e.preventDefault(); const port=Number($("#port").value); if(!Number.isInteger(port)||port<1024||port>65535){showError("Invalid port", "error");return;} await chrome.storage.local.set({bridgePort:port}); await chrome.runtime.sendMessage({type:"bridge-config-updated"}); showError("在 OpenKeylet 安装指引中点击“打开 Chrome 并复制地址” / Click Open Chrome & copy address in OpenKeylet"); });
-const PERSONAL_LABELS = {
-  secureNote: { secureNote:"安全笔记 / Secure note" },
-  card: { cardholderName:"持卡人 / Cardholder", cardNumber:"卡号 / Number", cardBrand:"卡组织 / Brand", cardExpMonth:"到期月 / Expiry month", cardExpYear:"到期年 / Expiry year", cardSecurityCode:"安全码 / Security code" },
-  identity: { identityTitle:"称谓 / Title", firstName:"名字 / First name", middleName:"中间名 / Middle name", lastName:"姓氏 / Last name", company:"公司 / Company", email:"邮箱 / Email", phone:"电话 / Phone", address1:"地址第一行 / Address line 1", address2:"地址第二行 / Address line 2", address3:"地址第三行 / Address line 3", city:"城市 / City", state:"省或州 / State", postalCode:"邮编 / Postal code", country:"国家或地区 / Country", passportNumber:"护照 / Passport", licenseNumber:"驾照 / License", nationalId:"身份证 / National ID" },
-};
-function renderPersonal() {
-  const container = $("#personal-entries"); container.replaceChildren();
-  for (const item of [...personalEntries].sort((a,b) => Number(b.favorite) - Number(a.favorite))) {
-    const row = document.createElement("div"); row.className = "personal-entry";
-    const title = document.createElement("strong"); title.textContent = `${item.favorite ? "★ " : ""}${item.name}`;
-    const subtitle = document.createElement("small"); subtitle.textContent = `${item.itemType === "card" ? "CARD" : item.itemType === "secureNote" ? "NOTE" : "IDENTITY"} ${item.subtitle}`;
-    const actions = document.createElement("div"); actions.className = "personal-actions";
-    const fill = document.createElement("button"); fill.type = "button"; fill.textContent = "填写 / Fill";
-    fill.disabled = !currentOrigin;
-    fill.onclick = async () => { fill.disabled = true; try { const result = await call("personal-fill",{id:item.id}); showError(`已填写 ${result.filled} 个字段 / Fields filled`); } catch(e) { showError(e); } finally { fill.disabled = false; } };
-    const edit = document.createElement("button"); edit.type = "button"; edit.textContent = "编辑 / Edit";
-    edit.onclick = async () => { edit.disabled = true; reading = true; try { openPersonal(await call("personal-edit",{id:item.id})); } catch(e) { showError(e); } finally { reading = false; edit.disabled = false; } };
-    if (item.itemType !== "secureNote") actions.append(fill);
-    actions.append(edit); row.append(title,subtitle,actions); container.append(row);
-  }
-}
-function openPersonal(item) {
-  personalEdit = item;
-  $("#personal-title").textContent = item.itemType === "card" ? "信用卡 / Card" : item.itemType === "secureNote" ? "安全笔记 / Secure note" : "身份资料 / Identity";
-  $("#personal-name").value = item.name || "";
-  $("#personal-fields").replaceChildren();
-  for (const [name, label] of Object.entries(PERSONAL_LABELS[item.itemType])) {
-    const field = document.createElement("label"); field.textContent = label; field.htmlFor = `personal-${name}`;
-    const input = document.createElement(name === "secureNote" ? "textarea" : "input"); input.id = `personal-${name}`; input.dataset.personalField = name;
-    input.autocomplete = "off"; input.maxLength = name === "secureNote" ? 65536 : 4096;
-    if (name === "secureNote") input.rows = 7;
-    else input.type = ["cardNumber","cardSecurityCode","passportNumber","licenseNumber","nationalId"].includes(name) ? "password" : "text";
-    input.value = item.fields?.[name] || "";
-    $("#personal-fields").append(field,input);
-  }
-  $("#personal-form").hidden = false; showError(""); $("#personal-name").focus();
-}
-function closePersonal() { $("#personal-form").reset(); $("#personal-fields").replaceChildren(); $("#personal-form").hidden = true; personalEdit = null; }
-$("#add-card").onclick = () => openPersonal({itemType:"card"});
-$("#add-identity").onclick = () => openPersonal({itemType:"identity"});
-$("#add-note").onclick = () => openPersonal({itemType:"secureNote"});
-$("#personal-cancel").onclick = () => { closePersonal(); refresh(); };
-$("#personal-form").addEventListener("submit", async e => {
-  e.preventDefault(); if (saving) return; saving = true;
-  try {
-    const fields = Object.fromEntries([...document.querySelectorAll("[data-personal-field]")].map(input=>[input.dataset.personalField,input.value]));
-    await call("personal-save",{ id:personalEdit.id, expectedUpdatedAt:personalEdit.updatedAt, itemType:personalEdit.itemType, name:$("#personal-name").value, fields });
-    closePersonal(); showError("已保存到本地密码库 / Saved to OpenKeylet");
-  } catch(e) { showError(e); } finally { saving = false; refresh(); }
+
+// Bridge Settings
+$("#host").addEventListener("input", () => {
+  const val = ($("#host").value || "127.0.0.1").trim().toLowerCase();
+  $("#lan-warning").hidden = ["", "127.0.0.1", "localhost", "::1"].includes(val);
 });
+
+$("#pair-form").addEventListener("submit", async e => {
+  e.preventDefault();
+  const host = ($("#host").value || "127.0.0.1").trim();
+  const port = Number($("#port").value);
+  const tls = Boolean($("#bridge-tls").checked);
+  if (!host || /\s|[/@?#\\]/.test(host)) { showError(t("settings.invalidHost"), "error"); return; }
+  if (!Number.isInteger(port) || port < 1024 || port > 65535) { showError(t("settings.invalidPort"), "error"); return; }
+  const prev = await chrome.storage.local.get(["bridgeHost", "bridgePort", "bridgeTls"]);
+  const changedEndpoint = (prev.bridgeHost || "127.0.0.1") !== host || (prev.bridgePort || 39272) !== port || Boolean(prev.bridgeTls) !== tls;
+  await chrome.storage.local.set({ bridgeHost: host, bridgePort: port, bridgeTls: tls });
+  if (changedEndpoint) {
+    await chrome.storage.local.remove("bridgeToken");
+  }
+  await chrome.runtime.sendMessage({ type: "bridge-config-updated" }).catch(() => {});
+  const isRemote = !["127.0.0.1", "localhost", "::1"].includes(host.toLowerCase());
+  showError(
+    isRemote ? t("settings.switchedRemote", { host, port }) : t("settings.switchedLocal"),
+    "info",
+  );
+  setTimeout(() => void refresh(), 500);
+});
+
+// Password Generator
 async function generatePassword() {
-  const options = {length:Number($("#generator-length").value)};
-  for (const key of ["uppercase","lowercase","digits","symbols"]) options[key] = $(`#gen-${key}`).checked;
-  return call("generate",{options});
+  const len = Math.max(8, Math.min(128, Number($("#generator-length").value) || 24));
+  const options = { length: len };
+  for (const key of ["uppercase", "lowercase", "digits", "symbols"]) {
+    options[key] = $(`#gen-${key}`).checked;
+  }
+  return call("generate", { options });
 }
-$("#generate-password").onclick = async () => {
+
+async function triggerGeneratePassword() {
   try {
-    $("#generator-output").value = await generatePassword();
-    $("#save-generated-password").hidden = !currentOrigin || !$("#generator-output").value;
+    const pw = await generatePassword();
+    $("#generator-output").value = pw;
+    $("#save-generated-password").hidden = !pageAvailableState || !pw;
+    updateStrengthMeter();
     showError("");
-  } catch(e) { showError(e); }
-};
+  } catch (e) {
+    showError(e);
+  }
+}
+
+$("#generate-password").onclick = () => void triggerGeneratePassword();
+
+$("#generator-range").addEventListener("input", () => {
+  $("#generator-length").value = $("#generator-range").value;
+  clearTimeout(genDebounceTimer);
+  genDebounceTimer = setTimeout(() => void triggerGeneratePassword(), 80);
+});
+$("#generator-length").addEventListener("input", () => {
+  const val = Number($("#generator-length").value);
+  if (Number.isFinite(val)) $("#generator-range").value = String(Math.max(8, Math.min(64, val)));
+});
+for (const key of ["uppercase", "lowercase", "digits", "symbols"]) {
+  $(`#gen-${key}`).addEventListener("change", () => {
+    const anyChecked = ["uppercase", "lowercase", "digits", "symbols"].some(k => $(`#gen-${k}`).checked);
+    if (!anyChecked) $(`#gen-${key}`).checked = true;
+    void triggerGeneratePassword();
+  });
+}
+
 $("#copy-generated-password").onclick = async () => {
   try {
-    if ($("#generator-output").value) {
-      await navigator.clipboard.writeText($("#generator-output").value);
-      $("#save-generated-password").hidden = !currentOrigin;
-      showError("已复制 / Copied");
+    const pw = $("#generator-output").value;
+    if (pw) {
+      await navigator.clipboard.writeText(pw);
+      $("#save-generated-password").hidden = !pageAvailableState;
+      showError(t("vault.copied"), "success");
     }
-  } catch(e) { showError(e); }
+  } catch (e) {
+    showError(e);
+  }
 };
+
 $("#save-generated-password").onclick = () => {
   const pw = $("#generator-output").value;
   if (!pw || !currentOrigin) return;
@@ -285,8 +747,16 @@ $("#save-generated-password").onclick = () => {
   presentLogin({ username: "", password: pw, warnings: [] }, currentOrigin);
   $("#username").focus();
 };
-$("#use-generated-password").onclick = async () => { try { $("#password").value = await generatePassword(); } catch(e) { showError(e); } };
 
+$("#use-generated-password").onclick = async () => {
+  try {
+    $("#password").value = await generatePassword();
+  } catch (e) {
+    showError(e);
+  }
+};
+
+// Smart Save & 2FA QR
 function closeQuickStore() {
   clearTimeout(quickParseTimer);
   quickParsed = null;
@@ -296,6 +766,7 @@ function closeQuickStore() {
   $("#quick-store-detected").hidden = true;
   $("#quick-totp-attach-box").hidden = true;
   $("#quick-store-source").textContent = "";
+  syncChromeVisibility();
 }
 
 function applyQuickParsed(parsed, origin) {
@@ -306,14 +777,17 @@ function applyQuickParsed(parsed, origin) {
     $("#quick-totp-attach-box").hidden = true;
     return;
   }
-  $("#quick-store-badge").textContent = parsed.labelZh || parsed.label || "SECRET";
+  $("#quick-store-badge").textContent = OpenKeyletUI.lang === "zh"
+    ? (parsed.labelZh || parsed.label || "SECRET")
+    : (parsed.label || parsed.labelZh || "SECRET");
   $("#quick-store-summary").textContent = parsed.summary || "";
   $("#quick-store-detected").hidden = false;
   $("#quick-store-name").value = parsed.input?.name || "";
+
   const attachBox = $("#quick-totp-attach-box");
   if (parsed.totpUri && entries.length && quickOrigin) {
     $("#quick-totp-target").replaceChildren(
-      ...entries.map(item => new Option(`${item.name}${item.username ? ` · ${item.username}` : ""}`, item.id))
+      ...entries.map(item => new Option(`${item.name}${item.username ? ` · ${item.username}` : ""}`, item.id)),
     );
     attachBox.hidden = false;
   } else {
@@ -335,14 +809,16 @@ async function parseQuickStoreText(rawText, origin) {
 }
 
 async function openQuickStore(prefillText = "", origin = currentOrigin) {
-  closeSave(); closePersonal(); OpenKeyletVaultUI.close();
+  closeSave();
+  OpenKeyletVaultUI.close();
   quickOrigin = origin || currentOrigin || "";
-  $("#quick-store-source").textContent = quickOrigin ? `来源网站 / Source: ${quickOrigin}` : "";
+  $("#quick-store-source").textContent = quickOrigin || "";
   $("#quick-store-text").value = prefillText;
   $("#quick-store-name").value = "";
   $("#quick-store-detected").hidden = true;
   $("#quick-totp-attach-box").hidden = true;
   $("#quick-store-form").hidden = false;
+  syncChromeVisibility();
   if (prefillText) {
     await parseQuickStoreText(prefillText, quickOrigin);
   } else {
@@ -372,26 +848,31 @@ $("#scan-page-qr").onclick = async () => {
     const res = await call("scan-page-qr");
     await openQuickStore(res.text, res.origin);
     applyQuickParsed(res.parsed, res.origin);
-    showError("已识别网页中的 2FA 二维码 / QR code detected");
+    showError(t("quick.qrDetected"), "success");
   } catch (e) {
     showError(e);
   } finally {
     reading = false;
   }
 };
+
 $("#quick-store-text").addEventListener("input", () => {
   clearTimeout(quickParseTimer);
   const value = $("#quick-store-text").value;
   quickParseTimer = setTimeout(() => void parseQuickStoreText(value, quickOrigin), 220);
 });
-$("#quick-store-cancel").onclick = async () => {
+
+async function cancelQuickStoreFlow() {
   const wasQuickWindow = Boolean(quickContext);
   if (quickContext) await call("quick-capture-dismiss").catch(() => {});
   quickContext = "";
   closeQuickStore();
   if (wasQuickWindow) window.close();
   else refresh();
-};
+}
+$("#quick-store-cancel").onclick = cancelQuickStoreFlow;
+$("#quick-back").onclick = cancelQuickStoreFlow;
+
 $("#quick-totp-attach").onclick = async () => {
   if (saving || !quickParsed?.totpUri) return;
   const targetId = $("#quick-totp-target").value;
@@ -410,7 +891,7 @@ $("#quick-totp-attach").onclick = async () => {
     const wasQuickWindow = Boolean(quickContext);
     quickContext = "";
     closeQuickStore();
-    showError(`已将 2FA 附加到 ${target.name} / 2FA attached`);
+    showError(t("quick.attached", { name: target.name }), "success");
     if (wasQuickWindow) setTimeout(() => window.close(), 700);
   } catch (e) {
     showError(e);
@@ -419,15 +900,16 @@ $("#quick-totp-attach").onclick = async () => {
     refresh();
   }
 };
+
 $("#quick-store-form").addEventListener("submit", async e => {
   e.preventDefault();
   if (saving) return;
   saving = true;
   try {
     const raw = $("#quick-store-text").value.trim();
-    if (!raw) throw new Error("请先粘贴要保存的密钥或文本 / Paste a secret first");
+    if (!raw) throw new Error(t("quick.emptyErr"));
     if (!quickParsed) await parseQuickStoreText(raw, quickOrigin);
-    if (!quickParsed?.input) throw new Error("无法解析当前内容 / Could not parse secret");
+    if (!quickParsed?.input) throw new Error(t("quick.parseErr"));
     const input = structuredClone(quickParsed.input);
     const customName = $("#quick-store-name").value.trim();
     if (customName) input.name = customName;
@@ -435,7 +917,7 @@ $("#quick-store-form").addEventListener("submit", async e => {
     const wasQuickWindow = Boolean(quickContext);
     quickContext = "";
     closeQuickStore();
-    showError("已保存到本地密码库 / Saved to OpenKeylet");
+    showError(t("save.saved"), "success");
     if (wasQuickWindow) setTimeout(() => window.close(), 700);
   } catch (err) {
     showError(err);
@@ -444,4 +926,25 @@ $("#quick-store-form").addEventListener("submit", async e => {
     refresh();
   }
 });
-refresh(); setInterval(refresh,2000);
+
+// React to language/theme updates
+OpenKeyletUI.onChange(() => {
+  updateBridgeStatusUI(
+    bridgeConnected ? "status.connected" : "status.unavailable",
+    bridgeConnected ? "on" : "error",
+    bridgeConnected ? "online" : "error",
+  );
+  const extVersion = chrome.runtime.getManifest?.().version || "";
+  if (extVersion) $("#ext-version-label").textContent = `OpenKeylet v${extVersion} · ${t("settings.footerVault")}`;
+  renderSiteEntries();
+  renderSiteAutofill();
+  updateStrengthMeter();
+  if (pendingCapture) $("#capture-source").textContent = t("capture.source", { origin: pendingCapture.origin });
+});
+
+// Initial paint & polling
+OpenKeyletUI.applyI18n();
+void OpenKeyletUI.hydrateFromStorage();
+syncChromeVisibility();
+void refresh();
+setInterval(refresh, 2000);

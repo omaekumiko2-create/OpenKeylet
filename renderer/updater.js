@@ -488,6 +488,8 @@ window.OpenKeyletUpdater = {
       try {
         await invoke('update_install_and_restart');
         toast(localized('更新已应用，正在重启 OpenKeylet…', 'Update applied; restarting OpenKeylet…'));
+        busy = false;
+        render();
       } catch (error) {
         const msg = String(error?.message || error);
         const code = msg.match(/UPDATE_[A-Z0-9_]+/)?.[0];

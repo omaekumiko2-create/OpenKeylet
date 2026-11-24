@@ -5128,7 +5128,7 @@ mod tests {
         let read = structured_value(
             &mcp.terminal_read(Parameters(TerminalReadInput {
                 session_id: session_id.clone(),
-                wait_seconds: Some(2),
+                wait_seconds: Some(6),
                 until: Some("[REDACTED]".into()),
             }))
             .await,

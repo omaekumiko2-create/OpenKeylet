@@ -333,7 +333,7 @@ html[lang="en"] .browser-connect-note span {
   position: relative;
   order: -1;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   height: 36px;
   padding: 0 12px;
   background: var(--chassis);
@@ -345,7 +345,7 @@ html[lang="en"] .browser-connect-note span {
   z-index: 2;
   top: 0;
   left: 12px;
-  width: calc((100% - 24px) / 3);
+  width: calc((100% - 24px) / 4);
   height: var(--rule-width);
   background: var(--orange);
   box-shadow: 0 1px 3px rgb(237 74 26 / 24%);
@@ -355,8 +355,9 @@ html[lang="en"] .browser-connect-note span {
   transition: transform 220ms cubic-bezier(.22, .72, .2, 1);
 }
 
-.nav[data-active="activity"]::after { transform: translateX(100%); }
-.nav[data-active="settings"]::after { transform: translateX(200%); }
+.nav[data-active="import"]::after { transform: translateX(100%); }
+.nav[data-active="activity"]::after { transform: translateX(200%); }
+.nav[data-active="settings"]::after { transform: translateX(300%); }
 
 .nav-item {
   position: relative;

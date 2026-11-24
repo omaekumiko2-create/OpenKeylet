@@ -1,3 +1,4 @@
+pub mod admin_server;
 pub mod api_catalog;
 pub mod backup;
 pub mod browser;
@@ -15,6 +16,7 @@ pub mod passkey;
 pub mod policy;
 pub mod runtime_epoch;
 pub mod session_broker;
+pub mod smart_extract;
 pub mod smart_ingest;
 pub mod storage;
 pub mod terminal;

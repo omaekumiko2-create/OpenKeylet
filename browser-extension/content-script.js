@@ -89,19 +89,88 @@ function showSaveNotice(available) {
   if (window !== window.top) return;
   if (!available) { saveNotice?.remove(); saveNotice = null; return; }
   if (saveNotice?.isConnected || !document.documentElement) return;
+  const isZh = String(navigator.language || "").toLowerCase().startsWith("zh");
   saveNotice = document.createElement("div");
   saveNotice.setAttribute("data-openkeylet-save-notice", "");
   saveNotice.style.cssText = "all:initial!important;position:fixed!important;right:16px!important;bottom:16px!important;z-index:2147483647!important;";
   const shadow = saveNotice.attachShadow({ mode: "closed" });
   const style = document.createElement("style");
-  style.textContent = ":host{color-scheme:dark}section{box-sizing:border-box;width:min(340px,calc(100vw - 32px));padding:15px 16px;border:1px solid #27272e;border-radius:12px;background:#0d0d10;color:#f4f4f5;box-shadow:0 16px 40px rgba(0,0,0,.65);font:13px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}strong{display:block;color:#f4f4f5;font-weight:600;letter-spacing:-.02em}p{margin:6px 0 12px;color:#a1a1aa}button{font:inherit;font-size:12px;font-weight:600;cursor:pointer;border:1px solid #2e2e36;border-radius:8px;background:#1b1b1f;color:#f4f4f5;padding:7px 12px;margin-right:8px}button:first-of-type{background:#f4f4f5;color:#09090b;border-color:transparent}button:focus-visible{outline:2px solid #f4f4f5;outline-offset:2px}";
+  style.textContent = `
+    :host { color-scheme: dark light; }
+    section {
+      box-sizing: border-box;
+      width: min(336px, calc(100vw - 32px));
+      padding: 14px 15px;
+      border: 1px solid #26262b;
+      border-radius: 10px;
+      background: #111114;
+      color: #f4f4f5;
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(255, 255, 255, 0.04);
+      font: 12px/1.5 "Inter", "Segoe UI Variable", "Segoe UI", "PingFang SC", "Microsoft YaHei UI", -apple-system, BlinkMacSystemFont, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    .head { display: flex; align-items: center; gap: 8px; }
+    .mark { width: 17px; height: 17px; flex: none; display: block; }
+    .ring { fill: #f4f4f5; }
+    .bit { fill: #a1a1aa; }
+    strong { display: block; color: #f4f4f5; font-size: 12.5px; font-weight: 600; letter-spacing: -0.015em; }
+    p { margin: 6px 0 12px; color: #a1a1aa; font-size: 11.5px; line-height: 1.5; }
+    .actions { display: flex; align-items: center; gap: 8px; }
+    button {
+      font: inherit;
+      font-size: 11.5px;
+      font-weight: 600;
+      height: 30px;
+      padding: 0 12px;
+      cursor: pointer;
+      border: 1px solid #26262b;
+      border-radius: 6px;
+      background: #1b1b1f;
+      color: #f4f4f5;
+      transition: background-color 140ms ease, border-color 140ms ease;
+    }
+    button:hover { background: #25252a; border-color: #383840; }
+    button:first-of-type { background: #f4f4f5; color: #09090b; border-color: transparent; }
+    button:first-of-type:hover { background: #ffffff; }
+    button:focus-visible { outline: 2px solid #f4f4f5; outline-offset: 2px; }
+    @media (prefers-color-scheme: light) {
+      section {
+        background: #ffffff;
+        color: #111114;
+        border-color: rgba(17, 17, 20, 0.13);
+        box-shadow: 0 16px 40px rgba(17, 17, 20, 0.14), 0 0 0 1px rgba(17, 17, 20, 0.06);
+      }
+      .ring { fill: #111114; }
+      .bit { fill: #52525b; }
+      strong { color: #111114; }
+      p { color: #52525b; }
+      button { background: #f2f2f4; color: #111114; border-color: rgba(17, 17, 20, 0.13); }
+      button:hover { background: #e4e4e8; border-color: rgba(17, 17, 20, 0.24); }
+      button:first-of-type { background: #111114; color: #ffffff; border-color: transparent; }
+      button:first-of-type:hover { background: #27272c; }
+      button:focus-visible { outline-color: #111114; }
+    }
+  `;
   const section = document.createElement("section");
   section.setAttribute("role", "status");
-  const title = document.createElement("strong"); title.textContent = "OpenKeylet · 保存登录信息";
+  const head = document.createElement("div");
+  head.className = "head";
+  head.innerHTML = '<svg class="mark" viewBox="0 0 400 400" aria-hidden="true"><path class="ring" fill-rule="evenodd" d="M24 8H276A16 16 0 0 1 292 24V276A16 16 0 0 1 276 292H24A16 16 0 0 1 8 276V24A16 16 0 0 1 24 8ZM124 108H176A16 16 0 0 1 192 124V176A16 16 0 0 1 176 192H124A16 16 0 0 1 108 176V124A16 16 0 0 1 124 108Z"/><path class="bit" d="M324 208H376A16 16 0 0 1 392 224V376A16 16 0 0 1 376 392H224A16 16 0 0 1 208 376V324A16 16 0 0 1 224 308H292A16 16 0 0 0 308 292V224A16 16 0 0 1 324 208Z"/></svg>';
+  const title = document.createElement("strong");
+  title.textContent = isZh ? "OpenKeylet · 保存登录信息" : "OpenKeylet · Save login";
+  head.append(title);
   const description = document.createElement("p");
-  description.textContent = "检测到已提交的账号信息。打开插件预览，确认后保存。";
-  const review = document.createElement("button"); review.type = "button"; review.textContent = "预览保存 / Review";
-  const dismiss = document.createElement("button"); dismiss.type = "button"; dismiss.textContent = "忽略 / Dismiss";
+  description.textContent = isZh
+    ? "检测到已提交的账号信息。预览确认后才会写入本地密码库。"
+    : "Submitted login detected. Review and confirm before saving locally.";
+  const actions = document.createElement("div");
+  actions.className = "actions";
+  const review = document.createElement("button");
+  review.type = "button";
+  review.textContent = isZh ? "预览并保存" : "Review & save";
+  const dismiss = document.createElement("button");
+  dismiss.type = "button";
+  dismiss.textContent = isZh ? "忽略" : "Dismiss";
   review.addEventListener("click", event => {
     if (event.isTrusted) chrome.runtime.sendMessage({ type: "openkeylet-capture-review" }).then(reply => {
       if (reply?.result?.available === false) showSaveNotice(false);
@@ -110,7 +179,8 @@ function showSaveNotice(available) {
   dismiss.addEventListener("click", event => {
     if (event.isTrusted) chrome.runtime.sendMessage({ type: "openkeylet-capture-dismiss" }).catch(() => {});
   });
-  section.append(title, description, review, dismiss);
+  actions.append(review, dismiss);
+  section.append(head, description, actions);
   shadow.append(style, section);
   document.documentElement.append(saveNotice);
 }

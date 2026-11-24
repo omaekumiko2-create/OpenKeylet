@@ -341,7 +341,9 @@ try {
     await page.keyboard.press('Control+,');
     assert.equal(await page.locator('#page-settings').evaluate(el => el.classList.contains('active')), true, 'Ctrl+, opens Settings');
     await page.keyboard.press('Control+2');
-    assert.equal(await page.locator('#page-activity').evaluate(el => el.classList.contains('active')), true, 'Ctrl+2 opens Log');
+    assert.equal(await page.locator('#page-import').evaluate(el => el.classList.contains('active')), true, 'Ctrl+2 opens Import');
+    await page.keyboard.press('Control+3');
+    assert.equal(await page.locator('#page-activity').evaluate(el => el.classList.contains('active')), true, 'Ctrl+3 opens Log');
     await page.keyboard.press('Control+1');
     assert.equal(await page.locator('#page-connections').evaluate(el => el.classList.contains('active')), true, 'Ctrl+1 opens Items');
     await page.keyboard.press('Control+n');

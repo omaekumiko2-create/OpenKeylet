@@ -1,140 +1,494 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en" data-theme="dark">
   <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>OpenKeylet</title>
-    <link rel="stylesheet" href="popup.css">
+    <script src="ui-core.js"></script>
+    <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
-    <header>
-      <img class="mark" src="icons/42x42.png" srcset="icons/42x42.png 1x, icons/53x53.png 1.25x, icons/63x63.png 1.5x, icons/84x84.png 2x, icons/105x105.png 2.5x, icons/126x126.png 3x, icons/168x168.png 4x" alt="">
-      <div><strong class="brand-wordmark"><span class="brand-open">Open</span><span class="brand-keylet">Keylet</span></strong><small>LOCAL PASSWORDS & PASSKEYS</small></div>
-    </header>
-    <section class="status-row">
-      <span id="lamp" class="lamp"></span>
-      <div><strong id="status">正在检查 / CHECKING</strong><small id="detail">127.0.0.1</small></div>
-    </section>
-    <main>
-      <section id="capture-complete" class="page-hint" hidden><strong>已保存到 OpenKeylet / Saved</strong><p>账号信息已写入本地加密密码库。</p><button id="capture-close" type="button">完成 / Done</button></section>
-      <p id="website" class="website" hidden></p>
-      <section id="capture-notice" class="page-hint" hidden>
-        <strong>检测到已提交的登录信息 / Login detected</strong>
-        <p id="capture-source"></p>
-        <p class="note">请确认账号及密码是否正确。提交表单不代表登录或注册成功。待保存信息最多保留 5 分钟。</p>
-        <button id="capture-review" type="button">预览并保存 / Review & save</button>
-        <button id="capture-dismiss" type="button" class="secondary">忽略 / Dismiss</button>
-      </section>
-      <section id="page-hint" class="page-hint" role="status" hidden>
-        <strong>下一步：打开需要登录的网站</strong>
-        <p>然后点击 OpenKeylet 插件，即可查看、填写或保存该网站的账号。</p>
-        <p class="note">扩展管理页、新标签页等浏览器页面无法填写密码，无需重新连接。</p>
-        <p class="note" lang="en">Open a sign-in website, then click OpenKeylet. Browser pages cannot be filled; no reconnection is needed.</p>
-      </section>
-      <form id="unlock-form" hidden><label for="pin">OpenKeylet PIN</label><input id="pin" type="password" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="off" required><button>解锁 / Unlock</button></form>
-      <section id="vault-panel" hidden>
-        <details class="personal-vault" id="full-vault">
-          <summary>完整密码库 / All vault items</summary>
-          <div class="accordion-body">
-            <label for="vault-search">搜索 / Search</label><input id="vault-search" type="search" autocomplete="off">
-            <div class="vault-filter-row">
-              <select id="vault-view" aria-label="Vault or trash"><option value="active">密码库 / Vault</option><option value="trash">回收站 / Trash</option></select>
-              <select id="vault-kind" aria-label="Item type"><option value="">所有类型 / All types</option><option value="login">登录 / Login</option><option value="passkey">Passkey</option><option value="card">信用卡 / Card</option><option value="identity">身份 / Identity</option><option value="secureNote">笔记 / Note</option><option value="ssh">SSH</option><option value="api">API</option><option value="custom">其他 / Other</option></select>
-            </div>
-            <label for="vault-folder">文件夹 / Folder</label><select id="vault-folder"><option value="">所有文件夹 / All folders</option></select>
-            <label class="vault-check"><input id="vault-favorites" type="checkbox">仅收藏 / Favorites</label>
-            <div id="vault-all-items"></div>
-            <div class="vault-filter-row"><select id="vault-new-kind" aria-label="New item type"><option value="login">登录 / Login</option><option value="card">信用卡 / Card</option><option value="identity">身份 / Identity</option><option value="secureNote">笔记 / Note</option></select><button id="vault-new" type="button">＋ 新建 / New</button></div>
-          </div>
-        </details>
-        <form id="vault-editor" hidden autocomplete="off">
-          <strong id="vault-editor-title"></strong>
-          <label for="vault-item-name">名称 / Name</label><input id="vault-item-name" maxlength="80" required>
-          <label for="vault-item-folder">文件夹 / Folder</label><input id="vault-item-folder" maxlength="120">
-          <label class="vault-check"><input id="vault-item-favorite" type="checkbox">收藏 / Favorite</label>
-          <label class="vault-check"><input id="vault-item-enabled" type="checkbox" checked>启用 / Enabled</label>
-          <div id="vault-editor-fields"></div>
-          <fieldset id="vault-editor-websites"><legend>网站 / Websites</legend><div id="vault-uri-rows"></div><button id="vault-uri-add" type="button">＋ 网站 / Website</button></fieldset>
-          <div id="vault-editor-passkeys"></div>
-          <button type="submit">保存 / Save</button><button id="vault-editor-cancel" type="button" class="secondary">取消 / Cancel</button>
-        </form>
-        <section id="vault-history" hidden><strong>密码历史 / Password history</strong><p>最近 20 条旧密码 / Latest 20 previous passwords</p><div id="vault-history-rows"></div><button id="vault-history-clear" type="button">清除历史 / Clear history</button><button id="vault-history-close" type="button" class="secondary">关闭 / Close</button></section>
-        <dialog id="vault-confirm" hidden aria-label="Confirm vault action"><p id="vault-confirm-message"></p><div class="personal-actions"><button id="vault-confirm-accept" type="button">确认 / Confirm</button><button id="vault-confirm-cancel" type="button" class="secondary">取消 / Cancel</button></div></dialog>
-        <div id="entries" class="entries"></div>
-        <button id="read-form" type="button">保存当前网站的账号 / Save login</button>
-        <div class="personal-actions quick-store-row" id="quick-store-row">
-          <button id="scan-page-qr" type="button" class="secondary">扫描 2FA / Scan QR</button>
-          <button id="quick-store-open" type="button" class="secondary">⚡ 存密钥 / Smart save</button>
+    <div class="app-frame">
+      <!-- Top Titlebar (1:1 unified with OpenKeylet desktop .title-drag-region) -->
+      <header class="titlebar">
+        <div class="app-mark">
+          <span class="app-mark-symbol" aria-hidden="true">
+            <svg class="app-mark-logo" viewBox="0 0 400 400" aria-hidden="true">
+              <path class="logo-ring" fill-rule="evenodd" d="M24 8H276A16 16 0 0 1 292 24V276A16 16 0 0 1 276 292H24A16 16 0 0 1 8 276V24A16 16 0 0 1 24 8ZM124 108H176A16 16 0 0 1 192 124V176A16 16 0 0 1 176 192H124A16 16 0 0 1 108 176V124A16 16 0 0 1 124 108Z" />
+              <path class="logo-bit" d="M324 208H376A16 16 0 0 1 392 224V376A16 16 0 0 1 376 392H224A16 16 0 0 1 208 376V324A16 16 0 0 1 224 308H292A16 16 0 0 0 308 292V224A16 16 0 0 1 324 208Z" />
+            </svg>
+          </span>
+          <strong class="app-mark-wordmark"><span class="brand-open">Open</span><span class="brand-keylet">Keylet</span></strong>
         </div>
-        <form id="quick-store-form" hidden autocomplete="off">
-          <strong id="quick-store-title">智能存密钥 / Smart save</strong>
-          <p id="quick-store-source" class="note"></p>
-          <label for="quick-store-text">粘贴 API Key / cURL / SSH / .env / 2FA 链接</label>
-          <textarea id="quick-store-text" rows="3" maxlength="65536" autocomplete="off" placeholder="sk-... / curl ... / otpauth://totp/..."></textarea>
-          <div id="quick-store-detected" class="quick-detected" hidden>
-            <span id="quick-store-badge" class="quick-badge"></span>
-            <small id="quick-store-summary"></small>
+
+        <div class="title-tools">
+          <button id="status-pill" class="status-pill" type="button" title="Bridge connection">
+            <span id="lamp" class="lamp" aria-hidden="true"></span>
+            <span id="status" data-i18n="status.checking">CHECKING</span>
+          </button>
+
+          <button class="title-switch" id="theme-toggle" type="button" role="switch" aria-checked="false" aria-label="Light mode" title="Switch to light mode">
+            <span class="title-switch-option" data-state="false" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M20 12A8 8 0 1 1 12 4A6 6 0 0 0 20 12Z" /></svg>
+            </span>
+            <span class="title-switch-option" data-state="true" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4" /><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5" /></svg>
+            </span>
+          </button>
+
+          <button class="owner-lock-button" id="lock" type="button" hidden data-i18n="header.lock" data-i18n-title="header.lockTitle">LOCK</button>
+        </div>
+      </header>
+
+      <!-- Version mismatch notice -->
+      <section id="version-mismatch" class="update-banner" hidden>
+        <div class="update-banner-main">
+          <span class="update-dot" aria-hidden="true"></span>
+          <div class="update-banner-copy">
+            <strong data-i18n="update.title">Extension update available</strong>
+            <small id="version-mismatch-detail"></small>
           </div>
-          <label for="quick-store-name">名称 / Name</label>
-          <input id="quick-store-name" maxlength="80">
-          <div id="quick-totp-attach-box" hidden>
-            <label for="quick-totp-target">附加 2FA 到已有账号 / Attach 2FA to login</label>
-            <select id="quick-totp-target"></select>
-            <button id="quick-totp-attach" type="button">附加 2FA 到所选账号 / Attach 2FA</button>
-          </div>
-          <button id="quick-store-save" type="submit">保存为新项目 / Save to OpenKeylet</button>
-          <button id="quick-store-cancel" type="button" class="secondary">取消 / Cancel</button>
-        </form>
-        <details class="personal-vault"><summary>密码生成器 / Password generator</summary>
-          <div class="accordion-body">
-            <label for="generator-length">长度 / Length · 8–128</label><input id="generator-length" type="number" min="8" max="128" value="24">
-            <div class="generator-options"><label><input type="checkbox" id="gen-uppercase" checked>A–Z</label><label><input type="checkbox" id="gen-lowercase" checked>a–z</label><label><input type="checkbox" id="gen-digits" checked>0–9</label><label><input type="checkbox" id="gen-symbols" checked>!@#</label></div>
-            <input id="generator-output" readonly aria-label="Generated password" autocomplete="off">
-            <div class="personal-actions"><button id="generate-password" type="button">生成 / Generate</button><button id="copy-generated-password" type="button" class="secondary">复制 / Copy</button></div>
-            <button id="save-generated-password" type="button" class="secondary" hidden>保存刚生成的密码到此网站 / Save for this site</button>
-          </div>
-        </details>
-        <form id="save-form" hidden autocomplete="off">
-          <p id="save-source" class="note"></p>
-          <label id="detected-form-label" for="detected-form" hidden>检测到多个表单 / Choose a form</label>
-          <select id="detected-form" hidden></select>
-          <p id="save-warning" class="note" role="status"></p>
-          <label for="save-target">保存位置 / Save to</label><select id="save-target"><option value="">新项目 / New item</option></select>
-          <label for="name">名称 / Name</label><input id="name" maxlength="64" required>
-          <label for="username">账号 / Username</label><input id="username" maxlength="4096" autocomplete="off">
-          <label for="password">密码 / Password</label><input id="password" type="password" maxlength="16384" autocomplete="new-password" required>
-          <button id="toggle-saved-password" type="button" class="secondary">显示密码 / Show password</button>
-          <button id="use-generated-password" type="button" class="secondary">生成新密码 / Generate password</button>
-          <button type="submit">保存到 OpenKeylet / Save</button><button id="cancel-save" type="button" class="secondary">取消 / Cancel</button>
-        </form>
-        <button id="lock" type="button" class="secondary" hidden>锁定 / Lock</button>
-        <details class="personal-vault">
-          <summary id="personal-vault-summary">信用卡、身份与笔记 / Cards, identities & notes</summary>
-          <div class="accordion-body">
-            <div id="personal-entries"></div>
-            <div class="personal-actions"><button id="add-card" type="button" class="secondary">＋ 信用卡 / Card</button><button id="add-identity" type="button" class="secondary">＋ 身份 / Identity</button><button id="add-note" type="button" class="secondary">＋ 笔记 / Note</button></div>
-          </div>
-        </details>
-        <form id="personal-form" hidden autocomplete="off">
-          <strong id="personal-title"></strong>
-          <label for="personal-name">名称 / Name</label><input id="personal-name" maxlength="80" required>
-          <div id="personal-fields"></div>
-          <button type="submit">保存到 OpenKeylet / Save</button>
-          <button id="personal-cancel" type="button" class="secondary">取消 / Cancel</button>
-        </form>
+          <button id="reload-extension" class="button primary compact" type="button" data-i18n="update.reload">Reload</button>
+        </div>
+        <p class="update-banner-note" data-i18n="update.note"></p>
       </section>
-      <p id="error" role="status" aria-live="polite"></p>
-    </main>
-    <details class="connection-details"><summary>连接设置 / Connection</summary><div class="accordion-body"><form id="pair-form">
-      <label for="port">BRIDGE PORT</label>
-      <input id="port" inputmode="numeric" value="39272" maxlength="5">
-      <button type="submit">RECONNECT LOCAL BRIDGE</button>
-    </form></div></details>
-    <section class="capture-card">
-      <label class="capture-setting"><span>开启登录保存提示 / Enable save suggestions</span><input id="capture-enabled" type="checkbox" aria-describedby="capture-disclosure"></label>
-      <p class="capture-disclosure" id="capture-disclosure">开启后，在你提交表单、点击登录／继续或按 Enter 时读取账号和密码，仅发送到本机 OpenKeylet。待保存密码最多暂存 5 分钟，确认后才写入密码库。<br><span lang="en">When enabled, reads login fields on submit, sign-in/continue clicks or Enter. Sent only to local OpenKeylet; drafts expire within 5 minutes and are saved only after confirmation.</span></p>
-    </section>
-    <footer><span>与本机 OpenKeylet 共用密码库 · LOCAL VAULT</span><a href="privacy.html" target="_blank" rel="noopener">隐私说明 / Privacy</a></footer>
-    <script src="vault.js"></script><script src="popup.js"></script>
+
+      <!-- Primary 4-tab Segmented Navigation (mirrors desktop .nav) -->
+      <nav class="nav" id="main-nav" data-active="site" aria-label="Extension navigation">
+        <button class="nav-item active" type="button" data-tab="site" aria-current="page">
+          <i aria-hidden="true"></i><span data-i18n="nav.site">Site</span>
+        </button>
+        <button class="nav-item" type="button" data-tab="vault">
+          <i aria-hidden="true"></i><span data-i18n="nav.vault">Vault</span>
+        </button>
+        <button class="nav-item" type="button" data-tab="generator">
+          <i aria-hidden="true"></i><span data-i18n="nav.gen">Gen</span>
+        </button>
+        <button class="nav-item" type="button" data-tab="settings">
+          <i aria-hidden="true"></i><span data-i18n="nav.settings">System</span>
+        </button>
+      </nav>
+
+      <main class="main-scroll" id="main-scroll">
+        <!-- Standalone capture completion confirmation -->
+        <section id="capture-complete" class="state-card" hidden>
+          <div class="state-badge success">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5" /></svg>
+          </div>
+          <strong data-i18n="capture.savedTitle">Saved to OpenKeylet</strong>
+          <p data-i18n="capture.savedDesc">Account written to your local encrypted vault.</p>
+          <button id="capture-close" class="button primary" type="button" data-i18n="capture.done">Done</button>
+        </section>
+
+        <!-- Bridge offline state -->
+        <section id="offline-panel" class="empty-state" hidden>
+          <div class="empty-code" data-i18n="offline.code">BRIDGE OFFLINE</div>
+          <h3 data-i18n="offline.title">Cannot reach OpenKeylet</h3>
+          <p data-i18n="offline.desc">Make sure the OpenKeylet desktop app is open and Browser Bridge is enabled.</p>
+          <div class="empty-actions">
+            <button id="offline-retry" class="button primary" type="button" data-i18n="offline.retry">Retry</button>
+            <button id="offline-settings" class="button secondary" type="button" data-i18n="offline.settings">Connection</button>
+          </div>
+        </section>
+
+        <!-- Compact internal-page notice (visible on non-web pages, incl. when locked) -->
+        <section id="page-hint" class="page-hint-card" role="status" hidden>
+          <div class="page-hint-head">
+            <span class="page-hint-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5" /><path d="M3.5 12h17M12 3.5c2.6 2.6 2.6 14.4 0 17M12 3.5c-2.6 2.6-2.6 14.4 0 17" /></svg>
+            </span>
+            <div class="page-hint-copy">
+              <strong data-i18n="site.emptyTitle">Open a website to autofill</strong>
+              <p data-i18n="site.emptyDesc">Browser internal pages cannot be filled. Open any sign-in page, or browse your vault below.</p>
+            </div>
+          </div>
+          <div class="page-hint-actions" id="page-hint-actions">
+            <button id="hint-open-vault" class="button secondary compact" type="button" data-i18n="site.openVault">Browse vault</button>
+            <button id="hint-smart-save" class="button quiet compact" type="button" data-i18n="site.smartSave">Smart save</button>
+          </div>
+        </section>
+
+        <!-- Pending login capture banner (available even when locked) -->
+        <section id="capture-notice" class="capture-banner" hidden>
+          <div class="capture-banner-head">
+            <span class="capture-dot" aria-hidden="true"></span>
+            <div class="capture-banner-copy">
+              <strong data-i18n="capture.title">Login detected</strong>
+              <small id="capture-source"></small>
+            </div>
+          </div>
+          <p class="capture-banner-note" data-i18n="capture.note"></p>
+          <div class="button-row">
+            <button id="capture-review" class="button primary" type="button" data-i18n="capture.review">Review &amp; save</button>
+            <button id="capture-dismiss" class="button quiet" type="button" data-i18n="capture.dismiss">Dismiss</button>
+          </div>
+        </section>
+
+        <!-- PIN Unlock panel (mirrors desktop .owner-lock-panel) -->
+        <form id="unlock-form" class="lock-card" hidden autocomplete="off">
+          <div class="lock-head">
+            <div class="lock-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><rect x="4.5" y="10.5" width="15" height="10" rx="2" /><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3" /></svg>
+            </div>
+            <div>
+              <span class="panel-code" data-i18n="unlock.badge">OWNER ACCESS</span>
+              <h2 data-i18n="unlock.title">Unlock local vault</h2>
+            </div>
+          </div>
+          <p class="lock-desc" data-i18n="unlock.desc">Enter your 6-digit PIN to view, fill, and manage credentials.</p>
+          <label class="field-label" for="pin" data-i18n="unlock.pinLabel">6-digit PIN</label>
+          <input id="pin" class="input pin-input" type="password" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="off" placeholder="••••••" required />
+          <button class="button primary unlock-submit" type="submit" data-i18n="unlock.submit">Unlock</button>
+          <p class="lock-foot" data-i18n="unlock.note">Protected locally on this device · Auto-locks after 5 min</p>
+        </form>
+
+        <!-- Unlocked Vault Workspace -->
+        <section id="vault-panel" hidden>
+          <!-- TAB 1: CURRENT SITE -->
+          <div class="tab-view active" id="tab-site" data-tab-view="site">
+            <div id="website-bar" class="website-bar" hidden>
+              <span class="website-icon" id="website-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><path d="M12 3.5 5 6.5v5.5c0 4.5 3 7.5 7 8.8 4-1.3 7-4.3 7-8.8V6.5z" /></svg>
+              </span>
+              <span id="website" class="website-origin"></span>
+              <span id="website-count" class="count-pill" hidden></span>
+            </div>
+
+            <div id="entries" class="entries"></div>
+
+            <!-- Quick site action toolbar -->
+            <div class="action-bar" id="site-actions">
+              <button id="read-form" class="button primary action-btn" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4.5h11.5L19.5 7.5V19.5H5z" /><path d="M8.5 4.5v5h7v-5M8.5 19.5v-6h7v6" /></svg>
+                <span data-i18n="site.saveLogin">Save login</span>
+              </button>
+              <div class="action-subrow" id="quick-store-row">
+                <button id="scan-page-qr" class="button secondary action-btn" type="button">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="3.5" width="6" height="6" rx="1" /><rect x="14.5" y="3.5" width="6" height="6" rx="1" /><rect x="3.5" y="14.5" width="6" height="6" rx="1" /><path d="M14.5 14.5h2.5v2.5h-2.5zM18.5 14.5h2v2M14.5 18.5h2v2M18.5 18.5h2v2" /></svg>
+                  <span data-i18n="site.scanQr">Scan 2FA</span>
+                </button>
+                <button id="quick-store-open" class="button secondary action-btn" type="button">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2.5 4.5 13h6.5l-1 8.5L19.5 11H13z" /></svg>
+                  <span data-i18n="site.smartSave">Smart save</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Quick Autofill Cards & Identities strip (only shown on websites when user has cards/identities) -->
+            <section id="site-autofill" class="quick-autofill-section" hidden>
+              <div class="section-label-row">
+                <span class="section-label" data-i18n="site.quickAutofill">Cards &amp; identities</span>
+              </div>
+              <div id="site-autofill-list" class="quick-autofill-list"></div>
+            </section>
+          </div>
+
+          <!-- TAB 2: UNIFIED VAULT (Logins, Passkeys, Cards, Identities, Notes, SSH, API) -->
+          <div class="tab-view" id="tab-vault" data-tab-view="vault" hidden>
+            <div class="vault-toolbar">
+              <div class="search-well" id="vault-search-well">
+                <button id="vault-search-clear" type="button" aria-label="Search">
+                  <svg class="search-open-glyph" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 5 5" /></svg>
+                  <svg class="search-close-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12m0-12L6 18" /></svg>
+                </button>
+                <input id="vault-search" type="search" autocomplete="off" data-i18n-placeholder="vault.searchPlaceholder" placeholder="Search vault…" />
+              </div>
+              <div class="vault-new-group">
+                <select id="vault-new-kind" class="input compact-select" aria-label="New item type">
+                  <option value="login" data-i18n="type.login">Login</option>
+                  <option value="card" data-i18n="type.card">Card</option>
+                  <option value="identity" data-i18n="type.identity">Identity</option>
+                  <option value="secureNote" data-i18n="type.secureNote">Note</option>
+                </select>
+                <button id="vault-new" class="button primary compact icon-text-btn" type="button">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+                  <span data-i18n="vault.new">New</span>
+                </button>
+              </div>
+            </div>
+
+            <div class="vault-filters">
+              <select id="vault-view" class="input compact-select" aria-label="Vault or trash">
+                <option value="active" data-i18n="vault.viewActive">Vault</option>
+                <option value="trash" data-i18n="vault.viewTrash">Trash</option>
+              </select>
+              <select id="vault-kind" class="input compact-select" aria-label="Item type">
+                <option value="" data-i18n="vault.allTypes">All</option>
+                <option value="login" data-i18n="type.login">Login</option>
+                <option value="passkey" data-i18n="type.passkey">Passkey</option>
+                <option value="card" data-i18n="type.card">Card</option>
+                <option value="identity" data-i18n="type.identity">Identity</option>
+                <option value="secureNote" data-i18n="type.secureNote">Note</option>
+                <option value="ssh" data-i18n="type.ssh">SSH</option>
+                <option value="api" data-i18n="type.api">API</option>
+                <option value="custom" data-i18n="type.custom">Other</option>
+              </select>
+              <select id="vault-folder" class="input compact-select" aria-label="Folder" hidden>
+                <option value="" data-i18n="vault.allFolders">All folders</option>
+              </select>
+              <label class="fav-chip" title="Favorites">
+                <input id="vault-favorites" type="checkbox" />
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3.5 2.6 5.3 5.9.8-4.3 4.2 1 5.9-5.2-2.8-5.2 2.8 1-5.9-4.3-4.2 5.9-.8z" /></svg>
+              </label>
+            </div>
+
+            <div id="vault-all-items" class="vault-list"></div>
+          </div>
+
+          <!-- TAB 3: PASSWORD GENERATOR -->
+          <div class="tab-view" id="tab-generator" data-tab-view="generator" hidden>
+            <div class="settings-card gen-card">
+              <div class="gen-output-box">
+                <input id="generator-output" class="gen-output" readonly aria-label="Generated password" autocomplete="off" spellcheck="false" />
+                <div class="gen-output-actions">
+                  <button id="generate-password" class="icon-btn" type="button" data-i18n-title="gen.generate" title="Regenerate">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3L19.5 9M19.5 4.5V9H15" /></svg>
+                  </button>
+                  <button id="copy-generated-password" class="icon-btn primary-tint" type="button" data-i18n-title="gen.copy" title="Copy">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2" /><path d="M5 15H4a1.5 1.5 0 0 1-1.5-1.5v-9A1.5 1.5 0 0 1 4 3h9A1.5 1.5 0 0 1 14.5 4.5v1" /></svg>
+                  </button>
+                </div>
+              </div>
+
+              <div class="gen-strength-row">
+                <div class="metric-bar"><i id="gen-strength-fill" style="width: 100%"></i></div>
+                <span id="gen-strength-label" class="gen-strength-label"></span>
+              </div>
+
+              <div class="gen-length-row">
+                <label class="field-label" for="generator-length" data-i18n="gen.length">Length</label>
+                <div class="gen-length-controls">
+                  <input id="generator-range" class="gen-range" type="range" min="8" max="64" value="24" aria-label="Password length slider" />
+                  <input id="generator-length" class="input gen-length-num" type="number" min="8" max="128" value="24" />
+                </div>
+              </div>
+
+              <div class="generator-options">
+                <label class="option-pill"><input type="checkbox" id="gen-uppercase" checked /><span>A–Z</span></label>
+                <label class="option-pill"><input type="checkbox" id="gen-lowercase" checked /><span>a–z</span></label>
+                <label class="option-pill"><input type="checkbox" id="gen-digits" checked /><span>0–9</span></label>
+                <label class="option-pill"><input type="checkbox" id="gen-symbols" checked /><span>!@#</span></label>
+              </div>
+
+              <button id="save-generated-password" class="button primary gen-save-btn" type="button" hidden data-i18n="gen.saveForSite">Save for this site</button>
+            </div>
+          </div>
+
+          <!-- OVERLAY SHEET: SAVE / REVIEW LOGIN -->
+          <form id="save-form" class="sheet" hidden autocomplete="off">
+            <div class="sheet-header">
+              <button id="save-back" class="icon-btn" type="button" aria-label="Back">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6 9 12l6 6" /></svg>
+              </button>
+              <strong id="save-sheet-title" data-i18n="save.title">Save login</strong>
+            </div>
+            <div class="sheet-body">
+              <p id="save-source" class="source-pill"></p>
+              <label id="detected-form-label" class="field-label" for="detected-form" hidden data-i18n="save.detectedForms">Choose a form</label>
+              <select id="detected-form" class="input" hidden></select>
+              <p id="save-warning" class="warn-note" role="status"></p>
+
+              <label class="field-label" for="save-target" data-i18n="save.target">Save to</label>
+              <select id="save-target" class="input"><option value="" data-i18n="save.newItem">New item</option></select>
+
+              <label class="field-label" for="name" data-i18n="save.name">Name</label>
+              <input id="name" class="input" maxlength="64" required />
+
+              <label class="field-label" for="username" data-i18n="save.username">Username</label>
+              <input id="username" class="input" maxlength="4096" autocomplete="off" />
+
+              <label class="field-label" for="password" data-i18n="save.password">Password</label>
+              <div class="secret-row">
+                <input id="password" class="input mono-input" type="password" maxlength="16384" autocomplete="new-password" required />
+                <button id="toggle-saved-password" class="button quiet compact" type="button" data-i18n="save.show">Show</button>
+                <button id="use-generated-password" class="button secondary compact" type="button" data-i18n="save.generate">Generate</button>
+              </div>
+            </div>
+            <div class="sheet-footer">
+              <button id="cancel-save" class="button quiet" type="button" data-i18n="save.cancel">Cancel</button>
+              <button class="button primary" type="submit" data-i18n="save.submit">Save</button>
+            </div>
+          </form>
+
+          <!-- OVERLAY SHEET: SMART SAVE / 2FA QR -->
+          <form id="quick-store-form" class="sheet" hidden autocomplete="off">
+            <div class="sheet-header">
+              <button id="quick-back" class="icon-btn" type="button" aria-label="Back">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6 9 12l6 6" /></svg>
+              </button>
+              <strong id="quick-store-title" data-i18n="quick.title">Smart save</strong>
+            </div>
+            <div class="sheet-body">
+              <p id="quick-store-source" class="source-pill"></p>
+              <label class="field-label" for="quick-store-text" data-i18n="quick.label">Paste API key, cURL, SSH, .env, or 2FA URI</label>
+              <textarea id="quick-store-text" class="input textarea mono-input" rows="4" maxlength="65536" autocomplete="off" data-i18n-placeholder="quick.placeholder" placeholder="sk-... / curl ... / otpauth://totp/..."></textarea>
+
+              <div id="quick-store-detected" class="quick-detected" hidden>
+                <span id="quick-store-badge" class="quick-badge"></span>
+                <small id="quick-store-summary"></small>
+              </div>
+
+              <label class="field-label" for="quick-store-name" data-i18n="quick.name">Name</label>
+              <input id="quick-store-name" class="input" maxlength="80" />
+
+              <div id="quick-totp-attach-box" class="totp-attach-box" hidden>
+                <label class="field-label" for="quick-totp-target" data-i18n="quick.attachLabel">Attach 2FA to existing login</label>
+                <div class="inline-row">
+                  <select id="quick-totp-target" class="input"></select>
+                  <button id="quick-totp-attach" class="button secondary compact" type="button" data-i18n="quick.attachBtn">Attach 2FA</button>
+                </div>
+              </div>
+            </div>
+            <div class="sheet-footer">
+              <button id="quick-store-cancel" class="button quiet" type="button" data-i18n="save.cancel">Cancel</button>
+              <button id="quick-store-save" class="button primary" type="submit" data-i18n="quick.save">Save item</button>
+            </div>
+          </form>
+
+          <!-- OVERLAY SHEET: UNIFIED VAULT ITEM EDITOR -->
+          <form id="vault-editor" class="sheet" hidden autocomplete="off">
+            <div class="sheet-header">
+              <button id="vault-editor-back" class="icon-btn" type="button" aria-label="Back">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6 9 12l6 6" /></svg>
+              </button>
+              <strong id="vault-editor-title"></strong>
+            </div>
+            <div class="sheet-body">
+              <div class="field-grid-2">
+                <div>
+                  <label class="field-label" for="vault-item-name" data-i18n="editor.name">Name</label>
+                  <input id="vault-item-name" class="input" maxlength="80" required />
+                </div>
+                <div>
+                  <label class="field-label" for="vault-item-folder" data-i18n="editor.folder">Folder</label>
+                  <input id="vault-item-folder" class="input" maxlength="120" data-i18n-placeholder="editor.folderPlaceholder" placeholder="Optional" />
+                </div>
+              </div>
+
+              <div class="check-strip">
+                <label class="vault-check"><input id="vault-item-favorite" type="checkbox" /><span data-i18n="editor.favorite">Favorite</span></label>
+                <label class="vault-check"><input id="vault-item-enabled" type="checkbox" checked /><span data-i18n="editor.enabled">Enabled</span></label>
+              </div>
+
+              <div id="vault-editor-fields" class="editor-fields"></div>
+
+              <fieldset id="vault-editor-websites" class="uri-fieldset">
+                <legend data-i18n="editor.websites">Websites</legend>
+                <div id="vault-uri-rows"></div>
+                <button id="vault-uri-add" class="button quiet compact" type="button" data-i18n="editor.addWebsite">+ Add website</button>
+              </fieldset>
+
+              <div id="vault-editor-passkeys" class="passkeys-list"></div>
+            </div>
+            <div class="sheet-footer">
+              <button id="vault-editor-cancel" class="button quiet" type="button" data-i18n="editor.cancel">Cancel</button>
+              <button class="button primary" type="submit" data-i18n="editor.save">Save</button>
+            </div>
+          </form>
+
+          <!-- OVERLAY SHEET: PASSWORD HISTORY -->
+          <section id="vault-history" class="sheet" hidden>
+            <div class="sheet-header">
+              <button id="vault-history-back" class="icon-btn" type="button" aria-label="Back">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6 9 12l6 6" /></svg>
+              </button>
+              <div>
+                <strong data-i18n="history.title">Password history</strong>
+                <small class="sheet-sub" data-i18n="history.subtitle">Latest 20 previous passwords</small>
+              </div>
+            </div>
+            <div class="sheet-body">
+              <div id="vault-history-rows" class="history-list"></div>
+            </div>
+            <div class="sheet-footer">
+              <button id="vault-history-clear" class="button danger-soft" type="button" data-i18n="history.clear">Clear history</button>
+              <button id="vault-history-close" class="button secondary" type="button" data-i18n="history.close">Close</button>
+            </div>
+          </section>
+
+          <!-- CONFIRM DIALOG -->
+          <dialog id="vault-confirm" class="confirm-dialog" hidden aria-label="Confirm vault action">
+            <p id="vault-confirm-message"></p>
+            <div class="confirm-actions">
+              <button id="vault-confirm-cancel" class="button quiet" type="button" data-i18n="vault.cancel">Cancel</button>
+              <button id="vault-confirm-accept" class="button danger" type="button" data-i18n="vault.confirm">Confirm</button>
+            </div>
+          </dialog>
+        </section>
+
+        <!-- TAB 4: SYSTEM / SETTINGS (accessible even when locked or offline) -->
+        <section class="tab-view" id="tab-settings" data-tab-view="settings" hidden>
+          <!-- Card 1: Login Save Suggestions -->
+          <div class="settings-card">
+            <div class="desktop-option">
+              <div class="option-copy">
+                <strong data-i18n="settings.captureTitle">Login save suggestions</strong>
+                <small id="capture-disclosure" data-i18n="settings.captureDesc">Prompt to save after form submit, sign-in clicks, or Enter. Sent only to local OpenKeylet; drafts expire in 5 minutes.</small>
+              </div>
+              <label class="switch">
+                <input id="capture-enabled" type="checkbox" aria-describedby="capture-disclosure" />
+                <span></span>
+              </label>
+            </div>
+          </div>
+
+          <!-- Card 2: Bridge Connection -->
+          <div class="settings-card">
+            <div class="card-heading">
+              <h2 data-i18n="settings.bridgeTitle">Local bridge</h2>
+            </div>
+            <div class="status-strip" id="settings-status-strip">
+              <span class="status-dot" id="settings-lamp" aria-hidden="true"></span>
+              <span class="status-key" id="settings-status" data-i18n="status.checking">CHECKING</span>
+              <code class="status-endpoint" id="detail">127.0.0.1:39272</code>
+            </div>
+            <form id="pair-form" class="bridge-form" autocomplete="off">
+              <div class="bridge-grid">
+                <div>
+                  <label class="field-label" for="host" data-i18n="settings.bridgeHost">Host</label>
+                  <input id="host" class="input mono-input" value="127.0.0.1" maxlength="253" autocomplete="off" spellcheck="false" />
+                </div>
+                <div>
+                  <label class="field-label" for="port" data-i18n="settings.bridgePort">Port</label>
+                  <input id="port" class="input mono-input" inputmode="numeric" value="39272" maxlength="5" />
+                </div>
+              </div>
+              <label class="vault-check tls-check">
+                <input id="bridge-tls" type="checkbox" />
+                <span data-i18n="settings.bridgeTls">Use TLS (https / wss)</span>
+              </label>
+              <p id="lan-warning" class="warn-note" hidden data-i18n="settings.lanWarning"></p>
+              <button class="button secondary full-btn" type="submit" data-i18n="settings.reconnect">Save &amp; reconnect</button>
+            </form>
+          </div>
+
+          <!-- Card 3: Appearance & Language -->
+          <div class="settings-card">
+            <div class="card-heading">
+              <h2 data-i18n="settings.appearanceTitle">Appearance &amp; language</h2>
+            </div>
+            <div class="lang-row">
+              <span class="field-label" data-i18n="settings.language">Language</span>
+              <div class="language-switch" id="language-switch" role="group" aria-label="Language">
+                <button type="button" data-lang-option="auto" data-i18n="settings.langAuto">Auto</button>
+                <button type="button" data-lang-option="en" data-i18n="settings.langEn">EN</button>
+                <button type="button" data-lang-option="zh" data-i18n="settings.langZh">简中</button>
+              </div>
+            </div>
+          </div>
+
+          <footer class="settings-footer">
+            <span id="ext-version-label">OpenKeylet · <span data-i18n="settings.footerVault">Local vault</span></span>
+            <a href="privacy.html" target="_blank" rel="noopener" data-i18n="settings.privacy">Privacy</a>
+          </footer>
+        </section>
+      </main>
+
+      <!-- Floating Toast Status Message -->
+      <p id="error" class="toast" role="status" aria-live="polite"></p>
+    </div>
+
+    <script src="vault.js"></script>
+    <script src="popup.js"></script>
   </body>
 </html>

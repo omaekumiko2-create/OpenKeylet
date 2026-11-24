@@ -1,8 +1,12 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 400 400">
-  <title>OpenKeylet tray icon</title>
-  <rect x="14" y="14" width="372" height="372" rx="88" fill="#0d0d10" stroke="#52525b" stroke-width="14"/>
-  <g transform="translate(76 76) scale(0.62)">
-    <path fill="#ffffff" fill-rule="evenodd" d="M24 8H276A16 16 0 0 1 292 24V276A16 16 0 0 1 276 292H24A16 16 0 0 1 8 276V24A16 16 0 0 1 24 8ZM124 108H176A16 16 0 0 1 192 124V176A16 16 0 0 1 176 192H124A16 16 0 0 1 108 176V124A16 16 0 0 1 124 108Z"/>
-    <path fill="#d4d4d8" d="M324 208H376A16 16 0 0 1 392 224V376A16 16 0 0 1 376 392H224A16 16 0 0 1 208 376V324A16 16 0 0 1 224 308H292A16 16 0 0 0 308 292V224A16 16 0 0 1 324 208Z"/>
-  </g>
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#151519"/>
+      <stop offset="100%" stop-color="#09090b"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="url(#bg)"/>
+  <rect x="2.5" y="2.5" width="59" height="59" rx="13.5" fill="none" stroke="#52525b" stroke-width="1"/>
+  <path fill="#ffffff" fill-rule="evenodd" d="M14 12H39A2 2 0 0 1 41 14V39A2 2 0 0 1 39 41H14A2 2 0 0 1 12 39V14A2 2 0 0 1 14 12ZM22 21H31A1 1 0 0 1 32 22V31A1 1 0 0 1 31 32H22A1 1 0 0 1 21 31V22A1 1 0 0 1 22 21Z"/>
+  <path fill="#d4d4d8" d="M45 33H50A2 2 0 0 1 52 35V50A2 2 0 0 1 50 52H35A2 2 0 0 1 33 50V45A2 2 0 0 1 35 43H41A2 2 0 0 0 43 41V35A2 2 0 0 1 45 33Z"/>
 </svg>

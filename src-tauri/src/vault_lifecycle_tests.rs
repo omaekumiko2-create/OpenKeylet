@@ -350,3 +350,118 @@ async fn browser_management_is_locked_and_deleted_passkeys_cannot_sign() {
     );
     assert!(handle(&vault,&mut session,&throttle,"vault.save",&json!({"input":{"name":"file probe","privateKeyImportPath":"C:/secret","modules":[{"kind":"privateKey"}]}})).await.is_err());
 }
+
+#[test]
+fn shared_directory_locking_key_source_and_missing_key_safety() {
+    let dir = tempfile::tempdir().unwrap();
+    let shared_path = dir.path().join("shared-vault");
+
+    // First installation opens the explicit/non-default directory -> uses <dir>/master.key (never OS keyring).
+    let inst_a = Vault::open(shared_path.clone()).unwrap();
+    assert!(shared_path.join("master.key").is_file());
+    assert!(shared_path.join("vault.json").is_file());
+    assert!(
+        inst_a.storage_label().contains("key file"),
+        "expected file-backed key source for explicit directory, got: {}",
+        inst_a.storage_label()
+    );
+
+    // Second installation opens the exact same directory and reads items encrypted by the first.
+    let inst_b = Vault::open(shared_path.clone()).unwrap();
+    let mut s1 = SecretBundle::default();
+    s1.named_secrets
+        .insert("password".to_owned(), "from-instance-a".to_owned());
+    let saved_a = inst_a
+        .save_connection(ConnectionInput {
+            login_uris: Vec::new(),
+            item_type: "login".to_owned(),
+            folder: String::new(),
+            favorite: false,
+            id: None,
+            modules: vec![ItemModule {
+                kind: "password".to_owned(),
+                name: "password".to_owned(),
+                value: String::new(),
+                agent_visible: Some(false),
+            }],
+            name: "Shared Item A".to_owned(),
+            enabled: true,
+            description: String::new(),
+            http_auth_type: String::new(),
+            private_key_import_path: String::new(),
+            auth_header: String::new(),
+            auth_location: String::new(),
+            auth_prefix: String::new(),
+            api_auth_headers: Vec::new(),
+            test_path: String::new(),
+            remove_secret_names: Vec::new(),
+            secrets: s1,
+        })
+        .unwrap();
+    assert_eq!(
+        inst_b
+            .get_secret_value(saved_a.id, "password")
+            .unwrap()
+            .2,
+        "from-instance-a"
+    );
+
+    // Concurrent multi-thread readers & serialized writers do not corrupt or lose items.
+    let mut handles = Vec::new();
+    for worker in 0..4 {
+        let path_clone = shared_path.clone();
+        handles.push(std::thread::spawn(move || {
+            let v = Vault::open(path_clone).unwrap();
+            for step in 0..3 {
+                let mut sb = SecretBundle::default();
+                sb.named_secrets.insert(
+                    "password".to_owned(),
+                    format!("pw-{worker}-{step}"),
+                );
+                v.save_connection(ConnectionInput {
+                    login_uris: Vec::new(),
+                    item_type: "login".to_owned(),
+                    folder: String::new(),
+                    favorite: false,
+                    id: None,
+                    modules: vec![ItemModule {
+                        kind: "password".to_owned(),
+                        name: "password".to_owned(),
+                        value: String::new(),
+                        agent_visible: Some(false),
+                    }],
+                    name: format!("Concurrent-{worker}-{step}"),
+                    enabled: true,
+                    description: String::new(),
+                    http_auth_type: String::new(),
+                    private_key_import_path: String::new(),
+                    auth_header: String::new(),
+                    auth_location: String::new(),
+                    auth_prefix: String::new(),
+                    api_auth_headers: Vec::new(),
+                    test_path: String::new(),
+                    remove_secret_names: Vec::new(),
+                    secrets: sb,
+                })
+                .unwrap();
+                let _ = v.list_connections().unwrap();
+            }
+        }));
+    }
+    for h in handles {
+        h.join().unwrap();
+    }
+    assert_eq!(inst_a.list_connections().unwrap().len(), 1 + 4 * 3);
+
+    // Removing master.key while vault.json exists must fail safely and never overwrite or regenerate a key.
+    let saved_key_bytes = std::fs::read(shared_path.join("master.key")).unwrap();
+    std::fs::remove_file(shared_path.join("master.key")).unwrap();
+    let err = Vault::open(shared_path.clone()).err().unwrap().to_string();
+    assert!(err.contains("master key is missing"), "unexpected error: {err}");
+    assert!(!shared_path.join("master.key").exists());
+
+    // Restoring master.key recovers full access.
+    std::fs::write(shared_path.join("master.key"), saved_key_bytes).unwrap();
+    let recovered = Vault::open(shared_path).unwrap();
+    assert_eq!(recovered.list_connections().unwrap().len(), 13);
+}

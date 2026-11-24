@@ -9,6 +9,8 @@
     <link rel="stylesheet" href="modern-theme.css" />
     <link rel="stylesheet" href="github-backup.css" />
     <link rel="stylesheet" href="updater.css" />
+    <link rel="stylesheet" href="import-hub.css" />
+    <link rel="stylesheet" href="mvault-import.css" />
     <link rel="stylesheet" href="item-grid.css" />
     <script src="appearance.js"></script>
   </head>
@@ -55,8 +57,9 @@
       <aside class="sidebar">
         <nav class="nav" data-active="connections" aria-label="Main navigation">
           <button class="nav-item active" data-page="connections" aria-current="page"><b>A</b><i aria-hidden="true"></i><span>ITEMS</span></button>
-          <button class="nav-item" data-page="activity"><b>B</b><i aria-hidden="true"></i><span>LOG</span></button>
-          <button class="nav-item" data-page="settings"><b>C</b><i aria-hidden="true"></i><span>SYSTEM</span></button>
+          <button class="nav-item" data-page="import"><b>B</b><i aria-hidden="true"></i><span>IMPORT</span></button>
+          <button class="nav-item" data-page="activity"><b>C</b><i aria-hidden="true"></i><span>LOG</span></button>
+          <button class="nav-item" data-page="settings"><b>D</b><i aria-hidden="true"></i><span>SYSTEM</span></button>
         </nav>
       </aside>
 
@@ -86,18 +89,61 @@
                 <svg class="view-icon-grid" viewBox="0 0 18 18" aria-hidden="true"><rect x="2" y="2" width="5.5" height="5.5" rx="1.2"/><rect x="10.5" y="2" width="5.5" height="5.5" rx="1.2"/><rect x="2" y="10.5" width="5.5" height="5.5" rx="1.2"/><rect x="10.5" y="10.5" width="5.5" height="5.5" rx="1.2"/></svg>
                 <svg class="view-icon-list" viewBox="0 0 18 18" aria-hidden="true"><path d="M2.5 4.5h13M2.5 9h13M2.5 13.5h13"/></svg>
               </button>
-              <button class="view-mode-toggle smart-paste-icon-button" id="smart-paste-button" type="button" aria-label="Smart paste from clipboard" title="Smart paste from clipboard (API key, cURL, SSH, .env, URI, 2FA)">
-                <svg viewBox="0 0 18 18" aria-hidden="true"><path d="M6.5 3.5h5v2h-5z"/><path d="M6.5 4.5H4.5a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-9a1 1 0 0 0-1-1h-2"/><path d="M9.5 7.5 7 11h2.2l-.7 3 2.5-3.5H8.8z"/></svg>
-              </button>
+            </div>
+          </header>
+          <div class="list-well"><div class="connections-grid" id="connections-list" tabindex="0" aria-label="Vault items"></div><div class="smart-drop-overlay hidden" id="smart-drop-overlay" aria-hidden="true"><div><strong>DROP TO SMART STORE</strong><span>.mvault backup · .env · SSH key / config · 2FA QR · API / cURL</span></div></div></div>
+          <span id="item-reorder-status" class="module-reorder-status" aria-live="polite" aria-atomic="true"></span>
+        </section>
+
+        <section class="page" id="page-import">
+          <header class="import-header">
+            <div class="import-privacy-pill" id="import-privacy-pill"><span class="import-privacy-dot" aria-hidden="true"></span><span id="import-privacy-text">Offline rule extractor · Zero network</span></div>
+            <div class="import-header-actions">
               <div class="draft-pill hidden" id="draft-pill">
                 <button class="draft-resume-button" id="drafts-button" type="button" disabled>Draft</button>
                 <button class="draft-delete-button hidden" id="delete-draft-button" type="button" aria-label="Delete draft" title="Delete draft">×</button>
               </div>
-              <button class="button primary add-item-button" id="add-connection-button" type="button">＋ Add</button>
+              <button class="import-mini-btn primary" id="add-connection-button" type="button">＋ Add</button>
+              <button class="import-mini-btn" id="import-paste-btn" type="button"><svg viewBox="0 0 18 18" aria-hidden="true"><path d="M6.5 3.5h5v2h-5z"/><path d="M6.5 4.5H4.5a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-9a1 1 0 0 0-1-1h-2"/></svg><span id="import-paste-btn-label">Paste</span></button>
+              <button class="import-mini-btn" id="import-file-btn" type="button"><svg viewBox="0 0 18 18" aria-hidden="true"><path d="M4 3.5h6l4 4v7H4z"/><path d="M10 3.5v4h4"/></svg><span id="import-file-btn-label">Files</span></button>
+              <button class="import-mini-btn quiet hidden" id="import-clear-btn" type="button">Clear</button>
             </div>
           </header>
-          <div class="list-well"><div class="connections-grid" id="connections-list" tabindex="0" aria-label="Vault items"></div><div class="smart-drop-overlay hidden" id="smart-drop-overlay" aria-hidden="true"><div><strong>DROP TO SMART STORE</strong><span>.env · SSH key / config · 2FA QR image · API / cURL</span></div></div></div>
-          <span id="item-reorder-status" class="module-reorder-status" aria-live="polite" aria-atomic="true"></span>
+          <div class="import-well">
+            <div class="import-scroll-area" id="import-scroll-area">
+              <div class="import-done-banner hidden" id="import-done-banner" role="status" aria-live="polite"></div>
+              <div class="import-dropzone" id="import-dropzone">
+                <div class="import-compact-bar">
+                  <span class="import-format-badge" id="import-format-badge">smart</span>
+                  <button type="button" class="import-mini-btn quiet" id="import-toggle-input-btn">Edit source</button>
+                </div>
+                <div class="import-textarea-wrap">
+                  <textarea class="import-textarea" id="import-raw-input" spellcheck="false" autocomplete="off" aria-label="Paste text, configs, or drop files to extract"></textarea>
+                </div>
+                <div class="import-drop-hints">
+                  <button type="button" class="import-chip primary" id="import-chip-manual" data-action="add">＋ Manual item</button>
+                  <button type="button" class="import-chip" id="import-chip-paste">Paste clipboard / 2FA QR</button>
+                  <button type="button" class="import-chip" id="import-chip-files">Choose files</button>
+                  <button type="button" class="import-chip" id="import-chip-scan">Scan local SSH / AWS</button>
+                  <button type="button" class="import-chip" id="import-chip-mvault">Restore .mvault</button>
+                </div>
+              </div>
+              <div class="import-supported-strip" id="import-supported-strip"></div>
+              <div class="import-warning-strip hidden" id="import-warning-strip" role="status"></div>
+              <div class="import-results-wrap hidden" id="import-results-wrap">
+                <div class="import-staging-toolbar" id="import-staging-toolbar"></div>
+                <div class="import-candidate-list" id="import-candidate-list"></div>
+                <details class="import-ignored-drawer hidden" id="import-ignored-drawer">
+                  <summary id="import-ignored-summary"></summary>
+                  <div class="import-ignored-list" id="import-ignored-list"></div>
+                </details>
+              </div>
+            </div>
+            <div class="import-commit-bar hidden" id="import-commit-bar">
+              <input type="text" class="import-folder-input" id="import-batch-folder" maxlength="48" placeholder="Assign folder (optional)" aria-label="Batch folder" />
+              <button type="button" class="import-commit-btn" id="import-commit-btn" disabled>Import (0)</button>
+            </div>
+          </div>
         </section>
 
         <section class="page" id="page-activity">
@@ -150,6 +196,7 @@
             <section class="content-panel settings-card" data-module="WEB / 04">
               <div class="settings-heading"><div class="square-icon coral">WEB</div><div><h2>Browser Bridge</h2><p>Let AI agents inspect pages, fill credentials and forms, and complete Passkey sign-in via the paired extension.</p></div><label class="switch"><input type="checkbox" id="browser-enabled" /><span></span></label></div>
               <div class="status-strip" id="browser-status-strip"></div>
+              <div class="status-strip error hidden" id="browser-version-strip" role="status"></div>
               <label class="field-label" for="browser-port">Local port</label><div class="inline-setting"><input class="input" id="browser-port" type="number" min="1024" max="65535" /><div class="command-well"><button class="button secondary" id="save-browser-settings-button">Save</button></div></div>
               <div class="desktop-options">
                 <div class="desktop-option" id="browser-agent-passkey-option"><span><strong>Agent Passkey signing</strong><small>Allow local AI agents to complete WebAuthn Passkey sign-in and registration for enabled items</small></span><label class="switch"><input type="checkbox" id="browser-agent-passkey-enabled" checked /><span></span></label></div>
@@ -176,7 +223,7 @@
                 </div></li>
               </ol>
               <details class="browser-install-fallback"><summary id="browser-fallback-title">Can't install by dragging?</summary><p id="browser-fallback-description">Open the extension folder below. On the extensions page, click Load unpacked and select that folder.</p><div class="command-well"><button type="button" class="button quiet" id="open-extension-button">Extension folder</button></div></details>
-              <div class="button-row bridge-actions"><div class="command-well"><button type="button" class="button secondary" id="start-pairing-button">Start pairing</button></div><div class="command-well"><button type="button" class="button quiet" id="test-browser-bridge-button">Test connection</button></div><div class="command-well"><button type="button" class="button danger-soft" id="reset-pairing-button">Reset</button></div></div>
+              <div class="button-row bridge-actions"><div class="command-well"><button type="button" class="button secondary" id="start-pairing-button">Start pairing</button></div><div class="command-well"><button type="button" class="button quiet" id="test-browser-bridge-button">Test connection</button></div><div class="command-well"><button type="button" class="button quiet" id="reload-extension-button">Reload extension</button></div><div class="command-well"><button type="button" class="button danger-soft" id="reset-pairing-button">Reset</button></div></div>
             </section>
 
             <section class="content-panel settings-card wide github-card" data-module="CLOUD / 05" id="github-backup-card">
@@ -435,6 +482,79 @@
         </div>
       </div>
     </div>
+    <div class="global-mvault-drop-overlay hidden" id="global-mvault-drop-overlay" aria-hidden="true">
+      <div class="global-mvault-drop-frame">
+        <div class="global-mvault-drop-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M12 3v12m0 0-4-4m4 4 4-4"/><path d="M4 16v2a3 3 0 0 0 3 3h10a3 3 0 0 0 3-3v-2"/></svg>
+        </div>
+        <strong id="global-mvault-drop-title">Drop .mvault backup to import</strong>
+        <span id="global-mvault-drop-subtitle">Opens a preview popup where you can check specific items or select all</span>
+        <div class="global-mvault-drop-chip hidden" id="global-mvault-drop-file"></div>
+      </div>
+    </div>
+
+    <div class="modal-backdrop hidden" id="mvault-import-modal" role="dialog" aria-modal="true" aria-labelledby="mvault-modal-title">
+      <div class="modal-card mvault-modal-card">
+        <div class="modal-header mvault-modal-header">
+          <div class="mvault-header-copy">
+            <h2 id="mvault-modal-title">Import .mvault backup</h2>
+            <div class="mvault-file-meta">
+              <span class="mvault-file-pill" id="mvault-file-name">openkeylet-backup.mvault</span>
+              <span class="mvault-format-pill hidden" id="mvault-format-pill"></span>
+            </div>
+          </div>
+          <button class="icon-button" type="button" id="mvault-modal-close" aria-label="Close">×</button>
+        </div>
+
+        <form class="mvault-unlock-panel hidden" id="mvault-unlock-panel" autocomplete="off">
+          <p class="mvault-unlock-help" id="mvault-unlock-help"></p>
+          <label class="field" for="mvault-unlock-password">
+            <span id="mvault-unlock-password-label">Backup password</span>
+            <div class="mvault-password-row">
+              <input class="input" type="password" id="mvault-unlock-password" maxlength="4096" autocomplete="current-password" spellcheck="false" />
+              <button class="button quiet" type="button" id="mvault-unlock-reveal">SHOW</button>
+            </div>
+          </label>
+          <p class="mvault-error hidden" id="mvault-unlock-error" role="alert"></p>
+          <div class="mvault-unlock-actions">
+            <button class="button quiet" type="button" id="mvault-unlock-cancel">Cancel</button>
+            <button class="button primary" type="submit" id="mvault-unlock-submit">Unlock &amp; preview</button>
+          </div>
+        </form>
+
+        <div class="mvault-loading-panel hidden" id="mvault-loading-panel" role="status">
+          <span id="mvault-loading-text">Reading backup…</span>
+        </div>
+
+        <div class="mvault-select-panel hidden" id="mvault-select-panel">
+          <div class="mvault-select-top">
+            <div class="mvault-stats-strip" id="mvault-stats-strip"></div>
+            <p class="mvault-legacy-note hidden" id="mvault-legacy-note"></p>
+            <div class="mvault-search-wrap">
+              <input class="input mvault-search-input" type="search" id="mvault-search-input" placeholder="Search items in backup…" autocomplete="off" />
+            </div>
+            <div class="mvault-type-pills hidden" id="mvault-type-pills" role="group"></div>
+            <div class="mvault-master-bar">
+              <label class="mvault-select-all-label" for="mvault-select-all">
+                <input type="checkbox" class="mvault-checkbox" id="mvault-select-all" />
+                <span id="mvault-select-all-text">Select all</span>
+              </label>
+              <span class="mvault-selection-counter" id="mvault-selection-counter"></span>
+            </div>
+          </div>
+          <div class="mvault-item-list" id="mvault-item-list" role="list"></div>
+          <p class="mvault-error mvault-select-error hidden" id="mvault-select-error" role="alert"></p>
+          <div class="mvault-modal-footer">
+            <span class="mvault-footer-hint" id="mvault-footer-hint"></span>
+            <div class="mvault-footer-actions">
+              <button class="button quiet" type="button" id="mvault-select-cancel">Cancel</button>
+              <button class="button primary" type="button" id="mvault-select-confirm" disabled>Import (0)</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <input type="file" id="totp-qr-file-input" accept="image/*" class="hidden" aria-hidden="true" tabindex="-1" />
     <div class="toast-region" id="toast-region" aria-live="polite"></div>
     <script src="lettering.js"></script>
@@ -442,6 +562,7 @@
     <script src="qr-decode.js"></script>
     <script src="github-backup.js"></script>
     <script src="updater.js"></script>
+    <script src="import-hub.js"></script>
     <script src="app.js"></script>
   </body>
 </html>

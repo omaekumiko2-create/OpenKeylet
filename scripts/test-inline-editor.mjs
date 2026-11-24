@@ -264,14 +264,14 @@ try {
   assert.equal(await page.locator('html').getAttribute('data-theme'), 'dark', 'Returning to the same gear must not toggle it');
   await dragSwitch('#theme-toggle', 0, 1, { cancel: true });
   assert.equal(await page.locator('html').getAttribute('data-theme'), 'dark');
-  await dragSwitch('.nav', 0, 2, { count: 3 });
+  await dragSwitch('.nav', 0, 3, { count: 4 });
   assert.equal(await page.locator('.page.active').getAttribute('id'), 'page-settings');
   await dragSwitch('#sound-toggle', 0, 1);
   assert.equal(await page.locator('#sound-toggle').getAttribute('aria-checked'), 'true');
   assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem('openkeylet.appearance.v1'))), { theme: 'dark', sound: true });
   await page.reload(); await page.locator('.connection-card').first().waitFor();
   assert.equal(await page.locator('html').getAttribute('data-theme'), 'dark');
-  await dragSwitch('.nav', 0, 2, { count: 3 });
+  await dragSwitch('.nav', 0, 3, { count: 4 });
   assert.equal(await page.locator('#sound-toggle').getAttribute('aria-checked'), 'true');
   await dragSwitch('#sound-toggle', 1, 0);
   await dragSwitch('#theme-toggle', 0, 1);
@@ -313,9 +313,10 @@ try {
   await page.waitForFunction(() => !document.querySelector('#pin-enabled').closest('.switch').hasAttribute('aria-busy'));
   assert.equal(await page.evaluate(() => fixture.pinDisables), 1);
   assert.equal(await page.locator('#pin-enabled').isChecked(), false);
-  await dragSwitch('.nav', 2, 1, { count: 3 });
+  await dragSwitch('.nav', 3, 2, { count: 4 });
   assert.equal(await page.locator('.page.active').getAttribute('id'), 'page-activity');
-  await dragSwitch('.nav', 1, 0, { count: 3 });
+  await dragSwitch('.nav', 2, 1, { count: 4 });
+  assert.equal(await page.locator('.page.active').getAttribute('id'), 'page-import');
   assert.equal(await page.locator('#draft-pill').isHidden(), true, 'No draft pill is shown when no draft exists');
   await page.locator('#add-connection-button').click();
   geometryMeasurements.push(await auditControlGeometry(page));
@@ -330,6 +331,7 @@ try {
   assert.equal(await page.locator('#connection-name').inputValue(), '');
   await page.locator('#connection-name').press('Escape'); await editor.waitFor({ state: 'hidden' });
   await page.evaluate(async () => { fixture.drafts = []; await refreshDrafts(); document.querySelectorAll('.toast').forEach(el => el.remove()); });
+  await dragSwitch('.nav', 1, 0, { count: 4 });
   assert.equal(await page.locator('.connection-address, .connection-description, .module-strip').count(), 0);
   assert.equal(await page.locator('.card-actions [data-action="edit"]').count(), 3);
   assert.deepEqual(await page.locator('.connection-type').evaluateAll(elements => elements.map(el => el.dataset.itemType)), ['api', 'ssh', 'login']);
@@ -592,6 +594,7 @@ try {
   await row('alpha').waitFor({ state: 'detached' });
   assert.equal(await editor.count(), 1, 'Removing an edited item preserves the dialog DOM');
   assert.equal(await editor.isHidden(), true);
+  await page.locator('[data-page="import"]').click();
   await page.locator('#add-connection-button').click();
   assert.equal(await editor.getAttribute('role'), 'dialog');
   await page.locator('[data-item-template="login"]').click(); await page.locator('[data-generate-password]').click();

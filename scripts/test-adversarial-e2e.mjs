@@ -317,13 +317,13 @@ try {
     await page.locator('#owner-auto-lock-minutes').selectOption('15');
     await page.waitForFunction(() => window.__stress.autoLockMinutes === 15);
     await page.locator('#safe-import-backup-button').click();
-    await page.locator('#migration-modal').waitFor({ state: 'visible' });
-    await page.locator('#migration-confirm').waitFor({ state: 'visible' });
-    const mvaultPreviewText = await page.locator('#migration-preview').innerText();
+    await page.locator('#mvault-import-modal').waitFor({ state: 'visible' });
+    await page.locator('#mvault-select-confirm').waitFor({ state: 'visible' });
+    const mvaultPreviewText = await page.locator('#mvault-import-modal').innerText();
     assert.match(mvaultPreviewText, /legacy-v5\.mvault/, 'Backup preview displays file name');
     assert.match(mvaultPreviewText, /GitHub → GitHub \(2\)/, 'Backup preview lists conflict renames');
-    await page.locator('#migration-confirm').click();
-    await page.locator('#migration-modal').waitFor({ state: 'hidden' });
+    await page.locator('#mvault-select-confirm').click();
+    await page.locator('#mvault-import-modal').waitFor({ state: 'hidden' });
     await page.waitForFunction(() => window.__stress.mvaultCommits === 1);
     await page.locator('.nav-item[data-page="connections"]').click();
     // Toggle list <-> grid view and confirm zero overflow in both modes
