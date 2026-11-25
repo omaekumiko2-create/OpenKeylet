@@ -142,17 +142,17 @@ try {
         invoke: async (cmd, args = {}) => {
           if (cmd === "get_state") return JSON.parse(JSON.stringify(state));
           if (cmd === "owner_status") {
-            return { pinConfigured: true, strongMode: false, unlocked: window.fixture.unlocked, expiresInSeconds: 0 };
+            return { pinConfigured: true, unlocked: window.fixture.unlocked, expiresInSeconds: 0 };
           }
           if (cmd === "owner_lock") {
             window.fixture.unlocked = false;
-            return { pinConfigured: true, strongMode: false, unlocked: false, expiresInSeconds: 0 };
+            return { pinConfigured: true, unlocked: false, expiresInSeconds: 0 };
           }
           if (cmd === "owner_editor_drafts") return [];
           if (cmd === "system_integration_status") return { desktopShortcut: false, launchAtLogin: false };
           if (cmd === "agent_mcp_status") return [];
           if (cmd === "list_chrome_profiles") return [];
-          if (cmd === "github_backup_status") return { configured: false, strongMode: false };
+          if (cmd === "github_backup_status") return { configured: false };
           if (cmd === "update_status") return { phase: "idle", currentVersion: "0.16.0", platform: "windows-x64" };
           if (cmd === "set_edge_dock_enabled") return null;
           if (cmd === "inspect_dropped_backup_bytes") {

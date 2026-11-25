@@ -236,6 +236,12 @@ async function seedItem(input) {
   await until(() => fs.access(path.join(root, "desktop-edited")).then(() => true, () => false), `seed ${input.name}`);
 }
 
+async function patchSettings(patch) {
+  await fs.rm(path.join(root, "settings-patched"), { force: true });
+  await fs.writeFile(path.join(root, "settings-patch.json"), JSON.stringify(patch));
+  await until(() => fs.access(path.join(root, "settings-patched")).then(() => true, () => false), "patch settings");
+}
+
 let context, mcp;
 try {
   await until(() => fixtureOutput.includes("READY"), "fixture startup");
@@ -375,6 +381,16 @@ try {
   assert.equal(await page.evaluate(() => window.__stepClicked), 1);
   console.log("5/6 browser_click verified");
 
+  // 6a-pre. Agent Passkey signing is OFF by default and must be explicitly enabled
+  const deniedByDefault = await mcp.request("tools/call", {
+    name: "browser_passkey",
+    arguments: { operation: "create", triggerText: "Register Passkey" },
+  });
+  assert.equal(deniedByDefault.isError, true, "browser_passkey must fail while off by default");
+  assert.match(JSON.stringify(deniedByDefault.content), /Agent Passkey signing is disabled/);
+
+  await patchSettings({ browserAgentPasskey: true });
+
   // 6a. browser_passkey CREATE (atomic arm + triggerText click, no manual popup)
   const createRes = await mcp.callTool("browser_passkey", {
     operation: "create",
@@ -414,7 +430,7 @@ try {
   assert.equal(auth[32] & 0x05, 0x05, "UP and UV flags must both be set");
   assert.ok(verify("sha256", Buffer.concat([auth, createHash("sha256").update(clientData).digest()]), pubKey, Buffer.from(pageGet.json.response.signature, "base64url")));
 
-  // 6c. Complete an already-pending passkey request (Mode B: page triggers prompt first, agent inspects & completes)
+  // 6c. Manual confirmation window isolation: agent MUST NOT take over a user-opened confirmation prompt
   await page.evaluate(() => { window.__passkeyGetResult = null; });
   const popupPromise = context.waitForEvent("page");
   await page.locator("#signin-passkey-btn").click();
@@ -422,13 +438,27 @@ try {
   await promptPage.waitForURL(/request\.html/);
   const inspectedPending = await mcp.callTool("browser_inspect");
   assert.equal(inspectedPending.pendingPasskeys.length, 1);
+  assert.equal(inspectedPending.pendingPasskeys[0].agentManaged, false);
   const pendingReqId = inspectedPending.pendingPasskeys[0].requestId;
-  const completePending = await mcp.callTool("browser_passkey", { requestId: pendingReqId });
-  assert.equal(completePending.credentialId, createRes.credentialId);
-  await until(async () => Boolean(await page.evaluate(() => window.__passkeyGetResult)), "pending passkey completed");
-  assert.equal((await page.evaluate(() => window.__passkeyGetResult)).ok, true);
-  await until(() => !context.pages().some(p => p.url().includes("request.html")), "manual prompt closed automatically");
-  console.log("6/6 browser_passkey (create + get + ECDSA verify + complete pending prompt) verified");
+
+  const hijackById = await mcp.request("tools/call", {
+    name: "browser_passkey",
+    arguments: { requestId: pendingReqId },
+  });
+  assert.equal(hijackById.isError, true, "browser_passkey must refuse hijacking a manual confirmation by requestId");
+  assert.match(JSON.stringify(hijackById.content), /Refused:.*manual Passkey confirmation/);
+
+  const hijackImplicit = await mcp.request("tools/call", {
+    name: "browser_passkey",
+    arguments: { operation: "get" },
+  });
+  assert.equal(hijackImplicit.isError, true, "browser_passkey must refuse hijacking an open manual confirmation implicitly");
+  assert.match(JSON.stringify(hijackImplicit.content), /Refused:.*manual Passkey confirmation/);
+
+  assert.equal(context.pages().some(p => p.url().includes("request.html")), true, "Manual confirmation popup must stay open");
+  assert.equal(await page.evaluate(() => window.__passkeyGetResult), null, "Manual request must not have been signed by agent");
+  await promptPage.close();
+  console.log("6/6 browser_passkey (default-off + create + get + ECDSA verify + manual prompt isolation) verified");
 
   console.log(JSON.stringify({
     ok: true,
@@ -439,9 +469,10 @@ try {
       "credential_fill (targeted CSS selector without focus)",
       "browser_fill_personal (card autofill without secret leakage)",
       "browser_click (visible text match)",
+      "browser_passkey default OFF guard",
       "browser_passkey create (atomic arm + trigger, zero manual popup)",
       "browser_passkey get (atomic arm + trigger, ECDSA P-256 + UV/UP verified)",
-      "browser_passkey complete already-pending prompt & auto-close popup",
+      "browser_passkey refuses takeover of manual confirmation window",
     ],
   }, null, 2));
 } finally {

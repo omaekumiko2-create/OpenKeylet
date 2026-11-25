@@ -37,6 +37,36 @@ async function resolveTargetTab(payload = {}) {
   return focusedActive || currentActive || null;
 }
 
+/* Inspection results go into the agent's context, and query strings and fragments often
+ * carry one-time codes, OAuth state, or tokens. Listed tabs drop them entirely; the inspected
+ * page and its frames keep parameter names so the agent can still tell, for example, an
+ * error callback from a login form. Credentials in the URL's userinfo are always dropped. */
+function urlWithoutQuery(rawUrl) {
+  try {
+    const url = new URL(rawUrl);
+    url.username = "";
+    url.password = "";
+    url.search = "";
+    url.hash = "";
+    return url.href;
+  } catch {
+    return "";
+  }
+}
+
+function urlWithMaskedQuery(rawUrl) {
+  try {
+    const url = new URL(rawUrl);
+    const keys = [...new Set(url.searchParams.keys())];
+    const query = url.search
+      ? `?${keys.length ? keys.map(key => `${encodeURIComponent(key)}=…`).join("&") : "…"}`
+      : "";
+    return `${urlWithoutQuery(rawUrl)}${query}${url.hash ? "#…" : ""}`;
+  } catch {
+    return "";
+  }
+}
+
 async function listHttpTabs() {
   const tabs = await chrome.tabs.query({});
   return tabs
@@ -49,7 +79,7 @@ async function listHttpTabs() {
         tabId: tab.id,
         active: Boolean(tab.active),
         title: (tab.title || "").slice(0, 160),
-        url: tab.url || "",
+        url: urlWithoutQuery(tab.url || ""),
         origin,
       };
     });
@@ -929,7 +959,7 @@ async function inspectPageJob(payload = {}) {
       message: "No active HTTP/HTTPS page",
       data: {
         tabId: tab?.id ?? null,
-        url: tab?.url || "",
+        url: urlWithMaskedQuery(tab?.url || ""),
         origin: "",
         title: tab?.title || "",
         tabs,
@@ -989,7 +1019,10 @@ async function inspectPageJob(payload = {}) {
       frames.push({
         frameId: exec.frameId,
         frameOrigin: child.origin || "",
-        url: child.url || "",
+        url: urlWithMaskedQuery(child.url || ""),
+        // Website rules can match on the query; OpenKeylet removes this before the agent
+        // sees the result.
+        matchUrl: child.url || "",
         fieldCount: childFields.length,
         buttonCount: childButtons.length,
         otpFieldCount: childOtp,
@@ -1043,7 +1076,8 @@ async function inspectPageJob(payload = {}) {
       message: `Inspected ${origin}`,
       data: {
         tabId: tab.id,
-        url: dom.url || tab.url,
+        url: urlWithMaskedQuery(dom.url || tab.url),
+        matchUrl: dom.url || tab.url,
         origin: dom.origin || origin,
         title: dom.title || (tab.title || "").slice(0, 160),
         focused,

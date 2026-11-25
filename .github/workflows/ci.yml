@@ -1,0 +1,147 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  static:
+    name: Version, JS syntax, and CSS balance
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node scripts/check-version.mjs
+      - name: Check JavaScript syntax
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(find renderer browser-extension scripts \
+            -type f \( -name '*.js' -o -name '*.mjs' \) -not -path '*/node_modules/*' | sort)
+          test ${#files[@]} -gt 0
+          for file in "${files[@]}"; do
+            node --check "$file"
+          done
+          echo "Checked ${#files[@]} JavaScript files."
+      - name: Check CSS brace balance
+        run: |
+          node -e '
+            const fs = require("node:fs");
+            const path = require("node:path");
+            const files = [];
+            const walk = (dir) => {
+              for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+                if (ent.name === "node_modules") continue;
+                const full = path.join(dir, ent.name);
+                if (ent.isDirectory()) walk(full);
+                else if (ent.name.endsWith(".css")) files.push(full);
+              }
+            };
+            for (const root of ["renderer", "browser-extension", "src-tauri/src/admin"]) {
+              if (fs.existsSync(root)) walk(root);
+            }
+            if (!files.length) throw new Error("No CSS files found");
+            for (const file of files.sort()) {
+              const src = fs.readFileSync(file, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+              let depth = 0;
+              for (const ch of src) {
+                if (ch === "{") depth++;
+                else if (ch === "}") depth--;
+                if (depth < 0) throw new Error(`Unmatched } in ${file}`);
+              }
+              if (depth !== 0) throw new Error(`Unbalanced braces (${depth}) in ${file}`);
+            }
+            console.log(`Checked ${files.length} CSS files.`);
+          '
+
+  test-headless:
+    name: Tests (Linux headless)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.88'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: 'src-tauri -> target'
+          key: linux-headless
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml --no-default-features
+
+  test-linux-gui:
+    name: Tests (Linux GUI)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Tauri system packages
+        run: >-
+          sudo apt-get update && sudo apt-get install -y
+          libwebkit2gtk-4.1-dev build-essential curl wget file
+          libssl-dev libayatana-appindicator3-dev librsvg2-dev
+          patchelf libxdo-dev xvfb xdg-utils
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.88'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: 'src-tauri -> target'
+          key: linux-gui
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+
+  test-macos:
+    name: Tests (macOS)
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.88'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: 'src-tauri -> target'
+          key: macos-gui
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+
+  test-windows:
+    name: Tests (Windows)
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.88'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: 'src-tauri -> target'
+          key: windows-gui
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml

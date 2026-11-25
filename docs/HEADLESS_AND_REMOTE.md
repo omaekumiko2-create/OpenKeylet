@@ -46,8 +46,32 @@ openkeylet vault restore "Old Token"
 # Configure 6-digit Owner PIN on headless servers (protects secret reveal & extension access)
 openkeylet vault pin set
 openkeylet vault pin status
-openkeylet vault pin clear
+# Local forgot-PIN recovery (prompts for confirmation in a TTY, or pass --force explicitly)
+openkeylet vault pin clear [--force]
+
+# SSH host-key pins (device-local ssh-known-hosts.json; never synced or exported)
+openkeylet ssh hosts
+openkeylet ssh forget-host server.example.com --port 2222
 ```
+
+OpenKeylet pins the host key presented on the first SSH/SFTP connection to each host and port and refuses later connections that present a different key, before any credential is sent. No MCP tool resets a pin. After a legitimate host-key change (for example a server rebuild), run `openkeylet ssh forget-host <host> [--port <port>]`; it asks for the Owner PIN when one is configured (or reads it from the variable named by `--pin-env`), and the next connection pins the new key (trust-on-first-use). Pinning defends against a network attacker impersonating the server; the pin file is protected only by the OS account, like the rest of the data directory.
+
+#### Importing `.env` files and SSH keys
+
+Importing copies values into the vault; it never changes or deletes the source file. Both commands print the files that still hold plaintext (to stderr) together with the next step, because a plaintext `.env` or key file left on disk is exactly what file-searching malware collects.
+
+```bash
+# Import every KEY=VALUE (lowercase, dotted and multi-line quoted values included) and write
+# .env.template next to the original, with {{openkeylet:FIELD}} placeholders that resolve
+openkeylet import-env .env --seal
+openkeylet run --item "Env · .env" --env-file .env.template -- npm run dev
+rm .env   # once the app works from the template
+
+# Hosts from ~/.ssh/config; the key files it names stay on disk until you remove them
+openkeylet import-ssh
+```
+
+The template is safe to commit. Any line OpenKeylet cannot seal (an unrecognized line, a commented-out value, a comment holding a token, a repeated key) is replaced by a comment starting with `# OpenKeylet removed`, which names the key but never the value; the JSON output reports how many (`templateRemovedLines`), and those values exist only in the original file. `--seal` refuses to overwrite the file it reads.
 
 ### 2.2 Loopback-Only Headless Management Server (via SSH Tunnel)
 
@@ -139,15 +163,17 @@ Connection lifecycle events (pair claims, origin/IP rejections, auth failures, c
 ## 4. Passphrase-Protected `.mvault` Backups (GUI & CLI)
 
 OpenKeylet supports two `.mvault` formats:
-1. **Passphrase-protected `.mvault` (`openkeylet-password-backup` v1)** — recommended for NAS, cloud drives, off-site backups, and removable media. Derives a 256-bit key with **Argon2id** (64 MiB, 3 iterations, 1 lane) + random 128-bit salt, encrypts with **XChaCha20-Poly1305**, stores **no decryption key** inside the file, rejects wrong passphrases without touching the active vault, and cannot be recovered if the passphrase is lost.
-2. **Legacy / convenient self-unlocking `.mvault` (`mcp-vault-backup` v3–v8)** — contains its unlock material and **must be protected like plaintext secrets**.
+1. **Passphrase-protected `.mvault` (`openkeylet-password-backup` v1)** — the default for every export, and what you want on NAS, cloud drives, off-site backups, and removable media. Derives a 256-bit key with **Argon2id** (64 MiB, 3 iterations, 1 lane) + random 128-bit salt, encrypts with **XChaCha20-Poly1305**, stores **no decryption key** inside the file, rejects wrong passphrases without touching the active vault, and cannot be recovered if the passphrase is lost.
+2. **Self-unlocking `.mvault` (`mcp-vault-backup` v3–v8)** — carries its own unlock key, so anyone who gets a copy can read every secret; treat it like a plaintext export. The CLI writes one only with `--self-unlocking`, and import still accepts older files of this kind.
 
 CLI usage:
 ```bash
-# Recommended: Argon2id passphrase-protected export (interactive hidden prompt)
-openkeylet backup export protected.mvault --passphrase
+# Default: Argon2id passphrase-protected export (interactive hidden prompt)
+openkeylet backup export protected.mvault
+openkeylet backup export protected.mvault --passphrase   # same, explicit
 
-# Non-interactive / scripted export (from env var or stdin)
+# Non-interactive / scripted export (from env var or stdin). Without a terminal and
+# without one of these flags, export refuses instead of writing an unprotected file.
 OPENKEYLET_BACKUP_PW="correct-horse-battery-staple" openkeylet backup export protected.mvault --passphrase-env OPENKEYLET_BACKUP_PW
 printf '%s\n' "$PW" | openkeylet backup export protected.mvault --passphrase-stdin
 
@@ -155,8 +181,8 @@ printf '%s\n' "$PW" | openkeylet backup export protected.mvault --passphrase-std
 openkeylet backup import protected.mvault --passphrase
 openkeylet backup import protected.mvault --passphrase-env OPENKEYLET_BACKUP_PW
 
-# Convenient self-unlocking export (trusted local disk only)
-openkeylet backup export local-only.mvault
+# Self-unlocking export, only when asked for by name (keep it off shared and synced folders)
+openkeylet backup export local-only.mvault --self-unlocking
 ```
 
 ---
@@ -191,7 +217,7 @@ openkeylet config stdio-json
 openkeylet config stdio-toml
 ```
 
-Once connected, agents can configure local services (such as Himalaya, Ortie, `.env`, or TOML/YAML configs) **without plaintext ever entering chat history or model context**:
+Once connected, agents can configure local services (such as Himalaya, Ortie, `.env`, or TOML/YAML configs) **without plaintext entering chat history or model context in normal use** (this is not a boundary against a malicious or prompt-injected agent; see [SECURITY.md](../SECURITY.md#what-openkeylet-does-not-protect-against)):
 - `secret_write_file`: renders local config files from `{{openkeylet:module}}` templates atomically with `0600` permissions on Unix.
 - `terminal_run` / `terminal_start`: substitutes `{{openkeylet:module}}` placeholders or injects `secretEnv` into child processes and redacts known secrets from stdout/stderr.
 - `draft_prepare`, `secret_generate`, `ssh_keygen`, `secret_ingest_file`: create, generate, or ingest secrets directly into the encrypted vault with zero plaintext returned to the LLM.

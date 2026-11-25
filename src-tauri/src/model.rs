@@ -61,7 +61,7 @@ impl Default for Settings {
             browser_enabled: false,
             browser_port: 39_272,
             browser_paired: false,
-            browser_agent_passkey: true,
+            browser_agent_passkey: false,
             owner_auto_lock_minutes: 0,
             auto_check_enabled: true,
             auto_check_interval_minutes: 60,
@@ -84,7 +84,7 @@ mod settings_tests {
         .unwrap();
         assert_eq!(settings.language, "auto");
         assert_eq!(settings.close_behavior, "tray");
-        assert!(settings.browser_agent_passkey);
+        assert!(!settings.browser_agent_passkey);
         assert_eq!(settings.owner_auto_lock_minutes, 0);
         assert!(settings.auto_check_enabled);
         assert_eq!(settings.auto_check_interval_minutes, 60);
@@ -783,6 +783,10 @@ pub struct VaultDocument {
     pub deleted_ids: Vec<DeletedItemTombstone>,
     #[serde(default)]
     pub editor_drafts: Vec<StoredEditorDraft>,
+    /// Legacy activity log. Activities now live in the device-local
+    /// `activity.jsonl`; entries found here are moved there when the vault is
+    /// opened. Still parsed (and defaulted when absent) for old files, and
+    /// always written, normally as `[]`, so older builds can parse new files.
     #[serde(default)]
     pub activities: Vec<Activity>,
 }
@@ -861,7 +865,6 @@ pub struct OwnerLockState {
     pub pin_configured: bool,
     pub unlocked: bool,
     pub expires_in_seconds: u64,
-    pub strong_mode: bool,
     pub mode: String,
 }
 
@@ -879,7 +882,6 @@ pub struct McpState {
 pub struct SecurityState {
     pub encrypted: bool,
     pub storage: String,
-    pub strong_mode: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]

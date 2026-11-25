@@ -49,7 +49,7 @@ try {
     $entries = @($zip.Entries | ForEach-Object { $_.FullName.Replace('\','/') })
     foreach ($file in $files) { if ($file -notin $entries) { throw "Missing ZIP entry: $file" } }
     if ('icons/128x128.png' -notin $entries) { throw 'Missing store icon.' }
-    if (@($entries | Where-Object { $_ -notin $files -and $_ -notmatch '^icons/[0-9]+x[0-9]+\.png$' -and $_ -notmatch '^fonts/[a-z0-9-]+\.woff2$' }).Count) {
+    if (@($entries | Where-Object { $_ -notin $files -and $_ -notmatch '^icons/[0-9]+x[0-9]+(-light)?\.png$' -and $_ -notmatch '^fonts/[a-z0-9-]+\.woff2$' }).Count) {
       throw 'Unexpected ZIP contents.'
     }
   } finally { $zip.Dispose() }

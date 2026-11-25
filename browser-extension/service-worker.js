@@ -25,6 +25,16 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     setTimeout(() => chrome.runtime.reload(), 20);
     return;
   }
+  if (
+    message?.type === "browser-theme-detected" &&
+    (trustedUi(sender, "popup.html") || trustedUi(sender, "request.html")) &&
+    typeof message.dark === "boolean"
+  ) {
+    chrome.storage.local.set({ browserChromeDark: message.dark }).catch(() => {});
+    void syncActionIcon(message.dark);
+    respond({ ok: true });
+    return;
+  }
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => focusedFrameByTab.delete(tabId));
@@ -37,6 +47,31 @@ async function setStatus(status, detail) {
   await chrome.storage.local.set({ bridgeStatus: status, bridgeDetail: detail });
 }
 
+async function syncActionIcon(browserDark) {
+  if (!chrome.action?.setIcon) return;
+  const path = browserDark
+    ? { 16: "icons/16x16-light.png", 32: "icons/32x32-light.png" }
+    : { 16: "icons/16x16.png", 32: "icons/32x32.png" };
+  try {
+    await chrome.action.setIcon({ path });
+  } catch {
+    // Ignore transient icon update failures during worker shutdown.
+  }
+}
+
+async function restoreActionIcon() {
+  try {
+    const stored = await chrome.storage.local.get(["browserChromeDark", "uiTheme"]);
+    if (typeof stored.browserChromeDark === "boolean") {
+      await syncActionIcon(stored.browserChromeDark);
+    } else if (stored.uiTheme === "dark" || stored.uiTheme === "light") {
+      await syncActionIcon(stored.uiTheme === "dark");
+    }
+  } catch {
+    // Default manifest icon remains active.
+  }
+}
+
 async function applyDesktopAppearance(payload) {
   const patch = {};
   if (payload?.theme === "light" || payload?.theme === "dark") {
@@ -47,6 +82,12 @@ async function applyDesktopAppearance(payload) {
   }
   if (Object.keys(patch).length) {
     await chrome.storage.local.set(patch);
+    if (patch.uiTheme) {
+      const stored = await chrome.storage.local.get(["browserChromeDark"]).catch(() => ({}));
+      if (typeof stored.browserChromeDark !== "boolean") {
+        await syncActionIcon(patch.uiTheme === "dark");
+      }
+    }
   }
 }
 
@@ -364,4 +405,5 @@ function writeToFocusedControl(value, expiresAt, submit = false) {
 }
 
 importScripts("form-reader.js", "provider.js", "capture.js", "agent-actions.js");
+void restoreActionIcon();
 requestConnect();

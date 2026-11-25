@@ -5,14 +5,14 @@
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src ipc: http://ipc.localhost" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>OpenKeylet</title>
-    <link rel="stylesheet" href="styles.css" />
-    <link rel="stylesheet" href="modern-theme.css" />
-    <link rel="stylesheet" href="github-backup.css" />
-    <link rel="stylesheet" href="updater.css" />
-    <link rel="stylesheet" href="import-hub.css" />
-    <link rel="stylesheet" href="mvault-import.css" />
-    <link rel="stylesheet" href="item-grid.css" />
-    <script src="appearance.js"></script>
+    <link rel="stylesheet" href="styles/tokens.css" />
+    <link rel="stylesheet" href="styles/app.css" />
+    <link rel="stylesheet" href="styles/features/cloud-sync.css" />
+    <link rel="stylesheet" href="styles/features/updater.css" />
+    <link rel="stylesheet" href="styles/features/import-hub.css" />
+    <link rel="stylesheet" href="styles/features/mvault-import.css" />
+    <link rel="stylesheet" href="styles/features/item-grid.css" />
+    <script src="src/appearance.js"></script>
   </head>
   <body>
     <div class="window-resize-edge bottom" id="window-resize-bottom" data-resize-edge="south" data-tauri-drag-region="false" aria-hidden="true"></div>
@@ -101,38 +101,53 @@
         </section>
 
         <section class="page" id="page-import">
-          <header class="import-header">
-            <div class="import-header-actions">
-              <button class="import-mini-btn primary" id="add-connection-button" type="button">＋ Add</button>
-              <button class="import-mini-btn" id="import-paste-btn" type="button"><svg viewBox="0 0 18 18" aria-hidden="true"><path d="M6.5 3.5h5v2h-5z"/><path d="M6.5 4.5H4.5a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-9a1 1 0 0 0-1-1h-2"/></svg><span id="import-paste-btn-label">Paste</span></button>
-              <button class="import-mini-btn" id="import-file-btn" type="button"><svg viewBox="0 0 18 18" aria-hidden="true"><path d="M4 3.5h6l4 4v7H4z"/><path d="M10 3.5v4h4"/></svg><span id="import-file-btn-label">Files</span></button>
-              <button class="import-mini-btn scan" id="import-chip-scan" type="button"><svg viewBox="0 0 18 18" aria-hidden="true"><circle cx="8" cy="8" r="4.5"/><path d="m11.5 11.5 3.5 3.5"/></svg><span id="import-scan-btn-label">Scan PC</span></button>
+          <header class="import-deck" id="import-deck">
+            <div class="import-tier-primary">
+              <div class="import-mode-switch" id="import-mode-switch" data-mode="add" role="tablist" aria-label="Import mode">
+                <button class="import-mode-tab active" id="import-mode-add" type="button" role="tab" aria-selected="true" data-import-mode="add">
+                  <svg viewBox="0 0 18 18" aria-hidden="true"><path d="M9 3.75v10.5M3.75 9h10.5"/></svg>
+                  <span id="import-mode-add-label">Add</span>
+                  <b class="import-mode-count hidden" id="import-mode-add-count"></b>
+                </button>
+                <button class="import-mode-tab" id="import-mode-scan" type="button" role="tab" aria-selected="false" data-import-mode="scan">
+                  <svg viewBox="0 0 18 18" aria-hidden="true"><circle cx="8" cy="8" r="4.5"/><path d="m11.5 11.5 3.5 3.5"/></svg>
+                  <span id="import-mode-scan-label">Scan</span>
+                  <b class="import-mode-count hidden" id="import-mode-scan-count"></b>
+                </button>
+              </div>
               <div class="draft-pill hidden" id="draft-pill">
                 <button class="draft-resume-button" id="drafts-button" type="button" disabled>Draft</button>
                 <button class="draft-delete-button hidden" id="delete-draft-button" type="button" aria-label="Delete draft" title="Delete draft"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8m0-8-8 8"/></svg></button>
               </div>
-              <button class="import-mini-btn quiet hidden" id="import-clear-btn" type="button">Clear</button>
+              <button class="import-clear-btn hidden" id="import-clear-btn" type="button">Clear</button>
+            </div>
+            <div class="import-tier-secondary">
+              <div class="import-subbar" id="import-subbar-add" role="group" aria-label="Add actions">
+                <button class="import-sub-btn primary" id="add-connection-button" type="button"><svg viewBox="0 0 18 18" aria-hidden="true"><path d="M9 3.75v10.5M3.75 9h10.5"/></svg><span id="add-connection-label">New</span></button>
+                <button class="import-sub-btn" id="import-paste-btn" type="button"><svg viewBox="0 0 18 18" aria-hidden="true"><path d="M6.5 3.5h5v2h-5z"/><path d="M6.5 4.5H4.5a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-9a1 1 0 0 0-1-1h-2"/></svg><span id="import-paste-btn-label">Paste</span></button>
+                <button class="import-sub-btn" id="import-file-btn" type="button"><svg viewBox="0 0 18 18" aria-hidden="true"><path d="M4 3.5h6l4 4v7H4z"/><path d="M10 3.5v4h4"/></svg><span id="import-file-btn-label">Files</span></button>
+                <button class="import-sub-btn quiet hidden" id="import-toggle-input-btn" type="button" aria-expanded="false"><svg viewBox="0 0 18 18" aria-hidden="true"><path d="M3.5 5h11M3.5 9h11M3.5 13h7"/></svg><span id="import-toggle-input-label">Source</span></button>
+              </div>
+              <div class="import-subbar hidden" id="import-subbar-scan" role="group" aria-label="Scan actions">
+                <button class="import-sub-btn primary" id="import-chip-scan" type="button"><svg viewBox="0 0 18 18" aria-hidden="true"><circle cx="8" cy="8" r="4.5"/><path d="m11.5 11.5 3.5 3.5"/></svg><span id="import-scan-btn-label">Scan PC</span></button>
+                <button class="import-sub-btn" id="import-workspace-scan-btn" type="button" data-scan-workspace-folder="true"><svg viewBox="0 0 18 18" aria-hidden="true"><path d="M2.5 5A1.5 1.5 0 0 1 4 3.5h3l1.5 1.5H14A1.5 1.5 0 0 1 15.5 6.5v6.5A1.5 1.5 0 0 1 14 14.5H4A1.5 1.5 0 0 1 2.5 13Z"/></svg><span id="import-workspace-btn-label">Scan Folder…</span></button>
+              </div>
             </div>
           </header>
-          <div class="import-well">
+          <div class="import-well" id="import-well">
             <div class="import-scroll-area" id="import-scroll-area">
               <div class="import-done-banner hidden" id="import-done-banner" role="status" aria-live="polite"></div>
               <div class="import-dropzone" id="import-dropzone">
                 <div class="import-dropzone-head">
                   <div class="import-privacy-pill" id="import-privacy-pill"><span class="import-privacy-dot" aria-hidden="true"></span><span id="import-privacy-text">Offline rule extractor · Zero network</span></div>
-                  <span class="import-drop-badge" id="import-drop-badge">Drop any file / .mvault</span>
-                </div>
-                <div class="import-compact-bar">
-                  <span class="import-format-badge" id="import-format-badge">smart</span>
-                  <button type="button" class="import-mini-btn quiet" id="import-toggle-input-btn">Edit source</button>
+                  <span class="import-drop-badge" id="import-drop-badge">Drop files or folders</span>
                 </div>
                 <div class="import-textarea-wrap">
                   <textarea class="import-textarea" id="import-raw-input" spellcheck="false" autocomplete="off" aria-label="Paste text, configs, or drop files to extract"></textarea>
                 </div>
               </div>
-              <div class="import-scan-banner" id="import-scan-banner" role="region" aria-label="Local credential scan"></div>
+              <div class="import-scan-banner hidden" id="import-scan-banner" role="region" aria-label="Local credential scan"></div>
               <div class="import-supported-strip" id="import-supported-strip"></div>
-              <div class="import-mvault-banner hidden" id="import-mvault-banner"></div>
               <div class="import-warning-strip hidden" id="import-warning-strip" role="status"></div>
               <div class="import-results-wrap hidden" id="import-results-wrap">
                 <div class="import-staging-toolbar" id="import-staging-toolbar"></div>
@@ -205,7 +220,7 @@
               <div class="status-strip error hidden" id="browser-version-strip" role="status"></div>
               <label class="field-label" for="browser-port">Local port</label><div class="inline-setting"><input class="input" id="browser-port" type="number" min="1024" max="65535" /><div class="command-well"><button class="button secondary" id="save-browser-settings-button">Save</button></div></div>
               <div class="desktop-options">
-                <div class="desktop-option" id="browser-agent-passkey-option"><span><strong>Agent Passkey signing</strong><small>Allow local AI agents to complete WebAuthn Passkey sign-in and registration for enabled items</small></span><label class="switch"><input type="checkbox" id="browser-agent-passkey-enabled" checked /><span></span></label></div>
+                <div class="desktop-option" id="browser-agent-passkey-option"><span><strong>Agent Passkey signing</strong><small>Off by default. Lets local AI agents sign WebAuthn Passkeys without confirmation and asserts user verification (UV).</small></span><label class="switch"><input type="checkbox" id="browser-agent-passkey-enabled" /><span></span></label></div>
               </div>
               <div class="browser-connect-note"><strong id="browser-install-heading">INSTALL IN THREE STEPS</strong></div>
               <ol class="browser-install-steps" aria-labelledby="browser-install-heading">
@@ -233,24 +248,19 @@
             </section>
 
             <section class="content-panel settings-card wide github-card" data-module="CLOUD / 05" id="github-backup-card">
-              <div class="settings-heading"><div><h2 id="github-heading">Personal vault repository</h2><p id="github-description">Optional end-to-end encrypted sync or backup in your own private GitHub / Gitea repository.</p></div></div>
+              <div class="settings-heading"><div><h2 id="github-heading">GitHub password sync</h2><p id="github-description">Optional end-to-end encrypted sync or backup in your own private GitHub / Gitea repository.</p></div></div>
               <div class="status-strip offline" id="github-status" role="status"></div>
-              <dl class="github-details hidden" id="github-details"><dt id="github-repository-label">Repository</dt><dd id="github-repository-value"></dd><dt id="github-backup-label">Last upload</dt><dd id="github-backup-value"></dd><dt id="github-restore-label">Last restore</dt><dd id="github-restore-value"></dd></dl>
+              <dl class="github-details hidden" id="github-details"><dt id="github-repository-label">Repository</dt><dd id="github-repository-value"></dd><dt id="github-key-repository-label">Key repository</dt><dd id="github-key-repository-value"></dd><dt id="github-backup-label">Last upload</dt><dd id="github-backup-value"></dd><dt id="github-restore-label">Last restore</dt><dd id="github-restore-value"></dd></dl>
               <div class="desktop-options hidden" id="github-auto-sync-section">
                 <div class="desktop-option" id="github-auto-sync-option"><span><strong id="github-auto-sync-label">Automatic two-way sync</strong><small id="github-auto-sync-help">Pull remote changes on open and push encrypted updates after edits</small></span><label class="switch"><input type="checkbox" id="github-auto-sync" /><span></span></label></div>
               </div>
               <p class="github-note" id="github-note"></p>
               <p class="github-error hidden" id="github-error" role="alert"></p>
-              <div class="button-row github-actions"><div class="command-well"><button class="button primary" id="github-connect" type="button">Connect repository</button></div><div class="command-well"><button class="button primary hidden" id="github-sync" type="button">Sync now</button></div></div>
+              <div class="button-row github-actions"><div class="command-well"><button class="button primary" id="github-connect" type="button">Connect repository</button></div><div class="command-well"><button class="button primary hidden" id="github-sync" type="button">Sync now</button></div><div class="command-well"><button class="button secondary hidden" id="github-history" type="button">Version history</button></div></div>
               <details class="github-advanced hidden" id="github-advanced">
                 <summary id="github-advanced-summary">Manual snapshot &amp; connection</summary>
-                <div class="button-row github-manage" id="github-manage"><div class="command-well"><button class="button secondary" id="github-upload" type="button">Back up now</button></div><div class="command-well"><button class="button quiet" id="github-restore" type="button">Restore from cloud</button></div><div class="command-well"><button class="button quiet" id="github-show-key" type="button">View recovery key</button></div><div class="command-well"><button class="button quiet hidden" id="github-change-passphrase" type="button">Change master passphrase</button></div><div class="command-well"><button class="button quiet" id="github-reconfigure" type="button">Update connection</button></div><div class="command-well"><button class="button danger-soft" id="github-disconnect" type="button">Disconnect</button></div></div>
+                <div class="button-row github-manage" id="github-manage"><div class="command-well"><button class="button secondary" id="github-upload" type="button">Back up now</button></div><div class="command-well"><button class="button quiet" id="github-restore" type="button">Restore from cloud</button></div><div class="command-well"><button class="button quiet" id="github-show-key" type="button">View recovery key</button></div><div class="command-well"><button class="button quiet" id="github-reconfigure" type="button">Update connection</button></div><div class="command-well"><button class="button danger-soft" id="github-disconnect" type="button">Disconnect</button></div></div>
               </details>
-              <div class="github-passphrase-panel hidden" id="github-passphrase-panel">
-                <label class="field" for="github-new-passphrase"><span id="github-new-passphrase-label">New master passphrase (min 12 chars)</span><input class="input" type="password" id="github-new-passphrase" maxlength="4096" autocomplete="new-password" /></label>
-                <label class="field" for="github-new-passphrase-confirm"><span id="github-new-passphrase-confirm-label">Confirm new master passphrase</span><input class="input" type="password" id="github-new-passphrase-confirm" maxlength="4096" autocomplete="new-password" /></label>
-                <div class="button-row"><div class="command-well"><button type="button" class="button primary" id="github-save-passphrase">Save passphrase</button></div><div class="command-well"><button type="button" class="button quiet" id="github-cancel-passphrase">Cancel</button></div></div>
-              </div>
               <div class="github-key-display hidden" id="github-key-display"><label for="github-saved-key" id="github-saved-key-label">Recovery key</label><textarea class="input github-key" id="github-saved-key" readonly rows="2" spellcheck="false" autocomplete="off"></textarea><p class="github-note" id="github-key-warning"></p><div class="button-row"><div class="command-well"><button type="button" class="button secondary" id="github-copy-saved-key">Copy</button></div><div class="command-well"><button type="button" class="button quiet" id="github-hide-key">Hide</button></div></div></div>
             </section>
 
@@ -299,7 +309,6 @@
         <div class="lock-copy"><div class="panel-code" id="owner-lock-mode">SET LOCAL PIN</div><h2 id="owner-lock-title">Set six-digit PIN</h2><p id="owner-lock-description">The PIN protects plaintext viewing, browser vault access and passkey verification.</p></div>
         <label class="field" id="owner-pin-field"><span>Six-digit PIN</span><div class="pin-control" data-pin-group="owner-pin"><input class="pin-cell-input" id="owner-pin" type="password" inputmode="numeric" pattern="[0-9]" maxlength="1" autocomplete="off" required /><input class="pin-cell-input" type="password" inputmode="numeric" pattern="[0-9]" maxlength="1" autocomplete="off" required /><input class="pin-cell-input" type="password" inputmode="numeric" pattern="[0-9]" maxlength="1" autocomplete="off" required /><input class="pin-cell-input" type="password" inputmode="numeric" pattern="[0-9]" maxlength="1" autocomplete="off" required /><input class="pin-cell-input" type="password" inputmode="numeric" pattern="[0-9]" maxlength="1" autocomplete="off" required /><input class="pin-cell-input" type="password" inputmode="numeric" pattern="[0-9]" maxlength="1" autocomplete="off" required /></div></label>
         <label class="field" id="owner-pin-confirm-field"><span>Re-enter PIN</span><div class="pin-control" data-pin-group="owner-pin-confirm"><input class="pin-cell-input" id="owner-pin-confirm" type="password" inputmode="numeric" pattern="[0-9]" maxlength="1" autocomplete="off" /><input class="pin-cell-input" type="password" inputmode="numeric" pattern="[0-9]" maxlength="1" autocomplete="off" /><input class="pin-cell-input" type="password" inputmode="numeric" pattern="[0-9]" maxlength="1" autocomplete="off" /><input class="pin-cell-input" type="password" inputmode="numeric" pattern="[0-9]" maxlength="1" autocomplete="off" /><input class="pin-cell-input" type="password" inputmode="numeric" pattern="[0-9]" maxlength="1" autocomplete="off" /><input class="pin-cell-input" type="password" inputmode="numeric" pattern="[0-9]" maxlength="1" autocomplete="off" /></div></label>
-        <label class="field hidden" id="owner-strong-field" for="owner-strong-secret"><span id="owner-strong-label">Master passphrase or okv1_ recovery key</span><div class="strong-unlock-input-row"><input class="input" id="owner-strong-secret" type="password" maxlength="4096" autocomplete="current-password" spellcheck="false" /><button class="button quiet" id="owner-strong-reveal" type="button">SHOW</button></div></label>
         <button class="button primary owner-unlock-action" id="owner-unlock-action" type="submit">SET PIN</button>
         <button class="button quiet hidden" id="owner-pin-cancel" type="button">Cancel</button>
         <div class="lock-note"><i></i><span id="owner-lock-note">PIN locks desktop viewing and editing against others on this computer; pair with OS screen lock and encrypted backups for offline security.</span></div>
@@ -345,7 +354,7 @@
             </section>
 
             <section class="module-editor">
-              <div class="editor-heading module-editor-heading"><div><strong>Project modules</strong><small>The switch on the left controls whether plaintext is visible to the Agent</small></div><div class="module-add-wrap"><button type="button" class="small-button" id="add-module-button" aria-expanded="false">＋ ADD MODULE</button><div class="module-menu hidden" id="module-menu"><button type="button" data-add-module="username">Account</button><button type="button" data-add-module="password">Password</button><button type="button" data-add-module="host">Host / IP</button><button type="button" data-add-module="port">Port</button><button type="button" data-add-module="url">Service URL</button><button type="button" data-add-module="apiCredential">API credentials</button><button type="button" data-add-module="privateKey">Private key</button><button type="button" data-add-module="passphrase">Private key passphrase</button><button type="button" data-add-module="totp">TOTP</button><button type="button" data-add-module="customSecret">Custom fields</button></div></div></div>
+              <div class="editor-heading module-editor-heading"><div><strong>Project modules</strong><small>The switch on the left controls whether plaintext is visible to the Agent</small></div><div class="module-heading-actions"><button type="button" class="small-button module-reveal-all-btn hidden" id="toggle-all-secrets-button" aria-pressed="false" title="Show all secrets"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 10s2.4-4.75 7-4.75S17 10 17 10s-2.4 4.75-7 4.75S3 10 3 10Z"/><circle cx="10" cy="10" r="2.5"/></svg><span id="toggle-all-secrets-label">Show all</span></button><div class="module-add-wrap"><button type="button" class="small-button" id="add-module-button" aria-expanded="false">＋ ADD MODULE</button><div class="module-menu hidden" id="module-menu"><button type="button" data-add-module="username">Account</button><button type="button" data-add-module="password">Password</button><button type="button" data-add-module="host">Host / IP</button><button type="button" data-add-module="port">Port</button><button type="button" data-add-module="url">Service URL</button><button type="button" data-add-module="apiCredential">API credentials</button><button type="button" data-add-module="privateKey">Private key</button><button type="button" data-add-module="passphrase">Private key passphrase</button><button type="button" data-add-module="totp">TOTP</button><button type="button" data-add-module="customSecret">Custom fields</button></div></div></div></div>
               <div class="module-list" id="module-list"></div>
               <div id="passkey-list" class="passkey-list"></div>
               <details class="login-websites"><summary>WEBSITE MATCHING</summary><p>Configure websites and matching rules.</p><div id="login-uri-list"></div><button class="small-button" id="login-uri-add" type="button">+ ADD WEBSITE</button></details>
@@ -407,22 +416,70 @@
             <label class="field" for="github-repository"><span id="github-repository-input-label">Private repository</span><input class="input" id="github-repository" placeholder="owner/openkeylet-vault" maxlength="240" required spellcheck="false" autocapitalize="off" /></label>
             <label class="github-key-confirm" id="github-create-repository-field"><input type="checkbox" id="github-create-repository" /><span id="github-create-repository-label">Create this private repository in my account</span></label>
             <div class="github-help-row"><button class="button quiet" type="button" data-github-help="repository" id="github-create-repo">Create private repository ↗</button><button class="button quiet" type="button" data-github-help="token" id="github-create-token">Create access token ↗</button></div>
-            <h3 class="github-step" id="github-step-key">3 · Strong vault key &amp; recovery key</h3>
-            <div id="github-strong-passphrase-section">
-              <p class="github-strong-notice" id="github-strong-notice">Binding enables Strong Cloud Vault mode together: local master.key is removed from disk, leaving only strong ciphertext. Unlock once per session in RAM with your master passphrase (or okv1_ recovery key).</p>
-              <label class="field" for="github-master-passphrase"><span id="github-master-passphrase-label">Master passphrase (≥ 12 chars)</span><input class="input" type="password" id="github-master-passphrase" maxlength="4096" autocomplete="new-password" placeholder="At least 12 characters" /></label>
-              <label class="field" for="github-master-passphrase-confirm"><span id="github-master-passphrase-confirm-label">Confirm master passphrase</span><input class="input" type="password" id="github-master-passphrase-confirm" maxlength="4096" autocomplete="new-password" /></label>
+            <h3 class="github-step" id="github-step-key">3 · Key repository</h3>
+            <p class="github-note" id="github-key-repo-help"></p>
+            <div id="github-manual-key-section" class="hidden">
+              <label class="field" for="github-recovery-key"><span id="github-key-label">Recovery key (optional)</span><textarea class="input github-key" id="github-recovery-key" rows="2" maxlength="64" spellcheck="false" autocapitalize="off" autocomplete="off" placeholder="okv1_…"></textarea></label>
+              <p class="github-note" id="github-recovery-help"></p>
             </div>
-            <label class="field" for="github-recovery-key"><span id="github-key-label">Recovery key</span><textarea class="input github-key" id="github-recovery-key" rows="2" maxlength="64" required spellcheck="false" autocapitalize="off" autocomplete="off" readonly placeholder="okv1_…"></textarea></label>
-            <div class="button-row github-key-actions"><button class="button secondary" id="github-generate-key" type="button">Generate a recovery key</button><button class="button quiet" id="github-copy-key" type="button">Copy key</button></div>
-            <p class="github-note" id="github-recovery-help"></p>
-            <label class="github-key-confirm"><input type="checkbox" id="github-key-saved" required /><span id="github-key-saved-label">Recovery key saved outside the repository</span></label>
             <label class="github-key-confirm" id="github-first-upload-field"><input type="checkbox" id="github-first-upload" checked /><span id="github-first-upload-label">Upload the first encrypted backup after connecting</span></label>
             <label class="github-key-confirm" id="github-connect-auto-sync-field"><input type="checkbox" id="github-connect-auto-sync" /><span id="github-connect-auto-sync-label">Enable automatic two-way sync for this repository</span></label>
             <p class="github-error hidden" id="github-form-error" role="alert"></p>
           </div>
           <div class="modal-footer github-modal-footer"><span class="github-note" id="github-local-only"></span><button class="button primary" id="github-submit" type="submit">Connect repository</button></div>
         </form>
+      </div>
+    </div>
+
+    <div class="modal-backdrop hidden" id="github-history-modal" role="dialog" aria-modal="true" aria-labelledby="github-history-title">
+      <div class="modal-card mvault-modal-card github-history-card">
+        <div class="modal-header mvault-modal-header" data-tauri-drag-region="deep">
+          <div class="mvault-header-copy">
+            <div class="modal-title-mark"><i aria-hidden="true"></i><h2 id="github-history-title">Version history</h2></div>
+            <div class="mvault-file-meta">
+              <span class="mvault-file-pill" id="github-history-repository"></span>
+              <span class="mvault-format-pill hidden" id="github-history-version"></span>
+            </div>
+          </div>
+          <button class="icon-button" type="button" id="github-history-close" data-tauri-drag-region="false" aria-label="Close"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8m0-8-8 8"/></svg></button>
+        </div>
+
+        <div class="github-history-list-panel" id="github-history-list-panel">
+          <p class="mvault-unlock-help" id="github-history-help"></p>
+          <div class="github-history-versions" id="github-history-versions"></div>
+          <p class="mvault-error mvault-select-error hidden" id="github-history-error" role="alert"></p>
+          <div class="mvault-modal-footer">
+            <span class="mvault-footer-hint" id="github-history-list-hint" role="status"></span>
+            <div class="mvault-footer-actions">
+              <button class="button quiet hidden" type="button" id="github-history-more">Load more</button>
+              <button class="button quiet" type="button" id="github-history-done">Close</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="mvault-loading-panel hidden" id="github-history-loading" role="status"><span id="github-history-loading-text"></span></div>
+
+        <div class="mvault-select-panel hidden" id="github-history-select-panel">
+          <div class="mvault-select-top">
+            <div class="mvault-stats-strip" id="github-history-stats"></div>
+            <div class="mvault-master-bar">
+              <label class="mvault-select-all-label" for="github-history-select-all">
+                <input type="checkbox" class="mvault-checkbox" id="github-history-select-all" />
+                <span id="github-history-select-all-text">Select all changes</span>
+              </label>
+              <span class="mvault-selection-counter" id="github-history-counter"></span>
+            </div>
+          </div>
+          <div class="mvault-item-list" id="github-history-items" role="list"></div>
+          <p class="mvault-error mvault-select-error hidden" id="github-history-select-error" role="alert"></p>
+          <div class="mvault-modal-footer">
+            <span class="mvault-footer-hint" id="github-history-footer-hint"></span>
+            <div class="mvault-footer-actions">
+              <button class="button quiet" type="button" id="github-history-back">Back</button>
+              <button class="button primary" type="button" id="github-history-restore" disabled>Restore (0)</button>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -588,11 +645,6 @@
 
     <input type="file" id="totp-qr-file-input" accept="image/*" class="hidden" aria-hidden="true" tabindex="-1" />
     <div class="toast-region" id="toast-region" aria-live="polite"></div>
-    <script src="i18n.js"></script>
-    <script src="qr-decode.js"></script>
-    <script src="github-backup.js"></script>
-    <script src="updater.js"></script>
-    <script src="import-hub.js"></script>
-    <script src="app.js"></script>
+    <script type="module" src="src/main.js"></script>
   </body>
 </html>

@@ -63,6 +63,7 @@ try {
       undoCalls: [],
       scanCalls: 0,
       workspaceScanCalls: 0,
+      openedMvaultIndices: [],
       copiedValues: [],
       clearedClipboard: [],
     };
@@ -82,6 +83,7 @@ try {
           selected: true,
           summary: "OpenAI API · api.openai.com/v1",
           sourceSnippet: "OPENAI_API_KEY=sk-proj-••••",
+          sourceRefs: ["ref-env-1"],
           matchStatus: "new",
           updateExisting: false,
           fields: [
@@ -160,17 +162,17 @@ try {
         invoke: async (cmd, args = {}) => {
           if (cmd === "get_state") return JSON.parse(JSON.stringify(state));
           if (cmd === "owner_status") {
-            return { pinConfigured: true, strongMode: false, unlocked: window.fixture.unlocked, expiresInSeconds: 0, autoLockMinutes: 0 };
+            return { pinConfigured: true, unlocked: window.fixture.unlocked, expiresInSeconds: 0, autoLockMinutes: 0 };
           }
           if (cmd === "owner_lock") {
             window.fixture.unlocked = false;
-            return { pinConfigured: true, strongMode: false, unlocked: false, expiresInSeconds: 0, autoLockMinutes: 0 };
+            return { pinConfigured: true, unlocked: false, expiresInSeconds: 0, autoLockMinutes: 0 };
           }
           if (cmd === "owner_editor_drafts") return [];
           if (cmd === "system_integration_status") return { desktopShortcut: false, launchAtLogin: false };
           if (cmd === "agent_mcp_status") return [];
           if (cmd === "list_chrome_profiles") return [];
-          if (cmd === "github_backup_status") return { configured: false, strongMode: false, repo: "", branch: "main", autoSync: false, status: "idle" };
+          if (cmd === "github_backup_status") return { configured: false, repo: "", branch: "main", autoSync: false, status: "idle" };
           if (cmd === "update_status") return { phase: "idle", currentVersion: "0.16.0", platform: "windows-x64", autoCheck: false, autoDownload: false };
           if (cmd === "set_edge_dock_enabled") return null;
           if (cmd === "update_settings") {
@@ -183,12 +185,31 @@ try {
           }
           if (cmd === "smart_scan_local_dev_configs") {
             window.fixture.scanCalls += 1;
+            const scanCandidates = [
+              ...Array.from({ length: 5 }, (_, i) => ({
+                ...JSON.parse(JSON.stringify(sampleResult.candidates[0])),
+                id: `scan-api-${i + 1}`,
+                sourceSnippet: `~/.codex/config-${i + 1}.toml`,
+                input: {
+                  ...JSON.parse(JSON.stringify(sampleResult.candidates[0].input)),
+                  name: `OpenAI API (codex ${i + 1})`,
+                },
+              })),
+              JSON.parse(JSON.stringify(sampleResult.candidates[2])),
+            ];
             return {
               detectedFormat: "local_search",
               detectedFormatZh: "本机一键搜索",
               warnings: [],
               ignored: [],
-              candidates: [JSON.parse(JSON.stringify(sampleResult.candidates[2]))],
+              candidates: scanCandidates,
+              discoveredMvaults: [
+                {
+                  index: 0,
+                  fileName: "openkeylet-backup.mvault",
+                  displayPath: "Downloads/openkeylet-backup.mvault",
+                },
+              ],
               scanReport: {
                 mode: "quick_pc",
                 totalInspectedFiles: 184,
@@ -197,11 +218,15 @@ try {
                 categories: [
                   { id: "ssh_keys", label: "SSH & Keys", labelZh: "SSH 与私钥", probedLocations: 2, inspectedFiles: 3, matchedFiles: 1, extractedCount: 1 },
                   { id: "dev_cloud", label: "Git · Cloud · CLI", labelZh: "Git 与云凭据", probedLocations: 18, inspectedFiles: 4, matchedFiles: 0, extractedCount: 0 },
-                  { id: "ai_mcp", label: "AI & MCP Configs", labelZh: "AI 与 MCP 配置", probedLocations: 15, inspectedFiles: 3, matchedFiles: 0, extractedCount: 0 },
-                  { id: "user_files", label: "Desktop · Docs · Downloads", labelZh: "桌面 · 文档 · 下载", probedLocations: 3, inspectedFiles: 174, matchedFiles: 1, extractedCount: 0 },
+                  { id: "ai_mcp", label: "AI & MCP Configs", labelZh: "AI 与 MCP 配置", probedLocations: 15, inspectedFiles: 3, matchedFiles: 1, extractedCount: 5 },
+                  { id: "user_files", label: "Desktop · Docs · Downloads", labelZh: "桌面 · 文档 · 下载", probedLocations: 3, inspectedFiles: 174, matchedFiles: 1, extractedCount: 1 },
                 ],
               },
             };
+          }
+          if (cmd === "open_discovered_mvault") {
+            window.fixture.openedMvaultIndices.push(args.index);
+            return { fileName: "openkeylet-backup.mvault", requiresPassword: true };
           }
           if (cmd === "smart_scan_workspace_folder") {
             window.fixture.workspaceScanCalls += 1;
@@ -227,7 +252,17 @@ try {
           }
           if (cmd === "commit_smart_batch") {
             window.fixture.commitCalls.push(args);
-            return { added: 2, updated: 1, createdIds: ["new-id-1", "new-id-2"] };
+            return {
+              added: 2,
+              updated: 1,
+              createdIds: ["new-id-1", "new-id-2"],
+              plaintextSources: [
+                { displayPath: "~/Projects/very-long-workspace-directory-name/services/payments-api/.env.production.local", kind: "env" },
+                { displayPath: "~/.ssh/id_ed25519", kind: "key" },
+                { displayPath: "~/.claude/CLAUDE.md", kind: "agent" },
+                { displayPath: "~/.zsh_history", kind: "shell" },
+              ],
+            };
           }
           if (cmd === "undo_smart_batch") {
             window.fixture.undoCalls.push(args.ids);
@@ -261,10 +296,16 @@ try {
     { page: "settings", text: "设置" },
   ]);
 
-  // 2. Click 2nd tab (导入) and verify page & metrics switch
+  // 2. Click 2nd tab (导入) and verify page & metrics switch + 1-click quick-create template cards
   await page.click('.nav-item[data-page="import"]');
   assert.equal(await page.locator(".nav").getAttribute("data-active"), "import");
   assert.ok(await page.locator("#page-import").evaluate((el) => el.classList.contains("active")));
+  assert.equal(await page.locator(".import-template-card").count(), 6, "Add tab provides 6 1-click quick-create template cards");
+  await page.click('[data-import-quick-template="api"]');
+  await page.locator("#connection-modal").waitFor({ state: "visible" });
+  assert.equal(await page.locator("#connection-type").inputValue(), "api", "Clicking API quick-template opens editor directly in API mode");
+  await page.keyboard.press("Escape");
+  await page.locator("#connection-modal").waitFor({ state: "hidden" });
   const metricText = await page.locator("#metrics").innerText();
   assert.match(metricText, /已识别/);
   assert.match(metricText, /待入库/);
@@ -304,6 +345,52 @@ try {
   await page.click('[data-import-kind="all"]');
   assert.equal(await page.locator(".import-card").count(), 4);
 
+  // 7b. Clickable Import HUD metrics (已识别 / 待入库) reset filters, focus & cycle selected candidates
+  const importMetrics = await page.evaluate(() => ({
+    primaryTag: document.querySelector('[data-metric-action="focus-import-all"]')?.tagName,
+    secondaryTag: document.querySelector('[data-metric-action="focus-import-selected"]')?.tagName,
+    primaryActionable: document.querySelector('[data-metric-action="focus-import-all"]')?.classList.contains("metric-actionable"),
+    secondaryActionable: document.querySelector('[data-metric-action="focus-import-selected"]')?.classList.contains("metric-actionable"),
+  }));
+  assert.equal(importMetrics.primaryTag, "BUTTON", "已识别 metric is a clickable button");
+  assert.equal(importMetrics.secondaryTag, "BUTTON", "待入库 metric is a clickable button");
+  assert.equal(importMetrics.primaryActionable, true);
+  assert.equal(importMetrics.secondaryActionable, true);
+
+  // Filter by kind + search, then click 已识别 -> clears both and pulses first candidate
+  await page.click('[data-import-kind="apiKey"]');
+  await page.fill("#title-search-input", "OpenAI");
+  assert.equal(await page.locator(".import-card").count(), 1);
+  await page.click('[data-metric-action="focus-import-all"]');
+  assert.equal(await page.locator("#title-search-input").inputValue(), "", "已识别 metric clears search");
+  assert.equal(await page.locator(".import-card").count(), 4, "已识别 metric resets kind filter to show all candidates");
+  assert.equal(await page.locator('[data-import-card="cand-api-1"]').evaluate((el) => el.classList.contains("is-focus-pulse")), true, "已识别 metric pulses first candidate");
+  assert.equal(await page.evaluate(() => document.activeElement?.closest(".import-card")?.dataset.importCard), "cand-api-1");
+
+  // Click 待入库 repeatedly -> cycles selected candidates (cand-api-1 -> cand-login-2 -> cand-env-port), skipping unchecked cand-ssh-3
+  for (const expectedId of ["cand-api-1", "cand-login-2", "cand-env-port", "cand-api-1"]) {
+    await page.click('[data-metric-action="focus-import-selected"]');
+    assert.equal(
+      await page.locator(`[data-import-card="${expectedId}"]`).evaluate((el) => el.classList.contains("is-focus-pulse")),
+      true,
+      `待入库 metric pulses selected candidate ${expectedId}`
+    );
+    assert.equal(await page.evaluate(() => document.activeElement?.closest(".import-card")?.dataset.importCard), expectedId);
+  }
+
+  // With 0 / 4 selected, clicking 待入库 keeps all extracted cards visible and focuses #import-toggle-all
+  for (const id of ["cand-api-1", "cand-login-2", "cand-env-port"]) {
+    await page.uncheck(`[data-import-check="${id}"]`);
+  }
+  assert.equal(await page.locator("#import-commit-btn").textContent(), "一键入库 (0)");
+  await page.click('[data-metric-action="focus-import-selected"]');
+  assert.equal(await page.locator(".import-card").count(), 4, "待入库 with 0 selected keeps extracted candidates visible");
+  assert.equal(await page.evaluate(() => document.activeElement?.id), "import-toggle-all", "待入库 with 0 selected focuses select-all control");
+  for (const id of ["cand-api-1", "cand-login-2", "cand-env-port"]) {
+    await page.check(`[data-import-check="${id}"]`);
+  }
+  assert.equal(await page.locator("#import-commit-btn").textContent(), "一键入库 (3)");
+
   // 8. Check layout geometry (zero horizontal overflow at 460x690 in dark & light modes)
   for (const theme of ["dark", "light"]) {
     await page.evaluate((t) => document.documentElement.setAttribute("data-theme", t), theme);
@@ -327,48 +414,186 @@ try {
   assert.equal(commits[0].items[0].input.name, "OpenAI Prod Key");
   assert.equal(commits[0].items[1].updateExisting, true);
   assert.equal(await page.locator("#import-raw-input").inputValue(), "");
+  // Opaque source references travel back with each item; paths never leave the backend.
+  assert.deepEqual(commits[0].items[0].sourceRefs, ["ref-env-1"]);
+  assert.deepEqual(commits[0].items[1].sourceRefs, []);
+
+  // Done view lists the files that still hold plaintext, each with its next step
+  const plaintextPanel = page.locator("#import-plaintext-sources");
+  assert.equal(await plaintextPanel.isVisible(), true, "Done view shows the plaintext-still-on-disk list");
+  assert.equal(await page.locator(".import-plaintext-title").textContent(), "明文仍留在磁盘上");
+  assert.equal(await page.locator(".import-plaintext-row").count(), 4);
+  const plaintextRows = await page.locator(".import-plaintext-row").evaluateAll((rows) =>
+    rows.map((row) => ({
+      kind: row.dataset.plaintextKind,
+      path: row.querySelector(".import-plaintext-path")?.textContent,
+      step: row.querySelector(".import-plaintext-step")?.textContent,
+    }))
+  );
+  assert.deepEqual(plaintextRows.map((r) => r.kind), ["env", "key", "agent", "shell"]);
+  assert.equal(plaintextRows[1].path, "~/.ssh/id_ed25519");
+  assert.match(plaintextRows[0].step, /脱敏 \.env 模板/);
+  assert.match(plaintextRows[1].step, /金库中的副本可用后删除/);
+  assert.match(plaintextRows[3].step, /删除包含密钥的那一行/);
+  // The long path is ellipsized from the left so the file name stays visible
+  const longPath = await page.locator(".import-plaintext-path").first().evaluate((el) => ({
+    clipped: el.scrollWidth > el.clientWidth,
+    direction: getComputedStyle(el).direction,
+  }));
+  assert.equal(longPath.clipped, true, "Long path is clipped inside its row instead of widening the banner");
+  assert.equal(longPath.direction, "rtl");
+  await page.click("#import-done-copy-paths");
+  assert.equal(
+    (await page.evaluate(() => window.fixture.copiedValues)).at(-1),
+    "~/Projects/very-long-workspace-directory-name/services/payments-api/.env.production.local\n~/.ssh/id_ed25519\n~/.claude/CLAUDE.md\n~/.zsh_history\n"
+  );
+
+  // The list stays inside the 460px frame in all 6 languages and both themes
+  const plaintextTitles = {
+    en: "Plaintext is still on disk",
+    zh: "明文仍留在磁盘上",
+    "zh-TW": "明文仍留在磁碟上",
+    ja: "平文がまだディスクに残っています",
+    ko: "평문이 아직 디스크에 남아 있습니다",
+    es: "El texto plano sigue en el disco",
+  };
+  for (const [langCode, expectedTitle] of Object.entries(plaintextTitles)) {
+    await page.click(`.nav-item[data-page="settings"]`);
+    await page.click(`#language-switch button[data-language="${langCode}"]`);
+    await page.click(`.nav-item[data-page="import"]`);
+    assert.equal(await page.locator(".import-plaintext-title").textContent(), expectedTitle, `plaintext title in ${langCode}`);
+    const steps = await page.locator(".import-plaintext-step").allTextContents();
+    assert.ok(steps.every((s) => s.trim().length > 0), `every row has a next step in ${langCode}`);
+    for (const theme of ["dark", "light"]) {
+      await page.evaluate((t) => document.documentElement.setAttribute("data-theme", t), theme);
+      const overflow = await page.evaluate(() => {
+        const banner = document.querySelector("#import-done-banner");
+        const panel = document.querySelector("#import-plaintext-sources");
+        return {
+          doc: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+          banner: banner.scrollWidth - banner.clientWidth,
+          panel: panel.scrollWidth - panel.clientWidth,
+          rows: Math.max(...[...panel.querySelectorAll(".import-plaintext-row")].map((r) => r.scrollWidth - r.clientWidth)),
+        };
+      });
+      for (const [area, value] of Object.entries(overflow)) {
+        assert.ok(value <= 1, `${area} overflow in done view ${langCode}/${theme}: ${value}`);
+      }
+    }
+  }
+  await page.click(`.nav-item[data-page="settings"]`);
+  await page.click(`#language-switch button[data-language="zh"]`);
+  await page.click(`.nav-item[data-page="import"]`);
+  await page.evaluate(() => document.documentElement.setAttribute("data-theme", "dark"));
 
   // Copy sealed .env template
   await page.click("#import-done-sealed");
   const copied = await page.evaluate(() => window.fixture.copiedValues);
-  assert.equal(copied[0], "OPENAI_API_KEY={{openkeylet:OPENAI_API_KEY}}\n");
+  assert.equal(copied.at(-1), "OPENAI_API_KEY={{openkeylet:OPENAI_API_KEY}}\n");
 
   // Undo newly added items
   await page.click("#import-done-undo");
   const undos = await page.evaluate(() => window.fixture.undoCalls);
   assert.deepEqual(undos, [["new-id-1", "new-id-2"]]);
 
-  // 10. Local dev config scan button + visual category telemetry + workspace folder deep scan
+  // 10. Two-tier Add / Scan hierarchy, compact collapsible scan telemetry, unified .mvault item & 4+ visible rows
+  assert.equal(await page.locator("#import-mode-switch").getAttribute("data-mode"), "add");
+  assert.equal(await page.locator("#import-subbar-add").isVisible(), true);
+  assert.equal(await page.locator("#import-subbar-scan").isHidden(), true);
+
+  await page.click("#import-mode-scan");
+  assert.equal(await page.locator("#import-mode-switch").getAttribute("data-mode"), "scan");
+  assert.equal(await page.locator("#import-subbar-scan").isVisible(), true);
+  assert.equal(await page.locator("#import-subbar-add").isHidden(), true);
+  assert.equal(await page.locator("#import-dropzone").isHidden(), true, "Add dropzone is hidden in Scan mode");
+
   await page.click("#import-chip-scan");
   await page.waitForSelector(".import-card");
   assert.equal(await page.evaluate(() => window.fixture.scanCalls), 1);
-  assert.equal(await page.locator(".import-scan-cat").count(), 4);
+
+  // Discovered .mvault renders as a normal unified item inside #import-candidate-list (no standalone orange banner)
+  assert.equal(await page.locator("#import-mvault-banner").count(), 0, "No standalone special .mvault banner exists");
+  assert.equal(await page.locator('.import-card.is-backup[data-import-mvault="0"]').count(), 1, ".mvault integrates as a unified item card");
+  assert.equal(await page.locator(".import-card").count(), 7, "All 6 credentials + 1 .mvault backup appear in the unified list");
+  assert.match(await page.locator('[data-import-kind="all"]').innerText(), /7/);
+  assert.match(await page.locator('[data-import-kind="mvault"]').innerText(), /备份 1/);
+
+  // Scan telemetry defaults to compact 1-line strip when hits exist, maximizing content space (4+ cards visible at 460x690)
+  assert.ok(await page.locator("#import-scan-banner").evaluate((el) => el.classList.contains("is-compact-summary")));
+  assert.equal(await page.locator(".import-scan-details").isHidden(), true, "Scan category grid stays collapsed by default when results exist");
   assert.match(await page.locator("#import-scan-banner").innerText(), /184/);
+
+  const visibleCardsBeforeScroll = await page.evaluate(() => {
+    const scroller = document.querySelector("#import-scroll-area").getBoundingClientRect();
+    const cards = [...document.querySelectorAll(".import-card")];
+    return cards.filter((card) => {
+      const r = card.getBoundingClientRect();
+      return r.top >= scroller.top - 1 && r.bottom <= scroller.bottom + 2;
+    }).length;
+  });
+  assert.ok(visibleCardsBeforeScroll >= 4, `Expected at least 4 complete cards visible in 460x690 viewport, got ${visibleCardsBeforeScroll}`);
+
+  // Expand scan telemetry details on demand -> inspect 4 uniform scope tiles
+  await page.click('[data-toggle-scan-details="true"]');
+  assert.equal(await page.locator(".import-scan-details").isVisible(), true);
+  assert.equal(await page.locator(".import-scan-cat").count(), 4);
   assert.match(await page.locator("#import-scan-banner").innerText(), /AI 与 MCP 配置/);
 
+  // Filter to unified Backup (.mvault) kind & trigger inline import action
+  await page.click('[data-import-kind="mvault"]');
+  assert.equal(await page.locator(".import-card").count(), 1);
+  await page.click('[data-open-discovered-mvault="0"]');
+  assert.deepEqual(await page.evaluate(() => window.fixture.openedMvaultIndices), [0]);
+  await page.click("#mvault-modal-close");
+  await page.click('[data-import-kind="all"]');
+
+  // Switching from Scan tab to Add tab shows a completely isolated clean Add workspace (no scan results or scan banner bleed)
+  await page.click("#import-mode-add");
+  assert.equal(await page.locator("#import-mode-switch").getAttribute("data-mode"), "add");
+  assert.equal(await page.locator(".import-card").count(), 0, "Add tab must not show Scan tab results");
+  assert.equal(await page.locator("#import-scan-banner").isHidden(), true, "Add tab must not show Scan telemetry banner");
+  assert.equal(await page.locator("#import-dropzone").isVisible(), true, "Add tab shows clean paste/drop input");
+  assert.equal(await page.locator("#import-clear-btn").isHidden(), true, "Clear button hidden when Add tab is empty");
+  assert.equal(await page.locator("#import-mode-scan-count").textContent(), "7", "Scan tab badge preserves staged item count");
+  assert.equal(await page.locator(".lcd-primary .seven-number").getAttribute("aria-label"), "0", "Top HUD reflects empty Add tab");
+
+  // Switching back to Scan tab restores all 7 scan results intact
+  await page.click("#import-mode-scan");
+  assert.equal(await page.locator(".import-card").count(), 7, "Switching back to Scan restores all scan results");
+  assert.equal(await page.locator("#import-scan-banner").isVisible(), true);
+  assert.equal(await page.locator(".lcd-primary .seven-number").getAttribute("aria-label"), "7", "Top HUD restores Scan tab count");
+
+  // Workspace folder deep scan directly from Tier-2 Scan bar
   await page.click('[data-scan-workspace-folder="true"]');
   assert.equal(await page.evaluate(() => window.fixture.workspaceScanCalls), 1);
+  await page.click('[data-toggle-scan-details="true"]');
   assert.equal(await page.locator(".import-scan-cat").count(), 3);
   assert.match(await page.locator("#import-scan-banner").innerText(), /S:\/Github/);
 
-  // Verify zero horizontal overflow across all 6 languages & both themes with scan report visible
+  // Verify zero horizontal overflow across all 6 languages & both themes in BOTH Add and Scan tiers
   for (const langCode of ["en", "zh", "zh-TW", "ja", "ko", "es"]) {
     await page.click(`.nav-item[data-page="settings"]`);
     await page.click(`#language-switch button[data-language="${langCode}"]`);
     await page.click(`.nav-item[data-page="import"]`);
-    for (const theme of ["dark", "light"]) {
-      await page.evaluate((t) => document.documentElement.setAttribute("data-theme", t), theme);
-      const overflow = await page.evaluate(() => ({
-        doc: document.documentElement.scrollWidth - document.documentElement.clientWidth,
-        banner: document.querySelector("#import-scan-banner").scrollWidth - document.querySelector("#import-scan-banner").clientWidth,
-      }));
-      assert.ok(overflow.doc <= 1, `doc overflow in ${langCode}/${theme}: ${overflow.doc}`);
-      assert.ok(overflow.banner <= 1, `scan banner overflow in ${langCode}/${theme}: ${overflow.banner}`);
+    for (const mode of ["scan", "add"]) {
+      await page.click(`[data-import-mode="${mode}"]`);
+      for (const theme of ["dark", "light"]) {
+        await page.evaluate((t) => document.documentElement.setAttribute("data-theme", t), theme);
+        const overflow = await page.evaluate(() => ({
+          doc: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+          deck: document.querySelector("#import-deck").scrollWidth - document.querySelector("#import-deck").clientWidth,
+          banner: document.querySelector("#import-scan-banner").scrollWidth - document.querySelector("#import-scan-banner").clientWidth,
+        }));
+        assert.ok(overflow.doc <= 1, `doc overflow in ${langCode}/${mode}/${theme}: ${overflow.doc}`);
+        assert.ok(overflow.deck <= 1, `deck overflow in ${langCode}/${mode}/${theme}: ${overflow.deck}`);
+        assert.ok(overflow.banner <= 1, `scan banner overflow in ${langCode}/${mode}/${theme}: ${overflow.banner}`);
+      }
     }
   }
   await page.click(`.nav-item[data-page="settings"]`);
   await page.click(`#language-switch button[data-language="zh"]`);
   await page.click(`.nav-item[data-page="import"]`);
+  await page.click("#import-mode-scan");
 
   // 11. Locking vault immediately wipes staged plaintext from Import Hub
   await page.click("#owner-lock-button");

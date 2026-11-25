@@ -201,12 +201,7 @@ fn create_windows_shortcut(path: &Path, executable: &Path) -> Result<()> {
 
 #[cfg(target_os = "windows")]
 fn windows_shell_path(path: &Path) -> String {
-    let path = path.to_string_lossy();
-    if let Some(path) = path.strip_prefix(r"\\?\UNC\") {
-        format!(r"\\{path}")
-    } else {
-        path.strip_prefix(r"\\?\").unwrap_or(&path).to_owned()
-    }
+    crate::platform::strip_windows_verbatim_prefix(path)
 }
 
 #[cfg(target_os = "macos")]
@@ -230,10 +225,7 @@ fn autostart_entry_path() -> Result<PathBuf> {
 
 #[cfg(target_os = "macos")]
 fn macos_app_bundle(executable: &Path) -> Option<PathBuf> {
-    executable
-        .ancestors()
-        .find(|path| path.extension().is_some_and(|extension| extension == "app"))
-        .map(Path::to_path_buf)
+    crate::platform::macos_app_bundle(executable)
 }
 
 #[cfg(target_os = "macos")]

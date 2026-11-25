@@ -296,6 +296,9 @@ async function captureAgentPasskey(payload = {}, expiresAt) {
   if (requestedId) {
     const existing = credentialRequests.get(requestedId);
     if (!existing) throw new Error("Pending passkey request not found or already expired");
+    if (!existing.agentManaged) {
+      throw new Error("Refused: cannot take over a manual Passkey confirmation window; arm browser_passkey with triggerSelector or triggerText instead");
+    }
     return {
       requestId: requestedId,
       tabId: existing.tabId,
@@ -310,6 +313,7 @@ async function captureAgentPasskey(payload = {}, expiresAt) {
     targetTab = await resolveTargetTab(payload);
   }
   for (const [id, p] of credentialRequests.entries()) {
+    if (!p.agentManaged) continue;
     if (targetTab && p.tabId !== targetTab.id) continue;
     if (requestedOp && p.params.operation !== requestedOp) continue;
     return {
@@ -328,6 +332,14 @@ async function captureAgentPasskey(payload = {}, expiresAt) {
     throw new Error("No active HTTP/HTTPS browser tab for WebAuthn passkey");
   }
   const hasTrigger = Boolean((payload.triggerSelector || "").trim() || (payload.triggerText || "").trim());
+  if (!hasTrigger) {
+    for (const p of credentialRequests.values()) {
+      if (p.agentManaged) continue;
+      if (p.tabId !== targetTab.id) continue;
+      if (requestedOp && p.params.operation !== requestedOp) continue;
+      throw new Error("Refused: a manual Passkey confirmation window is already open on this tab; agents cannot take over manual confirmation");
+    }
+  }
   const defaultWait = hasTrigger ? 15000 : 12000;
   const maxRemaining = Number.isFinite(expiresAt) ? Math.max(500, expiresAt - Date.now() - 500) : defaultWait;
   const waitMs = Math.min(Math.max(Number(payload.waitMs) || defaultWait, 1000), maxRemaining);
@@ -372,6 +384,9 @@ async function resolveAgentPasskey(payload = {}) {
   const id = typeof payload.requestId === "string" ? payload.requestId : "";
   const p = credentialRequests.get(id);
   if (!p) throw new Error("This passkey request has expired or was cancelled");
+  if (!p.agentManaged) {
+    throw new Error("Refused: cannot resolve a manual Passkey confirmation window from an agent");
+  }
   if (payload.fallback) {
     finishCredentialRequest(id, { fallback: true });
     return { resolved: true, fallback: true };

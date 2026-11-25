@@ -45,7 +45,7 @@ async function until(fn,description,timeout=20000){const end=Date.now()+timeout;
 try {
   await until(()=>output.includes("READY"),"fixture startup");
   console.log("Browser fixture ready");
-  context=await chromium.launchPersistentContext(path.join(root,"profile"),{channel:"chromium",headless:true,args:[`--disable-extensions-except=${extension}`,`--load-extension=${extension}`]});
+  context=await chromium.launchPersistentContext(path.join(root,"profile"),{channel:"chromium",headless:true,locale:"en-US",args:["--lang=en-US",`--disable-extensions-except=${extension}`,`--load-extension=${extension}`]});
   const worker=context.serviceWorkers()[0] || await context.waitForEvent("serviceworker");
   const extensionId=new URL(worker.url()).host;
   assert.equal(extensionId,"knkjojeijgalhpdkfapohofobfomenmi");
@@ -56,7 +56,7 @@ try {
   await until(()=>context.pages().some(p=>p.url().endsWith("popup.html")),"extension popup page");
   const popup=context.pages().find(p=>p.url().endsWith("popup.html"));
   await popup.setViewportSize({width:350,height:620});
-  await popup.locator("#page-hint").waitFor({state:"visible"});
+  await popup.locator("#unlock-form").waitFor({state:"visible"});
   assert.match(await popup.locator("#status").textContent(),/CONNECTED/);
   assert.equal(await popup.locator("#error").textContent(),"");
   assert.equal(await popup.locator("#unlock-form").isHidden(),false);
@@ -68,17 +68,17 @@ try {
   assert.equal(await worker.evaluate(async()=>(await chrome.storage.local.get("bridgeStatus")).bridgeStatus),"connected");
   await popup.evaluate(()=>refresh());
   await until(async()=>(await popup.locator("#status").textContent()).includes("UNAVAILABLE"),"actual bridge disconnect");
-  assert.equal(await popup.locator("#page-hint").isHidden(),true);
+  assert.equal(await popup.locator("#offline-panel").isHidden(),false);
   await worker.evaluate(()=>requestConnect());
   await until(async()=>await worker.evaluate(async()=>(await chrome.storage.local.get("bridgeStatus")).bridgeStatus==="connected"),"bridge reconnect");
   await popup.evaluate(()=>refresh());
-  await popup.locator("#page-hint").waitFor({state:"visible"});
-  assert.equal(await popup.locator("#error").textContent(),"");
-  await site.goto(origin);await site.bringToFront();await popup.evaluate(()=>refresh());
   await popup.locator("#unlock-form").waitFor({state:"visible"});
+  assert.equal(await popup.locator("#error").textContent(),"");
+  await popup.locator("#pin").fill("123456");await site.bringToFront();await popup.locator("#unlock-form button").click();
+  await popup.locator("#page-hint").waitFor({state:"visible"});
+  await site.goto(origin);await site.bringToFront();await popup.evaluate(()=>refresh());
   assert.equal(await popup.locator("#page-hint").isHidden(),true);
   console.log("Browser pages, live connection status and recovery verified");
-  await popup.locator("#pin").fill("123456");await site.bringToFront();await popup.locator("#unlock-form button").click();
   await popup.getByRole("button",{name:/Fixture login/}).waitFor();
   await site.bringToFront();await popup.getByRole("button",{name:/Fixture login/}).click();
   await until(async()=>await site.locator("#password").inputValue()==="fixture-initial-password","password autofill");
@@ -92,6 +92,7 @@ try {
   assert.equal((await worker.evaluate(p=>bridgeCall("password.get",p),{id:login.id,origin})).password,"browser-update-secret");
   await fs.writeFile(path.join(root,"desktop-edit.json"),JSON.stringify({id:login.id,name:"Desktop renamed login",loginUris:[{uri:origin+"/",matchType:"exact"},{uri:origin+"/alternate",matchType:"exact"},{uri:origin+"/blocked",matchType:"never"}],modules:[{kind:"url",value:origin},{kind:"username"},{kind:"password"}],secrets:{password:"desktop-update-secret",namedSecrets:{username:"alice"}}}));
   await until(async()=>fs.access(path.join(root,"desktop-edited")).then(()=>true,()=>false),"desktop edit");
+  await fs.rm(path.join(root, "desktop-edited"), { force: true });
   await popup.getByRole("button",{name:/Desktop renamed login/}).waitFor();
   await site.bringToFront();await popup.getByRole("button",{name:/Desktop renamed login/}).click();
   await until(async()=>await site.locator("#password").inputValue()==="desktop-update-secret","desktop-to-browser update");
@@ -162,12 +163,22 @@ try {
   await site.bringToFront();
   await popup.evaluate(() => refresh());
   await until(async () => await popup.evaluate(o => currentOrigin === o, origin), "original target restored");
+  // Insecure cross-origin iframe must never receive payment card autofill.
+  await site.evaluate(url => { const iframe = document.createElement("iframe"); iframe.src = url; document.body.append(iframe); }, "http://insecure.invalid/");
+  const insecureFrame = await (async () => { await until(() => site.frames().length === 2, "insecure cross-origin frame"); return site.frames()[1]; })();
+  await insecureFrame.locator("#cardnumber").focus();
+  await until(() => worker.evaluate(() => [...focusedFrameByTab.values()].some(id => id !== 0)), "insecure cross-origin field focused");
+  await popup.evaluate(id => call("personal-fill", { id }).catch(() => null), card.id);
+  assert.equal(await insecureFrame.locator("#cardnumber").inputValue(), "");
+  await site.locator("#username").focus();
+  await site.evaluate(() => document.querySelector("iframe").remove());
+  // Cross-origin frame (even localhost vs 127.0.0.1) must always reject login credential fill.
   await site.evaluate(url => { const iframe = document.createElement("iframe"); iframe.src = url; document.body.append(iframe); }, `http://127.0.0.1:${server.address().port}`);
   const crossFrame = await (async () => { await until(() => site.frames().length === 2, "cross-origin frame"); return site.frames()[1]; })();
-  await crossFrame.locator("#cardnumber").focus();
+  await crossFrame.locator("#password").focus();
   await until(() => worker.evaluate(() => [...focusedFrameByTab.values()].some(id => id !== 0)), "cross-origin field focused");
-  assert.equal(await popup.evaluate(id => call("personal-fill", { id }).then(() => false, () => true), card.id), true);
-  assert.equal(await crossFrame.locator("#cardnumber").inputValue(), "");
+  assert.equal(await popup.evaluate(id => call("fill", { id }).then(() => false, () => true), login.id), true);
+  assert.equal(await crossFrame.locator("#password").inputValue(), "");
   await site.locator("#username").focus();
   await site.evaluate(() => document.querySelector("iframe").remove());
   console.log("Least-privilege bridge, cards, identities, and secure origin checks verified");
@@ -175,7 +186,7 @@ try {
   await site.goto(origin+"/alternate");await site.bringToFront();await popup.evaluate(()=>refresh());
   await popup.getByRole("button",{name:/Desktop renamed login/}).click();
   await until(async()=>await site.locator("#password").inputValue()==="desktop-update-secret","additional exact URL filled");
-  await site.goto(origin+"/blocked");await site.bringToFront();await popup.evaluate(()=>refresh());
+  await site.goto(origin+"/blocked");await site.bringToFront();await popup.evaluate(async()=>{while(loading)await new Promise(r=>setTimeout(r,20));await refresh();});
   assert.equal(await popup.getByRole("button",{name:/Desktop renamed login/}).count(),0,"Never rule must not list the login");
   assert.equal(await popup.evaluate(id=>call("fill",{id}).then(()=>false,()=>true),login.id),true,"Same origin with wrong path must reject fill");
   assert.equal(await site.locator("#password").inputValue(),"");

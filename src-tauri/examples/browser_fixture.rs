@@ -1,5 +1,5 @@
 //! Isolated backend for scripts/test-browser.mjs; never opens the user's vault.
-use mcp_vault::{
+use openkeylet::{
     browser::BrowserBridge,
     model::{ConnectionInput, SettingsPatch},
     vault::Vault,
@@ -40,6 +40,13 @@ async fn main() -> anyhow::Result<()> {
             vault.save_connection(input)?;
             std::fs::remove_file(control)?;
             std::fs::write(root.join("desktop-edited"), b"ok")?;
+        }
+        let settings_control = root.join("settings-patch.json");
+        if settings_control.exists() {
+            let patch: SettingsPatch = serde_json::from_slice(&std::fs::read(&settings_control)?)?;
+            vault.update_settings_patch(patch)?;
+            std::fs::remove_file(settings_control)?;
+            std::fs::write(root.join("settings-patched"), b"ok")?;
         }
         if root.join("stop").exists() {
             break;

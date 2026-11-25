@@ -833,6 +833,21 @@ const OpenKeyletUI = (() => {
     } catch { /* ignore */ }
   }
 
+  // Report Chrome's UI color scheme to the service worker so the toolbar icon
+  // uses white-bg black-logo on dark toolbars and black-bg white-logo on light ones.
+  function reportBrowserChromeTheme() {
+    if (typeof chrome === "undefined" || !chrome.runtime?.sendMessage || !window.matchMedia) return;
+    const dark = Boolean(window.matchMedia("(prefers-color-scheme: dark)").matches);
+    chrome.runtime.sendMessage({ type: "browser-theme-detected", dark }).catch?.(() => {});
+  }
+  reportBrowserChromeTheme();
+  if (typeof window !== "undefined" && window.matchMedia) {
+    try {
+      const media = window.matchMedia("(prefers-color-scheme: dark)");
+      media.addEventListener?.("change", () => reportBrowserChromeTheme());
+    } catch { /* ignore */ }
+  }
+
   // Live-follow theme & language pushed from OpenKeylet desktop via Browser Bridge.
   if (typeof chrome !== "undefined" && chrome.storage?.onChanged) {
     chrome.storage.onChanged.addListener((changes, areaName) => {

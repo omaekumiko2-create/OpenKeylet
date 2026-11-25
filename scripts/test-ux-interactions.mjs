@@ -99,6 +99,11 @@ async function openPlatformPage(browser, { platform, userAgent, pinConfigured = 
             window.uxFixture.saves.push(structuredClone(args.input));
             return { id: args.input.id || 'saved-1', ...args.input };
           }
+          if (command === 'set_connection_enabled') {
+            const target = connections.find((c) => c.id === args.id);
+            if (target) target.enabled = Boolean(args.enabled);
+            return target ? structuredClone(target) : null;
+          }
           if (command === 'save_editor_draft') return { id: 'draft-1', updatedAt: '2026-10-20T00:05:00Z' };
           if (command === 'delete_editor_draft') return null;
           if (command === 'test_connection') {
@@ -537,8 +542,8 @@ try {
       await page.locator('#add-module-button').click();
       await page.locator('#module-menu [data-add-module="username"]').click();
     }
-    const mod0Row = await page.locator('#module-list .module-row[data-module-drag-handle]').nth(0).boundingBox();
-    const mod1Row = await page.locator('#module-list .module-row[data-module-drag-handle]').nth(1).boundingBox();
+    const mod0Row = await page.locator('#module-list .module-row').nth(0).boundingBox();
+    const mod1Row = await page.locator('#module-list .module-row').nth(1).boundingBox();
     await page.mouse.move(mod0Row.x + mod0Row.width * 0.5, mod0Row.y + 14);
     await page.mouse.down();
     await page.mouse.move(459, 689, { steps: 4 });
@@ -584,6 +589,49 @@ try {
     assert.equal(await page.locator('#page-activity').evaluate(el => el.classList.contains('active')), true, 'Ctrl+3 opens Log');
     await page.keyboard.press('Control+1');
     assert.equal(await page.locator('#page-connections').evaluate(el => el.classList.contains('active')), true, 'Ctrl+1 opens Items');
+
+    // 1e-2. Clickable Vault HUD metrics (VAULT / ENABLED) reset filters, focus & cycle enabled items
+    const vaultMetrics = await page.evaluate(() => ({
+      primaryTag: document.querySelector('[data-metric-action="focus-connections-all"]')?.tagName,
+      secondaryTag: document.querySelector('[data-metric-action="focus-connections-enabled"]')?.tagName,
+      primaryActionable: document.querySelector('[data-metric-action="focus-connections-all"]')?.classList.contains('metric-actionable'),
+      secondaryActionable: document.querySelector('[data-metric-action="focus-connections-enabled"]')?.classList.contains('metric-actionable'),
+    }));
+    assert.equal(vaultMetrics.primaryTag, 'BUTTON', 'VAULT metric is a clickable button');
+    assert.equal(vaultMetrics.secondaryTag, 'BUTTON', 'ENABLED metric is a clickable button');
+    assert.equal(vaultMetrics.primaryActionable, true);
+    assert.equal(vaultMetrics.secondaryActionable, true);
+
+    // Disable the first visible item so ENABLED metric must skip it while cycling
+    const firstVisibleId = await page.locator('#connections-list .connection-card').first().getAttribute('data-item-id');
+    const secondVisibleId = await page.locator('#connections-list .connection-card').nth(1).getAttribute('data-item-id');
+    const thirdVisibleId = await page.locator('#connections-list .connection-card').nth(2).getAttribute('data-item-id');
+    await page.locator(`.connection-card[data-item-id="${firstVisibleId}"] .item-toggle`).click();
+    await page.waitForFunction((id) => document.querySelector(`.connection-card[data-item-id="${id}"]`)?.dataset.itemEnabled === 'false', firstVisibleId);
+
+    // Apply type filter + search, then click VAULT metric -> clears both and pulses first card
+    await page.locator('#item-type-switch [data-item-type-filter="ssh"]').click();
+    await page.locator('#title-search-input').fill('Gamma');
+    assert.equal(await page.locator('#connections-list .connection-card').count(), 1);
+    await page.locator('[data-metric-action="focus-connections-all"]').click();
+    assert.equal(await page.locator('#title-search-input').inputValue(), '', 'VAULT metric clears active search');
+    assert.equal(await page.locator('#item-type-switch [data-item-type-filter="all"]').getAttribute('aria-pressed'), 'true', 'VAULT metric resets item type filter to all');
+    assert.equal(await page.locator('#connections-list .connection-card').count(), 5, 'VAULT metric shows all items');
+    assert.equal(await page.locator(`.connection-card[data-item-id="${firstVisibleId}"]`).evaluate(el => el.classList.contains('is-focus-pulse')), true, 'VAULT metric pulses first card');
+    assert.equal(await page.evaluate(() => document.activeElement?.closest('.connection-card')?.dataset.itemId), firstVisibleId, 'VAULT metric focuses first card');
+
+    // Click ENABLED metric twice -> skips disabled first item and cycles across enabled items
+    await page.locator('[data-metric-action="focus-connections-enabled"]').click();
+    assert.equal(await page.locator(`.connection-card[data-item-id="${secondVisibleId}"]`).evaluate(el => el.classList.contains('is-focus-pulse')), true, 'ENABLED metric skips disabled card and pulses first enabled card');
+    assert.equal(await page.evaluate(() => document.activeElement?.closest('.connection-card')?.dataset.itemId), secondVisibleId);
+    await page.locator('[data-metric-action="focus-connections-enabled"]').click();
+    assert.equal(await page.locator(`.connection-card[data-item-id="${thirdVisibleId}"]`).evaluate(el => el.classList.contains('is-focus-pulse')), true, 'ENABLED metric cycles to next enabled card');
+    assert.equal(await page.evaluate(() => document.activeElement?.closest('.connection-card')?.dataset.itemId), thirdVisibleId);
+
+    // Re-enable first item to restore clean state
+    await page.locator(`.connection-card[data-item-id="${firstVisibleId}"] .item-toggle`).click();
+    await page.waitForFunction((id) => document.querySelector(`.connection-card[data-item-id="${id}"]`)?.dataset.itemEnabled === 'true', firstVisibleId);
+
     await page.keyboard.press('Control+n');
     await page.locator('#connection-modal').waitFor({ state: 'visible' });
     await page.keyboard.press('Escape');
@@ -651,6 +699,7 @@ try {
         closeBg: closeStyle.backgroundColor,
         searchTitle: document.querySelector('#title-search-input').title,
         desktopShortcutHidden: getComputedStyle(document.querySelector('#desktop-shortcut-option')).display === 'none',
+        edgeDockHidden: getComputedStyle(document.querySelector('#edge-dock-option')).display === 'none',
       };
     });
     assert.equal(macChrome.isMac, true, 'macOS sets html.platform-macos');
@@ -661,6 +710,7 @@ try {
     assert.equal(macChrome.dotHeight, 12);
     assert.equal(macChrome.borderRadius, '50%', 'macOS traffic lights are circular');
     assert.equal(macChrome.desktopShortcutHidden, true, 'macOS hides desktop shortcut option');
+    assert.equal(macChrome.edgeDockHidden, true, 'macOS hides Windows-only edge-dock option');
     assert.match(macChrome.searchTitle, /⌘K/, 'macOS advertises ⌘K shortcut');
 
     // Window blur dims macOS traffic lights, focus restores them
@@ -715,6 +765,7 @@ try {
         controlsRightOfMark: controls.left > mark.right,
         modalRadius,
         lockRadius,
+        edgeDockHidden: getComputedStyle(document.querySelector('#edge-dock-option')).display === 'none',
       };
     });
     assert.equal(linuxChrome.isLinux, true, 'Linux sets html.platform-linux');
@@ -723,6 +774,7 @@ try {
     assert.equal(linuxChrome.controlsRightOfMark, true, 'Linux places window controls on top-right');
     assert.equal(linuxChrome.modalRadius, '8px', 'Linux full-window modal backdrop preserves all rounded window corners');
     assert.equal(linuxChrome.lockRadius, '0px 0px 8px 8px', 'Linux owner lock overlay preserves bottom rounded window corners');
+    assert.equal(linuxChrome.edgeDockHidden, true, 'Linux hides Windows-only edge-dock option');
 
     // Test migration modal Escape + backdrop click + focus trap
     await page.keyboard.press('Control+,');

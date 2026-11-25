@@ -28,11 +28,10 @@ try{
       if(command==="owner_editor_drafts"||command==="agent_mcp_status")return [];
       if(command==="github_backup_status")return structuredClone(fixture.status);
       if(command==="github_backup_account")return {login:"fixture-user"};
-      if(command==="github_backup_generate_key")return "okv1_"+"A".repeat(43);
       if(command==="github_backup_connect"){
         if(fixture.failConnect)throw Error("GITHUB_PRIVATE_REQUIRED");
         fixture.connects.push(structuredClone(args.input));
-        fixture.status={connected:true,strongMode:true,provider:args.input.provider||"github",serverUrl:args.input.serverUrl||"",repository:args.input.repository,branch:"main",autoSync:Boolean(args.input.autoSync),hasRemoteBackup:args.input.mode==="existing",needsRestore:args.input.mode==="existing"};
+        fixture.status={connected:true,provider:args.input.provider||"github",serverUrl:args.input.serverUrl||"",repository:args.input.repository,keyRepository:args.input.recoveryKey?"":args.input.repository+"-key",branch:"main",autoSync:Boolean(args.input.autoSync),hasRemoteBackup:args.input.mode==="existing",needsRestore:args.input.mode==="existing"};
         return structuredClone(fixture.status);
       }
       if(command==="github_backup_upload"){
@@ -64,20 +63,20 @@ try{
   assert.equal(await page.locator("#github-token").isVisible(),false);
   await page.screenshot({path:path.join(artifacts,"account.png")});
   await page.locator("#github-create-repository").check();
-  await page.locator("#github-master-passphrase").fill("Fixture-Strong-Passphrase-2026!");
-  await page.locator("#github-master-passphrase-confirm").fill("Fixture-Strong-Passphrase-2026!");
-  await page.locator("#github-generate-key").click();
-  await page.waitForFunction(()=>document.querySelector("#github-recovery-key").value.startsWith("okv1_"));
-  await page.locator("#github-submit").click();
-  assert.equal(await page.evaluate(()=>fixture.connects.length),0,"Saving the key must be acknowledged");
-  await page.locator("#github-key-saved").check();
+  // A new connection asks for no key: it names the key repository instead.
+  assert.equal(await page.locator("#github-generate-key").count(),0);
+  assert.equal(await page.locator("#github-key-saved").count(),0);
+  assert.equal(await page.locator("#github-recovery-key").isVisible(),false);
+  assert.match(await page.locator("#github-key-repo-help").textContent(),/fixture-user\/openkeylet-vault-key/);
   await page.screenshot({path:path.join(artifacts,"setup.png")});
   assert.ok(await page.evaluate(()=>document.querySelector(".github-modal-card").getBoundingClientRect().bottom<=innerHeight));
   await page.locator("#github-submit").click();
   await page.waitForFunction(()=>fixture.uploads===1);
   assert.equal(await page.evaluate(()=>fixture.connects[0].authSource),"cli");
   assert.equal(await page.evaluate(()=>fixture.connects[0].createRepository),true);
-  assert.equal(await page.locator("#github-recovery-key").inputValue(),"");
+  assert.equal(await page.evaluate(()=>fixture.connects[0].recoveryKey),"");
+  assert.equal(await page.evaluate(()=>"recoveryKeySaved" in fixture.connects[0]),false);
+  assert.equal(await page.locator("#github-key-repository-value").textContent(),"fixture-user/openkeylet-vault-key");
   await page.screenshot({path:path.join(artifacts,"uploaded.png")});
   await page.locator("#github-advanced > summary").click();
   await page.locator("#github-reconfigure").click();
@@ -85,10 +84,17 @@ try{
   assert.equal(await page.locator("#github-first-upload-field").isVisible(),false);
   await page.locator("#github-auth-source").selectOption("token");
   await page.locator("#github-token").fill("synthetic-pat");
+  // An existing backup offers the pasted key only as a fallback, and validates it.
+  assert.equal(await page.locator("#github-recovery-key").isVisible(),true);
+  await page.locator("#github-recovery-key").fill("okv1_too-short");
+  await page.locator("#github-submit").click();
+  await page.locator("#github-form-error").waitFor({state:"visible"});
+  assert.equal(await page.evaluate(()=>fixture.connects.length),1);
   await page.locator("#github-recovery-key").fill("okv1_"+"A".repeat(43));
-  await page.locator("#github-key-saved").check();
   await page.locator("#github-submit").click();
   await page.locator("#github-modal").waitFor({state:"hidden"});
+  assert.equal(await page.evaluate(()=>fixture.connects[1].recoveryKey),"okv1_"+"A".repeat(43));
+  assert.equal(await page.locator("#github-recovery-key").inputValue(),"");
   assert.equal(await page.evaluate(()=>fixture.uploads),1,"Existing backups must not be uploaded over");
   assert.equal(await page.locator("#github-upload").isDisabled(),true);
   assert.equal(await page.locator("#github-token").inputValue(),"");
@@ -102,11 +108,7 @@ try{
   await page.locator("#github-connect").waitFor({state:"visible"});
   await page.locator("#github-connect").click();
   await page.locator("#github-repository").fill("fixture-user/another-vault");
-  await page.locator("#github-master-passphrase").fill("Fixture-Strong-Passphrase-2026!");
-  await page.locator("#github-master-passphrase-confirm").fill("Fixture-Strong-Passphrase-2026!");
-  await page.locator("#github-generate-key").click();
-  await page.waitForFunction(()=>document.querySelector("#github-recovery-key").value.startsWith("okv1_"));
-  await page.locator("#github-key-saved").check();
+  assert.match(await page.locator("#github-key-repo-help").textContent(),/fixture-user\/another-vault-key/);
   await page.evaluate(()=>fixture.failConnect=true);
   await page.locator("#github-submit").click();
   await page.waitForFunction(()=>document.querySelector("#github-form-error").textContent.includes("私有"));
@@ -142,5 +144,5 @@ try{
   assert.equal(await page.locator("#github-modal").isVisible(),false);
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
   assert.deepEqual(errors,[]);
-  console.log(JSON.stringify({ok:true,checks:["account check","CLI authorization selection","explicit repository creation","recovery key acknowledgement","first encrypted upload","existing backup restore gate","token cleared","cancel restore","merge restore","public repository rejection","upload retry without reconnection","two-way sync","auto-sync toggle","Gitea/Forgejo platform option","lock clears secrets","460px layout"],artifacts},null,2));
+  console.log(JSON.stringify({ok:true,checks:["account check","CLI authorization selection","explicit repository creation","key repository named, no key typed","first encrypted upload","existing backup restore gate","token cleared","cancel restore","merge restore","public repository rejection","upload retry without reconnection","two-way sync","auto-sync toggle","Gitea/Forgejo platform option","lock clears secrets","460px layout"],artifacts},null,2));
 }finally{await browser.close();server.close();}

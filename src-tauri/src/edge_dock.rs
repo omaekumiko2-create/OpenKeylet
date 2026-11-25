@@ -90,11 +90,7 @@ impl EdgeDockController {
     }
 
     pub fn platform_supported() -> bool {
-        !is_wayland_session()
-    }
-
-    pub fn is_supported(&self) -> bool {
-        Self::platform_supported()
+        cfg!(windows)
     }
 
     pub fn is_enabled(&self) -> bool {
@@ -109,11 +105,11 @@ impl EdgeDockController {
             .unwrap_or(false)
     }
 
-    pub fn set_enabled(&self, window: &WebviewWindow, enabled: bool) {
+    pub async fn set_enabled(&self, window: &WebviewWindow, enabled: bool) {
         let effective = Self::platform_supported() && enabled;
         self.enabled.store(effective, Ordering::Release);
         if !effective {
-            self.undock(window, true);
+            self.undock(window, true).await;
         }
     }
 
@@ -129,7 +125,7 @@ impl EdgeDockController {
         }
     }
 
-    pub fn on_frontend_hover(&self, window: &WebviewWindow, entered: bool) {
+    pub async fn on_frontend_hover(&self, window: &WebviewWindow, entered: bool) {
         if let Ok(mut guard) = self.inner.lock() {
             guard.frontend_hovered = entered;
             if let Some(docked) = guard.docked.as_mut() {
@@ -141,11 +137,11 @@ impl EdgeDockController {
             }
         }
         if entered {
-            self.expand(window);
+            self.expand(window).await;
         }
     }
 
-    pub fn expand(&self, window: &WebviewWindow) {
+    pub async fn expand(&self, window: &WebviewWindow) {
         let target = {
             let mut guard = match self.inner.lock() {
                 Ok(g) => g,
@@ -165,12 +161,12 @@ impl EdgeDockController {
             && let Ok(size) = window.outer_size()
         {
             let expanded = expanded_position(target.0, pos, size, target.1);
-            self.animate_to(window, pos, expanded);
+            self.animate_to(window, pos, expanded).await;
             emit_state(window, Some(target.0), false);
         }
     }
 
-    pub fn undock(&self, window: &WebviewWindow, restore_if_collapsed: bool) {
+    pub async fn undock(&self, window: &WebviewWindow, restore_if_collapsed: bool) {
         let previous = {
             let mut guard = match self.inner.lock() {
                 Ok(g) => g,
@@ -185,7 +181,7 @@ impl EdgeDockController {
                     && let Ok(size) = window.outer_size()
                 {
                     let expanded = expanded_position(docked.edge, pos, size, docked.work_area);
-                    self.animate_to(window, pos, expanded);
+                    self.animate_to(window, pos, expanded).await;
                 }
             }
             let _ = window.set_always_on_top(false);
@@ -194,6 +190,9 @@ impl EdgeDockController {
     }
 
     pub fn spawn_monitor(self: &Arc<Self>, app_handle: tauri::AppHandle) {
+        if !Self::platform_supported() {
+            return;
+        }
         let controller = Arc::clone(self);
         tauri::async_runtime::spawn(async move {
             loop {
@@ -217,12 +216,12 @@ impl EdgeDockController {
                     continue;
                 }
 
-                controller.tick(&window);
+                controller.tick(&window).await;
             }
         });
     }
 
-    fn tick(&self, window: &WebviewWindow) {
+    async fn tick(&self, window: &WebviewWindow) {
         if is_primary_mouse_down() {
             return;
         }
@@ -243,7 +242,7 @@ impl EdgeDockController {
             }
         };
         if should_evaluate_move {
-            self.evaluate_snap(window);
+            self.evaluate_snap(window).await;
         }
 
         // 2. When docked, auto-collapse on cursor leave and auto-expand on edge hover.
@@ -288,7 +287,7 @@ impl EdgeDockController {
                     }
                 };
                 if touching_edge {
-                    self.expand(window);
+                    self.expand(window).await;
                 }
             } else if win_rect.contains_with_margin(cx, cy, margin) {
                 if let Ok(mut guard) = self.inner.lock()
@@ -316,7 +315,8 @@ impl EdgeDockController {
                     }
                 };
                 if should_collapse {
-                    self.collapse_to_edge(window, &docked, pos, size, scale);
+                    self.collapse_to_edge(window, &docked, pos, size, scale)
+                        .await;
                 }
             }
         } else if !docked.collapsed {
@@ -339,12 +339,13 @@ impl EdgeDockController {
                 }
             };
             if should_collapse {
-                self.collapse_to_edge(window, &docked, pos, size, scale);
+                self.collapse_to_edge(window, &docked, pos, size, scale)
+                    .await;
             }
         }
     }
 
-    fn collapse_to_edge(
+    async fn collapse_to_edge(
         &self,
         window: &WebviewWindow,
         docked: &DockedSession,
@@ -354,7 +355,7 @@ impl EdgeDockController {
     ) {
         let peek_px = (PEEK_VISIBLE_LOGICAL * scale).round() as i32;
         let collapsed_pos = collapsed_position(docked.edge, pos, size, docked.work_area, peek_px);
-        self.animate_to(window, pos, collapsed_pos);
+        self.animate_to(window, pos, collapsed_pos).await;
         // Verify the OS/window manager actually moved the window off-screen.
         // On compositors that clamp windows inside the work area (e.g. Wayland,
         // macOS menu bar, or strict tiling WMs), abort collapse instead of leaving
@@ -362,13 +363,13 @@ impl EdgeDockController {
         if let Ok(actual) = window.outer_position()
             && !position_reached_collapse_target(docked.edge, actual, collapsed_pos, scale)
         {
-            self.undock(window, false);
+            self.undock(window, false).await;
             return;
         }
         emit_state(window, Some(docked.edge), true);
     }
 
-    fn evaluate_snap(&self, window: &WebviewWindow) {
+    async fn evaluate_snap(&self, window: &WebviewWindow) {
         {
             if let Ok(mut guard) = self.inner.lock() {
                 guard.last_user_move = None;
@@ -401,7 +402,7 @@ impl EdgeDockController {
         if let Some(edge) = near_edge {
             let snapped = expanded_position(edge, pos, size, work_rect);
             if snapped.x != pos.x || snapped.y != pos.y {
-                self.animate_to(window, pos, snapped);
+                self.animate_to(window, pos, snapped).await;
             }
             if let Ok(mut guard) = self.inner.lock() {
                 guard.docked = Some(DockedSession {
@@ -420,12 +421,12 @@ impl EdgeDockController {
                 DockEdge::Top => win_rect.top > work_rect.top + undock_px,
             };
             if moved_away {
-                self.undock(window, false);
+                self.undock(window, false).await;
             }
         }
     }
 
-    fn animate_to(
+    async fn animate_to(
         &self,
         window: &WebviewWindow,
         from: PhysicalPosition<i32>,
@@ -442,11 +443,11 @@ impl EdgeDockController {
             let y = from.y + ((to.y - from.y) as f64 * eased).round() as i32;
             let _ = window.set_position(PhysicalPosition::new(x, y));
             if step < ANIMATION_STEPS {
-                std::thread::sleep(ANIMATION_FRAME);
+                tokio::time::sleep(ANIMATION_FRAME).await;
             }
         }
         // Brief guard so the final OS Moved event is ignored as programmatic.
-        std::thread::sleep(Duration::from_millis(20));
+        tokio::time::sleep(Duration::from_millis(20)).await;
         self.animating.store(false, Ordering::Release);
     }
 }
@@ -522,19 +523,6 @@ fn position_reached_collapse_target(
     match edge {
         DockEdge::Left | DockEdge::Right => (actual.x - target.x).abs() <= tolerance,
         DockEdge::Top => (actual.y - target.y).abs() <= tolerance,
-    }
-}
-
-fn is_wayland_session() -> bool {
-    #[cfg(target_os = "linux")]
-    {
-        std::env::var_os("WAYLAND_DISPLAY").is_some()
-            || std::env::var("XDG_SESSION_TYPE")
-                .is_ok_and(|value| value.eq_ignore_ascii_case("wayland"))
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        false
     }
 }
 

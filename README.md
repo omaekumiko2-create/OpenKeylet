@@ -62,7 +62,7 @@ Designed in a distraction-free **Pure Monochrome Carbon & Porcelain** aesthetic 
 </table>
 
 <details>
-  <summary>View Optional Personal Encrypted Vault Repository UI (GitHub / Self-hosted Gitea &amp; Forgejo)</summary>
+  <summary>View the optional GitHub Password Sync UI (GitHub / Self-hosted Gitea &amp; Forgejo)</summary>
   <br />
   <p align="center">
     <img src=".github/assets/ui-settings-cloud.png" alt="Personal Vault Repository Auto-Sync UI" width="380" />
@@ -82,7 +82,7 @@ Designed in a distraction-free **Pure Monochrome Carbon & Porcelain** aesthetic 
     <td width="25%"><strong>01 · Encrypted Core</strong><br /><br />All secrets, Passkey private keys, TOTP seeds, and cards are encrypted locally with <code>XChaCha20-Poly1305</code>. No OpenKeylet account or hosted server exists.</td>
     <td width="25%"><strong>02 · Metadata Discovery</strong><br /><br />Agents see only item names, field labels, non-secret targets, and advertised actions via on-demand <code>stdio</code> MCP — never hidden plaintext.</td>
     <td width="25%"><strong>03 · Local Execution</strong><br /><br />OpenKeylet signs Passkeys, fills web/desktop forms, runs SSH/SFTP, calls APIs, and writes template files locally while redacting echoed secrets (<code>[REDACTED]</code>).</td>
-    <td width="25%"><strong>04 · User-Owned Sync</strong><br /><br />Optionally export <code>.mvault</code> encrypted packages or enable end-to-end encrypted two-way sync to your own private GitHub / Gitea repository.</td>
+    <td width="25%"><strong>04 · User-Owned Sync</strong><br /><br />Optionally export <code>.mvault</code> encrypted packages or sync an encrypted vault snapshot two ways through private GitHub / Gitea repositories you own.</td>
   </tr>
 </table>
 
@@ -96,13 +96,17 @@ OpenKeylet is intentionally **transparent about what it protects and what it doe
 
 | Boundary | Status | How It Works |
 | --- | :---: | --- |
-| **LLM Context & Prompt Leakage** | **Protected** | Default-hidden modules are never returned in MCP responses, tool outputs, or activity logs. Terminal and HTTP outputs dynamically redact known secrets and live TOTP codes. |
-| **Unauthorized Plaintext Extraction** | **Protected** | No unrestricted `get_secret` tool exists. Agents can only *use* hidden credentials through explicit actions unless you manually flip a module's **Agent Visible** switch. |
+| **LLM Context & Prompt Leakage** | **Protected** | Default-hidden modules are never returned in MCP responses or activity logs. Terminal, SSH, HTTP, and browser results redact the secrets of the items they use, every value the MCP session rendered or filled, other hidden vault values of 8+ characters, and live TOTP codes, including when the call names no item. |
+| **Agents Reading Hidden Plaintext** | **Accidental Disclosure Only** | There is no `get_secret` tool and hidden modules are never returned by `items_search`, so in normal use their values stay out of model context. This is not a boundary against a malicious or prompt-injected agent: an enabled item's secret can be substituted into `terminal_run` / `ssh_run` commands or rendered by `secret_write_file` into a file the agent can then read with its own tools, and output redaction only matches the raw value and common encodings of it (JSON escapes, base64 / base64url, hex, percent-encoding, shell quoting, single lines of multi-line values). The item's **Enable** switch is the real authorization gate. |
 | **Other People Using Your Unlocked PC** | **Protected (with PIN)** | The optional 6-digit PIN locks the desktop GUI, scrubs items/logs behind the lock screen, blocks management IPC commands, enforces progressive wrong-PIN cooldown, and supports optional idle auto-lock (5 / 15 / 30 / 60 min). |
 | **Clipboard History Leakage** | **Protected** | Copying passwords, secrets, TOTP codes, generated passwords, or recovery keys marks them to bypass Windows `Win+V` & Cloud Clipboard and **auto-clears after 30 seconds** (only if unchanged — never wiping newer user copies) or immediately on lock/quit. |
-| **Offline Cloud / Backup Theft** | **Protected** | Desktop `.mvault` exports use Argon2id (64 MiB) + XChaCha20-Poly1305 with a ≥12-char password. Cloud repo snapshots use a separate random 256-bit `okv1_` recovery key; the remote repo receives ciphertext only and must be `private: true`. |
+| **Offline Backup Theft** | **Protected** | Desktop `.mvault` exports use Argon2id (64 MiB) + XChaCha20-Poly1305 with a ≥12-char password. |
+| **Cloud Repository Leak** | **One Repository Only** | Cloud snapshots are encrypted with a random 256-bit `okv1_` key kept in a second private repository (`<repo>-key`) of the same account. The vault repository holds ciphertext only, both must be `private: true`, and neither one alone can be read. Whoever controls the account, or a token covering both repositories, can read the vault. |
+| **Local Vault Files at Rest** | **Relies on OS** | The vault key is kept in Windows Credential Manager / Linux Secret Service or in a `master.key` file in the data directory (always on macOS and with `OPENKEYLET_DATA_DIR`), so at-rest confidentiality rests on your OS account and full-disk encryption. Item names, descriptions, hosts, URLs, folders, and the activity log are stored unencrypted. |
 | **Malicious Agent / Compromised OS User** | **Not a Sandbox** | OpenKeylet does **not** defend against malware running as your same OS user, a compromised browser, or a malicious agent sending destructive commands over an enabled SSH/HTTP item. Pair with OS login lock & full-disk encryption (BitLocker / FileVault / LUKS). |
 | **Background MCP When GUI Is Locked** | **By Design: Active** | Locking the desktop GUI with PIN stops *people* from viewing/editing the vault on screen; background `stdio` MCP sessions continue working for **enabled** items so long-running agent jobs are not interrupted. Disable an item to block agents from using it. |
+
+**OpenKeylet tools run outside your agent's sandbox.** `terminal_*`, `ssh_*`, `http_send`, and `secret_write_file` execute with your OS user's permissions in the OpenKeylet MCP server process, not inside the sandbox or command-approval system your agent client applies to its own shell; `terminal_run` works even when no item is used. Keep per-tool approval enabled for these tools in your agent client instead of blanket-allowing the `openkeylet` server.
 
 ### Per-Module Visibility Matrix
 
@@ -111,7 +115,7 @@ OpenKeylet is intentionally **transparent about what it protects and what it doe
 | **Hidden** *(default for secrets)* | Masked (click Eye / Copy) | Never | Yes (`ssh`, `http`, `fill`, `browser`, `secret_write_file`) |
 | **Visible** *(explicit toggle)* | Yes | Yes | Yes |
 | **TOTP Seed** | Masked + **Copy 2FA Code** | Seed never returned; live 6-digit code injected/redacted locally | Yes |
-| **Passkey Private Key** | Metadata only (RP ID + user) | Private key never leaves desktop vault | Yes (requires extension confirmation; optional Agent Passkey toggle) |
+| **Passkey Private Key** | Metadata only (RP ID + user) | Private key never leaves desktop vault | Yes. Browser-initiated use goes through the extension confirmation window (UV only after PIN); agent `browser_passkey` requires explicitly enabling **Agent Passkey signing** (OFF by default) and cannot take over an open manual confirmation window |
 | **Disabled / Trashed Item** | Viewable / Restorable by owner | Blocked | Blocked (no autofill, no Passkey signing, no MCP execution) |
 
 > Read the complete [Security Policy & Threat Boundary](SECURITY.md) before using OpenKeylet with sensitive production infrastructure.
@@ -126,11 +130,13 @@ OpenKeylet is intentionally **transparent about what it protects and what it doe
    Keep everyday dev/staging credentials enabled for agents, and leave high-risk production root keys or personal banking logins **disabled** until you actively need them.
 3. **Keep `Agent Visible` OFF unless truly needed**
    Leave the left toggle on every password, API key, SSH key, and TOTP module set to **Hidden** (`OFF`). Prefer `{{openkeylet:module name}}` placeholders in `http_send`, `terminal_run`, `ssh_run`, and `secret_write_file`.
-4. **Store your `okv1_` Recovery Key and `.mvault` password outside the repository**
-   Print or save your recovery key in a separate offline location. Without it (and with no connected device left), encrypted cloud snapshots cannot be decrypted.
-5. **Control Agent Passkey signing explicitly**
-   Under **System → WEB / 04**, toggle **Agent Passkey signing** off if you only want manual user-confirmed Passkeys in the browser.
-6. **Avoid concurrent offline edits to the exact same item**
+4. **Save the service URL on API items**
+   When an item has a saved service URL (or website rules), `http_send` only sends its token to that origin; an item without one lets the agent pick any destination. Placeholders in `terminal_run`, `ssh_run`, and `secret_write_file` are not destination-bound.
+5. **Protect your GitHub account, and keep your `.mvault` password safe**
+   The sync key lives in the `<repo>-key` private repository of your account, so whoever controls the account can read the vault: turn on two-factor authentication. Never make either repository public, and do not delete the key repository. For an extra safety net, open **Recovery key** under Advanced and keep an offline copy.
+6. **Control Agent Passkey signing explicitly**
+   **Agent Passkey signing** under **System → WEB / 04** is OFF by default. Enable it only if you want `browser_passkey` to sign in or register a Passkey for enabled items without per-request confirmation (the response asserts user presence and user verification on your standing authorization; agents still cannot take over an open manual confirmation window). Keep it off for manual-only confirmation in the extension window.
+7. **Avoid concurrent offline edits to the exact same item**
    Two-way repo sync merges cleanly across devices by item `id` and `updatedAt`, and propagates permanent deletions via tombstones. Sync before editing the same item on a second machine to avoid last-write-wins overwrites.
 
 ---
@@ -202,7 +208,7 @@ DEEPSEEK_API_KEY={{openkeylet:API Credential}}
 CF_API_TOKEN={{openkeylet:Token}}
 ```
 
-OpenKeylet resolves placeholders **locally** inside `secret_write_file`, `http_send`, `ssh_run`, and `terminal_run`, and automatically replaces any echoed secret in stdout/stderr/HTTP output with `[REDACTED]`.
+OpenKeylet resolves placeholders **locally** inside `secret_write_file`, `http_send`, `ssh_run`, and `terminal_run`, and automatically replaces echoed secrets (raw or in a common encoding, also when a terminal wraps or colors them) in stdout/stderr/HTTP output with `[REDACTED]`. Prefer `secretEnv` or `openkeylet run --env-file` to hand secrets to a program; a file rendered by `secret_write_file` holds plaintext, so agents should never read it back, diff, or commit it.
 
 ---
 
@@ -227,7 +233,7 @@ OpenKeylet resolves placeholders **locally** inside `secret_write_file`, `http_s
    - Register and sign in with **WebAuthn Passkeys** (ES256, discoverable & allow-list credentials, optional `prf` / `largeBlob` extensions); private keys stay encrypted inside the desktop vault.
 5. **Agent-Driven Web Login**:
    - Keep your target site open in Chrome/Edge/Brave, then tell your agent: `use GitHub Maintainer in OpenKeylet MCP — sign into this page.`
-   - You can watch every fill and click live in your tab; toggle **Agent Passkey signing** OFF under **System → WEB / 04** if you prefer manual Passkey confirmations only.
+   - You can watch every fill and click live in your tab. **Agent Passkey signing** is OFF by default so Passkeys always require manual confirmation unless you explicitly enable it under **System → WEB / 04** (even when enabled, `browser_passkey` cannot take over an already-open manual confirmation window).
 
 ---
 
@@ -238,28 +244,29 @@ All local data operations live together under **System → SAFE / 06 (Local Data
 * **Export `.mvault`**: Click **Export .mvault** and choose an independent backup password (≥ 12 characters). Encrypted with Argon2id (64 MiB, 3 iterations) + XChaCha20-Poly1305; includes all items, Passkeys, password history (last 20), and Trash.
 * **Restore `.mvault` (with Safe Dry-Run Preview)**:
   1. Click **Restore .mvault** and pick your `.mvault` file first.
-  2. OpenKeylet automatically detects whether the package requires a password — **legacy v3–v7 and CLI self-unlocking `.mvault` files skip the password prompt automatically** (and display a security advisory encouraging you to re-export with a password).
+  2. OpenKeylet automatically detects whether the package requires a password — **legacy v3–v7 files and files written with `openkeylet backup export --self-unlocking` skip the password prompt automatically** (and display a security advisory encouraging you to re-export with a password). The CLI writes such a file only when that flag is given; its default export asks for a passphrase.
   3. Review the **non-destructive merge preview**: exact counts of new items, identical entries skipped, safe numbered conflict renames (e.g. `GitHub(2)` — existing items are never overwritten), Passkeys, Trash, and password history.
   4. Click **Confirm Import** to commit atomically (and trigger automatic cloud sync if enabled).
 * **Migrate from Bitwarden / Chrome / Edge**: Click **Import Bitwarden / CSV** to preview compatibility notes and transactionally import Bitwarden JSON (including ES256 PKCS#8 Passkeys & TOTP) or Chrome/Edge CSV (also accepts `.mvault` packages).
+* **Clean up plaintext after importing from files**: On the **Import** page, **Scan PC** also checks agent rule files (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `.cursorrules`, `.claude/rules`, `.cursor/rules`), shell startup files (`export NAME=value` in `.bashrc`, `.zshrc`, `.profile`, fish config) and shell history. Importing never changes the source files, so the done view lists each file that **still holds plaintext** with the next step for it (switch to the sealed `.env` template, delete the key file once the vault copy works, remove the pasted line, …). The CLI `import-env` and `import-ssh` commands print the same list. The sealed `.env` template replaces any line it cannot seal with a `# OpenKeylet removed …` comment instead of copying it.
 
 ---
 
 ### Tutorial 6 · Multi-Device Encrypted Cloud Sync (GitHub / Self-Hosted Gitea & Forgejo)
 
-In **System → CLOUD / 05**, you may optionally sync ciphertext through a **private** repository you own (completely opt-in):
+In **System → CLOUD / 05**, you may optionally sync an encrypted snapshot through **private** repositories you own (completely opt-in):
 
 1. **Choose your host**:
-   - **GitHub**: reuse your local `gh auth login` session or paste a fine-grained PAT with `Contents: Read & write` (plus `Administration: Write` if you want OpenKeylet to create the private repo automatically).
+   - **GitHub**: reuse your local `gh auth login` session or paste a fine-grained PAT with `Contents: Read & write` on both the vault repository and its key repository (plus `Administration: Write` if you want OpenKeylet to create them automatically).
    - **Self-hosted Gitea / Forgejo**: enter your HTTPS server URL + personal access token, then click **Check server & account** to verify `/api/v1/user` connectivity before saving.
-2. **Verify private repo & store Recovery Key**: enter `owner/repo` (every read/write strictly enforces `private: true`), generate your 256-bit `okv1_` **Recovery Key**, and save it **outside the repository**.
+2. **Bind a private repo**: enter `owner/repo` (every read/write strictly enforces `private: true`). OpenKeylet creates the key repository `owner/repo-key` in the same account and stores the sync key there, apart from the ciphertext. There is no key for you to remember.
 3. **One-Button Everyday Sync**:
    - Turn on **Auto two-way sync** for debounced background pushes after edits and automatic pull-merge on launch (handles `409 Conflict` auto-retry and tombstone deletions).
    - Whenever local changes haven't been synced yet (or a background push hits offline network), a **`PENDING SYNC`** banner stays visible and the primary button switches to **`SYNC PENDING CHANGES`** — one click reconciles everything.
    - Manual actions (**Back up only**, **Restore only**, **Recovery key**, **Reconnect**, **Disconnect**) stay neatly tucked inside the collapsible **Advanced · Manual snapshot & connection** drawer.
-4. **Add a second machine (Windows / macOS / Linux)**: open **System → CLOUD / 05**, choose **Connect an existing vault repo**, enter the same repo + your `okv1_` Recovery Key, and click **`SYNC & RESTORE`**.
+4. **Add a second machine (Windows / macOS / Linux)**: open **System → CLOUD / 05**, choose **Connect an existing vault repo**, authorize the same account, pick the repo, and click **`SYNC & RESTORE`**. The key is read from the key repository.
 
-> Local PIN, browser pairing tokens, agent configs, activity logs, and editor drafts **never** leave your device.
+> Local PIN, browser pairing tokens, agent configs, the activity log (`activity.jsonl`), SSH host-key pins (`ssh-known-hosts.json`), and editor drafts **never** leave your device.
 
 ---
 
@@ -290,13 +297,13 @@ OpenKeylet runs on demand via local `stdio` MCP (`openkeylet mcp stdio`) and exp
 | | `browser_fill_login` | Match and fill saved login credentials (and auto-fill TOTP on OTP-only verification steps) into a live page or matching SSO iframe |
 | | `browser_fill_personal` | Fill saved cards or identity details into HTTPS/localhost pages, including split cross-origin payment iframes (e.g. Stripe Elements) |
 | | `browser_click` | Click a visible button, link, checkbox, radio, or label in the page or secure iframe |
-| | `browser_passkey` | Complete WebAuthn Passkey sign-in or registration (attaching to a specified/matching login item when available) using the local vault |
+| | `browser_passkey` | Complete WebAuthn Passkey sign-in or registration (attaching to a specified/matching login item when available) using the local vault, with no per-request confirmation while **Agent Passkey signing** is on |
 | **Direct Fill** | `credential_fill` | Fill one hidden module into a browser control, explicit desktop foreground control, or managed terminal |
-| **SSH & SFTP** | `ssh_run` | Run SSH commands with private-key-first + password fallback auth, stdin, bounded output cap, and cross-item `{{openkeylet:Item/module}}` / `{{openkeylet-raw:...}}` placeholders |
+| **SSH & SFTP** | `ssh_run` | Run SSH commands with private-key-first + password fallback auth, stdin, bounded output cap, and cross-item `{{openkeylet:Item/module}}` / `{{openkeylet-raw:...}}` placeholders; pins the server host key on first connection and refuses a changed key |
 | | `ssh_upload` | Recursively upload local files/directories over SFTP |
 | | `ssh_download` | Recursively download remote files/directories over SFTP |
-| **HTTP APIs** | `http_send` | Send authenticated HTTP/HTTPS requests (auto-detects providers, Bearer/Basic, custom headers, streaming, multipart, `insecure`, `followRedirects`, cross-origin auth stripping, and zero-plaintext `captureSecrets` from JSON responses) |
-| **Files & Onboarding** | `secret_write_file` | Render a local file template replacing single-item `{{openkeylet:module}}` or cross-item `{{openkeylet:Item/module}}` placeholders atomically (`0600` on Unix) without exposing plaintext |
+| **HTTP APIs** | `http_send` | Send authenticated HTTP/HTTPS requests (auto-detects providers, Bearer/Basic, custom headers, streaming, multipart, `insecure`, `followRedirects`, cross-origin auth stripping, and zero-plaintext `captureSecrets` from JSON responses); secrets of an item with a saved service URL or website rules are only sent to that origin or matching rules |
+| **Files & Onboarding** | `secret_write_file` | Render a local file template replacing single-item `{{openkeylet:module}}` or cross-item `{{openkeylet:Item/module}}` placeholders atomically (`0600` on Unix) for programs that cannot read environment variables; the rendered file holds plaintext |
 | | `secret_generate` | Cryptographically generate and store a strong password/hex/base64url secret locally into an item without exposing plaintext |
 | | `ssh_keygen` | Generate an Ed25519 SSH keypair locally, store the private key encrypted, and return only the public key & fingerprint |
 | | `secret_ingest_file` | Import a local `.env` or PEM private key directly into the vault without exposing plaintext (and optionally write a sealed template) |

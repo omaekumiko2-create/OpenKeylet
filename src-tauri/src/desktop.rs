@@ -13,10 +13,7 @@ pub fn fill_focused(value: &str, submit: bool) -> Result<()> {
     }
 
     #[cfg(target_os = "linux")]
-    if std::env::var_os("WAYLAND_DISPLAY").is_some()
-        || std::env::var("XDG_SESSION_TYPE")
-            .is_ok_and(|value| value.eq_ignore_ascii_case("wayland"))
-    {
+    if crate::platform::is_wayland_session() {
         bail!(
             "Wayland does not allow OpenKeylet to reliably type into an arbitrary focused window; use a browser or managed terminal instead"
         );

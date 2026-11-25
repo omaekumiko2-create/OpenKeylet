@@ -191,8 +191,9 @@ try {
   const original = changed.entries.find(item => item.username === "alice");
   await worker.evaluate(args => captureUiAction(args), { action: "capture-save", captureTabId: tabId, id: original.id,
     expectedUpdatedAt: original.updatedAt, name: original.name, username: "alice", password: changed.password });
-  assert.equal((await worker.evaluate(id => bridgeCall("vault.history", { id }), original.id)).entries[0].password, "fixture-initial-password");
-  console.log("Registration, unchanged-login suppression, existing-login update and password history");
+  assert.equal((await worker.evaluate(args => bridgeCall("password.get", args), { origin, id: original.id })).password, "synthetic-changed-secret");
+  assert.equal(await worker.evaluate(id => bridgeCall("vault.history", { id }).then(() => false, () => true), original.id), true, "Browser bridge keeps password history restricted to desktop");
+  console.log("Registration, unchanged-login suppression, existing-login update and least-privilege history boundary");
 
   // Cross-origin frames cannot offer credentials under the top-level site's identity.
   assert.deepEqual(await worker.evaluate(async ({ tabId, origin }) => offerLoginCapture(

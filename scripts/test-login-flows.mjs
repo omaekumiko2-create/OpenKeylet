@@ -13,8 +13,9 @@ import { chromium } from "playwright";
 const repo = path.resolve(import.meta.dirname, "..");
 const root = await fs.mkdtemp(path.join(os.tmpdir(), "openkeylet-browser-test-flows-"));
 const extension = path.join(root, "extension");
+const nodePaths = process.env.NODE_PATH ? process.env.NODE_PATH.split(path.delimiter).filter(Boolean) : undefined;
 const bundle = await build({ entryPoints: [path.join(import.meta.dirname, "fixtures/controlled-logins.jsx")],
-  bundle: true, write: false, format: "iife", platform: "browser",
+  bundle: true, write: false, format: "iife", platform: "browser", ...(nodePaths ? { nodePaths } : {}),
   define: { "process.env.NODE_ENV": '"production"', __VUE_OPTIONS_API__: "true",
     __VUE_PROD_DEVTOOLS__: "false", __VUE_PROD_HYDRATION_MISMATCH_DETAILS__: "false" } });
 const fields = '<input id="u" autocomplete="username"><input id="p" type="password" autocomplete="current-password">';
@@ -124,39 +125,39 @@ try {
     const capture = await draft(); assert.equal(capture.username, submitted.username); assert.equal(capture.password, submitted.password);
   });
   for (const name of ["step-spa", "step-first"]) await test(`${name}: username followed by password`, async () => {
-    await page.goto(`${origin}/${name}`); await page.bringToFront();
+    await page.goto(`${origin}/${name}`, { waitUntil: "networkidle" }); await page.bringToFront(); await page.waitForTimeout(80);
     await page.locator("#u").fill("two-step-user"); await page.locator("#next").click();
     await page.locator("#p").waitFor(); await offer("", "two-step-secret");
     const capture = await draft(); assert.equal(capture.username, "two-step-user"); assert.equal(capture.password, "two-step-secret");
   });
   await test("non-submit buttons never suggest saving; revealed password still works", async () => {
-    await page.goto(`${origin}/actions`); await page.locator("#u").fill("toggle-user"); await page.locator("#p").fill("toggle-secret");
+    await page.goto(`${origin}/actions`, { waitUntil: "networkidle" }); await page.waitForTimeout(80); await page.locator("#u").fill("toggle-user"); await page.locator("#p").fill("toggle-secret");
     await page.locator("#show").click(); await page.locator("#cancel").click();
     assert.equal(await worker.evaluate(() => loginCaptures.size), 0);
     await page.locator("#submit").click(); assert.equal((await draft()).password, "toggle-secret");
   });
   await test("HTML validation prevents premature suggestion", async () => {
-    await page.goto(`${origin}/invalid`); await offer("not-an-email", "invalid-secret");
+    await page.goto(`${origin}/invalid`, { waitUntil: "networkidle" }); await offer("not-an-email", "invalid-secret");
     assert.equal(await worker.evaluate(() => loginCaptures.size), 0);
   });
   await test("username step expires", async () => {
-    await page.goto(`${origin}/step-spa`); await page.locator("#u").fill("expired-user"); await page.locator("#next").click();
+    await page.goto(`${origin}/step-spa`, { waitUntil: "networkidle" }); await page.waitForTimeout(80); await page.locator("#u").fill("expired-user"); await page.locator("#next").click();
     await until(() => worker.evaluate(() => usernameSteps.size === 1), "username step");
     await worker.evaluate(() => { for (const step of usernameSteps.values()) step.expiresAt = 0; });
     await offer("", "expired-secret"); assert.equal((await draft()).username, "");
   });
   await test("username does not cross origins", async () => {
-    await page.goto(`${origin}/step-spa`); await page.locator("#u").fill("foreign-user"); await page.locator("#next").click();
+    await page.goto(`${origin}/step-spa`, { waitUntil: "networkidle" }); await page.waitForTimeout(80); await page.locator("#u").fill("foreign-user"); await page.locator("#next").click();
     await until(() => worker.evaluate(() => usernameSteps.size === 1), "username step");
-    await page.goto(`${origin.replace("localhost", "127.0.0.1")}/step-last`);
+    await page.goto(`${origin.replace("localhost", "127.0.0.1")}/step-last`, { waitUntil: "networkidle" }); await page.waitForTimeout(80);
     await offer("", "foreign-secret"); assert.equal((await draft()).username, "");
     assert.equal(await worker.evaluate(() => usernameSteps.size), 0);
   });
   await test("username does not cross tabs", async () => {
-    await page.goto(`${origin}/step-spa`); await page.locator("#u").fill("other-tab-user"); await page.locator("#next").click();
+    await page.goto(`${origin}/step-spa`, { waitUntil: "networkidle" }); await page.waitForTimeout(80); await page.locator("#u").fill("other-tab-user"); await page.locator("#next").click();
     await until(() => worker.evaluate(() => usernameSteps.size === 1), "username step");
     const original = page; page = await context.newPage();
-    try { await page.goto(`${origin}/step-last`); await offer("", "other-tab-secret"); assert.equal((await draft()).username, ""); }
+    try { await page.goto(`${origin}/step-last`, { waitUntil: "networkidle" }); await page.waitForTimeout(80); await offer("", "other-tab-secret"); assert.equal((await draft()).username, ""); }
     finally { await page.close(); page = original; }
   });
   await fs.writeFile(path.join(root, "results.json"), JSON.stringify(results, null, 2));

@@ -1,0 +1,192 @@
+/* OpenKeylet Design System Tokens — Pure Monochrome Carbon & Porcelain.
+   Single source of truth shared by desktop main window (index.html) and tray popover (tray-menu.html). */
+
+@font-face {
+  font-family: "OpenKeylet Brand";
+  font-style: normal;
+  font-weight: 500 700;
+  font-display: block;
+  src: url("../fonts/openkeylet-brand.woff2") format("woff2");
+}
+
+:root,
+html.platform-macos {
+  color-scheme: dark;
+
+  /* Dark Palette: Pure Carbon Monochrome (zero blue tint) */
+  --canvas: #070708;
+  --chassis: #070708;
+  --chassis-dark: #050506;
+  --surface-1: #111114;
+  --surface-2: #111114;
+  --surface-thumb: #1e1e22;
+  --surface-3: #1b1b1f;
+  --surface-hover: #25252a;
+  --surface-input: #0b0b0d;
+
+  --panel: var(--surface-2);
+  --paper: var(--surface-2);
+  --field: var(--surface-input);
+
+  --ink: #f4f4f5;
+  --muted: #a1a1aa;
+  --faint: #71717a;
+
+  --border-subtle: #19191c;
+  --border-default: #26262b;
+  --border-strong: #383840;
+  --line: var(--border-default);
+  --line-soft: var(--border-subtle);
+
+  --key-gray: #71717a;
+  --key-dark: #1b1b1f;
+  --display: #111114;
+  --display-text: #f4f4f5;
+
+  /* Brand & Semantic Accents (Pure Monochrome + Restrained Semantic Dots) */
+  --accent: #f4f4f5;
+  --accent-hover: #ffffff;
+  --accent-fg: #09090b;
+  --accent-ink: #fafafa;
+  --accent-soft: rgba(255, 255, 255, 0.09);
+  --switch-track-off: #0b0b0d;
+  --switch-track-on: #25252a;
+  --switch-thumb: #323238;
+  --accent-ring: rgba(255, 255, 255, 0.22);
+  --orange: var(--accent);
+  --orange-hot: var(--accent-hover);
+  --orange-dark: #d4d4d8;
+  --blue-accent: #e4e4e7;
+
+  --state-active-ink: var(--accent-ink);
+  --state-inactive-ink: var(--muted);
+  --state-disabled-ink: #52525b;
+
+  --success: #34d399;
+  --success-soft: rgba(52, 211, 153, 0.13);
+  --warn: #fbbf24;
+  --warn-soft: rgba(251, 191, 36, 0.13);
+  --danger: #f87171;
+  --danger-solid: #e5484d;
+  --danger-soft: rgba(248, 113, 113, 0.13);
+  --red-led: var(--danger);
+
+  /* Typography */
+  --sans: "Inter", "Segoe UI Variable", "Segoe UI", "PingFang SC", "Microsoft YaHei UI", -apple-system, BlinkMacSystemFont, sans-serif;
+  --mono: "JetBrains Mono", "Cascadia Mono", "SFMono-Regular", Consolas, "Microsoft YaHei UI", monospace;
+  --instrument: var(--sans);
+  --instrument-mono: var(--mono);
+
+  /* Radii & Spacing Geometry */
+  --window-radius: 8px;
+  --radius-lg: 10px;
+  --radius: 8px;
+  --radius-sm: 6px;
+  --radius-xs: 4px;
+
+  --shell-inset: 12px;
+  --region-gap: 8px;
+  --well-inset: 6px;
+  --control-height: 32px;
+  --control-inset: 4px;
+  --control-cap-height: calc(var(--control-height) - 2 * var(--control-inset));
+  --compact-control-height: 28px;
+  --compact-cap-height: calc(var(--compact-control-height) - 2 * var(--control-inset));
+  --switch-height: 24px;
+  --switch-cap-size: calc(var(--switch-height) - 2 * var(--control-inset));
+  --binary-switch-travel: 32px;
+  --module-switch-travel: var(--binary-switch-travel);
+  --module-switch-width: calc(var(--switch-height) + var(--module-switch-travel));
+
+  --console-row-height: var(--control-height);
+  --header-well-size: var(--control-height);
+  --header-key-size: var(--control-cap-height);
+  --header-well-inset: var(--control-inset);
+  --header-icon-size: 14px;
+  --titlebar-height: calc(var(--console-row-height) + var(--region-gap));
+
+  /* Clean Subtle Elevation */
+  --shadow-track: inset 0 0 0 1px var(--border-subtle);
+  --shadow-thumb: 0 1px 2px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.30);
+  --shadow-key: 0 1px 2px rgba(0, 0, 0, 0.30);
+  --shadow-panel: var(--shadow-card);
+  --shadow-float: 0 16px 40px rgba(0, 0, 0, 0.65), 0 0 0 1px var(--border-default);
+
+  font-family: var(--sans);
+  font-synthesis: none;
+  font-variant-numeric: tabular-nums;
+  background: var(--canvas);
+}
+
+html.platform-macos {
+  --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif;
+  --mono: "SFMono-Regular", Menlo, Monaco, "PingFang SC", monospace;
+}
+
+/* Light Palette: Pure Neutral Alabaster + Carbon Ink (#111114) */
+html[data-theme="light"] {
+  color-scheme: light;
+  --canvas: #f7f7f8;
+  --chassis: #f7f7f8;
+  --chassis-dark: #ececef;
+  --surface-1: #ececef;
+  --surface-2: #ffffff;
+  --surface-thumb: #ffffff;
+  --surface-3: #f2f2f4;
+  --surface-hover: #e4e4e8;
+  --surface-input: #ffffff;
+
+  --panel: var(--surface-2);
+  --paper: var(--surface-2);
+  --field: var(--surface-input);
+
+  --ink: #111114;
+  --muted: #52525b;
+  --faint: #8a8a94;
+
+  --border-subtle: rgba(17, 17, 20, 0.08);
+  --border-default: rgba(17, 17, 20, 0.13);
+  --border-strong: rgba(17, 17, 20, 0.24);
+  --line: var(--border-default);
+  --line-soft: var(--border-subtle);
+
+  --key-gray: #8a8a94;
+  --key-dark: #e4e4e8;
+  --display: #ffffff;
+  --display-text: #111114;
+
+  --accent: #111114;
+  --accent-hover: #27272c;
+  --accent-fg: #ffffff;
+  --accent-ink: #111114;
+  --accent-soft: rgba(17, 17, 20, 0.075);
+  --switch-track-off: #e4e4e8;
+  --switch-track-on: #dcdce2;
+  --switch-thumb: #ffffff;
+  --accent-ring: rgba(17, 17, 20, 0.18);
+  --orange: var(--accent);
+  --orange-hot: var(--accent-hover);
+  --orange-dark: #111114;
+  --blue-accent: #111114;
+
+  --state-active-ink: var(--accent-ink);
+  --state-inactive-ink: var(--muted);
+  --state-disabled-ink: #a1a1aa;
+
+  --success: #059669;
+  --success-soft: rgba(5, 150, 105, 0.10);
+  --warn: #d97706;
+  --warn-soft: rgba(217, 119, 6, 0.10);
+  --danger: #dc2626;
+  --danger-solid: #dc2626;
+  --danger-soft: rgba(220, 38, 38, 0.09);
+  --red-led: var(--danger);
+
+  --shadow-track: inset 0 0 0 1px var(--border-subtle);
+  --shadow-thumb: 0 1px 2px rgba(17, 17, 20, 0.09), 0 0 0 1px rgba(17, 17, 20, 0.04);
+  --shadow-card: 0 1px 2px rgba(17, 17, 20, 0.05);
+  --shadow-key: 0 1px 2px rgba(17, 17, 20, 0.06);
+  --shadow-float: 0 16px 40px rgba(17, 17, 20, 0.14), 0 0 0 1px rgba(17, 17, 20, 0.08);
+}
+

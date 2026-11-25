@@ -1,3 +1,6 @@
+pub mod ssh_keygen;
+pub mod totp;
+
 use crate::model::{OwnerPinVerifier, SecretEnvelope};
 use anyhow::{Context, Result, bail};
 use argon2::{Algorithm, Argon2, Params, Version};
@@ -9,58 +12,32 @@ use chacha20poly1305::{
     Key, XChaCha20Poly1305, XNonce,
     aead::{Aead, KeyInit, Payload},
 };
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Serialize, de::DeserializeOwned};
 use std::{fs, path::Path};
 use subtle::ConstantTimeEq;
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 const SECRET_AAD: &[u8] = b"mcp-vault/secret/v2";
-pub const STRONG_KEY_FILE: &str = "strong-key.json";
-const STRONG_KEY_FORMAT: &str = "openkeylet-strong-vault-v1";
-const STRONG_PASSPHRASE_AAD: &[u8] = b"openkeylet/strong-vault/passphrase/v1";
-const STRONG_RECOVERY_AAD: &[u8] = b"openkeylet/strong-vault/recovery/v1";
-const STRONG_ARGON2_MEMORY_KIB: u32 = 65_536;
-const STRONG_ARGON2_ITERATIONS: u32 = 3;
-const STRONG_ARGON2_PARALLELISM: u32 = 1;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct StrongKeyBundle {
-    pub format: String,
-    pub memory_kib: u32,
-    pub iterations: u32,
-    pub parallelism: u32,
-    pub passphrase_salt: String,
-    pub passphrase_wrapped_dek: SecretEnvelope,
-    pub recovery_wrapped_dek: SecretEnvelope,
-}
-
-pub fn validate_master_passphrase(passphrase: &str) -> Result<()> {
-    let chars = passphrase.chars().count();
-    if chars < 12 {
-        bail!("STRONG_PASSPHRASE_SHORT: Master passphrase must be at least 12 characters");
-    }
-    if passphrase.len() > 4096 {
-        bail!("STRONG_PASSPHRASE_LONG: Master passphrase is too long");
-    }
-    Ok(())
-}
-
-pub fn parse_okv1_recovery_key(encoded: &str) -> Result<[u8; 32]> {
+pub fn parse_okv1_recovery_key(encoded: &str) -> Result<Zeroizing<[u8; 32]>> {
     let raw = encoded
         .trim()
         .strip_prefix("okv1_")
         .context("GITHUB_KEY_INVALID")?;
-    let bytes = URL_SAFE_NO_PAD
-        .decode(raw)
-        .context("GITHUB_KEY_INVALID")?;
-    bytes
+    if raw.len() != 43 {
+        bail!("GITHUB_KEY_INVALID");
+    }
+    let bytes = Zeroizing::new(URL_SAFE_NO_PAD.decode(raw).context("GITHUB_KEY_INVALID")?);
+    let key: [u8; 32] = bytes
+        .as_slice()
         .try_into()
-        .map_err(|_| anyhow::anyhow!("GITHUB_KEY_INVALID"))
+        .map_err(|_| anyhow::anyhow!("GITHUB_KEY_INVALID"))?;
+    Ok(Zeroizing::new(key))
 }
 
-fn derive_strong_passphrase_kek(
-    passphrase: &str,
+/// Argon2id 32-byte key derivation used by password-protected `.mvault` backups.
+pub fn derive_argon2id_key_32(
+    secret: &str,
     salt: &[u8],
     memory_kib: u32,
     iterations: u32,
@@ -70,120 +47,16 @@ fn derive_strong_passphrase_kek(
         || !(1..=10).contains(&iterations)
         || !(1..=4).contains(&parallelism)
     {
-        bail!("STRONG_KEY_INVALID: Unsupported Argon2id parameters");
+        bail!("Unsupported Argon2id parameters");
     }
     let params = Params::new(memory_kib, iterations, parallelism, Some(32))
-        .map_err(|error| anyhow::anyhow!("Invalid strong vault KDF parameters:{error}"))?;
+        .map_err(|error| anyhow::anyhow!("Invalid Argon2id KDF parameters: {error}"))?;
     let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
-    let mut kek = Zeroizing::new([0_u8; 32]);
+    let mut key = Zeroizing::new([0_u8; 32]);
     argon2
-        .hash_password_into(passphrase.as_bytes(), salt, kek.as_mut())
-        .map_err(|error| anyhow::anyhow!("Unable to derive strong vault key:{error}"))?;
-    Ok(kek)
-}
-
-pub fn create_strong_key_bundle(
-    dek: &[u8; 32],
-    master_passphrase: &str,
-    recovery_key: &str,
-) -> Result<StrongKeyBundle> {
-    validate_master_passphrase(master_passphrase)?;
-    let recovery_bytes = Zeroizing::new(parse_okv1_recovery_key(recovery_key)?);
-    let mut salt = [0_u8; 16];
-    getrandom::fill(&mut salt)
-        .map_err(|error| anyhow::anyhow!("Unable to generate strong vault salt:{error}"))?;
-    let passphrase_kek = derive_strong_passphrase_kek(
-        master_passphrase,
-        &salt,
-        STRONG_ARGON2_MEMORY_KIB,
-        STRONG_ARGON2_ITERATIONS,
-        STRONG_ARGON2_PARALLELISM,
-    )?;
-    let passphrase_wrapped_dek = encrypt_bytes(&passphrase_kek, dek, STRONG_PASSPHRASE_AAD)?;
-    let recovery_wrapped_dek = encrypt_bytes(&recovery_bytes, dek, STRONG_RECOVERY_AAD)?;
-    Ok(StrongKeyBundle {
-        format: STRONG_KEY_FORMAT.to_owned(),
-        memory_kib: STRONG_ARGON2_MEMORY_KIB,
-        iterations: STRONG_ARGON2_ITERATIONS,
-        parallelism: STRONG_ARGON2_PARALLELISM,
-        passphrase_salt: STANDARD_NO_PAD.encode(salt),
-        passphrase_wrapped_dek,
-        recovery_wrapped_dek,
-    })
-}
-
-pub fn rewrap_strong_passphrase(
-    existing: &StrongKeyBundle,
-    dek: &[u8; 32],
-    new_passphrase: &str,
-) -> Result<StrongKeyBundle> {
-    validate_master_passphrase(new_passphrase)?;
-    let mut salt = [0_u8; 16];
-    getrandom::fill(&mut salt)
-        .map_err(|error| anyhow::anyhow!("Unable to generate strong vault salt:{error}"))?;
-    let passphrase_kek = derive_strong_passphrase_kek(
-        new_passphrase,
-        &salt,
-        STRONG_ARGON2_MEMORY_KIB,
-        STRONG_ARGON2_ITERATIONS,
-        STRONG_ARGON2_PARALLELISM,
-    )?;
-    let passphrase_wrapped_dek = encrypt_bytes(&passphrase_kek, dek, STRONG_PASSPHRASE_AAD)?;
-    Ok(StrongKeyBundle {
-        format: STRONG_KEY_FORMAT.to_owned(),
-        memory_kib: STRONG_ARGON2_MEMORY_KIB,
-        iterations: STRONG_ARGON2_ITERATIONS,
-        parallelism: STRONG_ARGON2_PARALLELISM,
-        passphrase_salt: STANDARD_NO_PAD.encode(salt),
-        passphrase_wrapped_dek,
-        recovery_wrapped_dek: existing.recovery_wrapped_dek.clone(),
-    })
-}
-
-pub fn unwrap_strong_key_bundle(
-    bundle: &StrongKeyBundle,
-    secret: &str,
-) -> Result<Zeroizing<[u8; 32]>> {
-    if bundle.format != STRONG_KEY_FORMAT {
-        bail!("STRONG_KEY_INVALID: Unsupported strong key bundle format");
-    }
-    let trimmed = secret.trim();
-    if trimmed.is_empty() {
-        bail!("STRONG_UNLOCK_FAILED: Enter your master passphrase or okv1_ recovery key");
-    }
-    let plain = if trimmed.starts_with("okv1_") {
-        let recovery_bytes = Zeroizing::new(
-            parse_okv1_recovery_key(trimmed)
-                .map_err(|_| anyhow::anyhow!("STRONG_UNLOCK_FAILED: Invalid recovery key"))?,
-        );
-        Zeroizing::new(
-            decrypt_bytes(&recovery_bytes, &bundle.recovery_wrapped_dek, STRONG_RECOVERY_AAD)
-                .map_err(|_| anyhow::anyhow!("STRONG_UNLOCK_FAILED: Incorrect recovery key"))?,
-        )
-    } else {
-        let salt = STANDARD_NO_PAD
-            .decode(&bundle.passphrase_salt)
-            .context("STRONG_KEY_INVALID: Invalid passphrase salt")?;
-        if salt.len() != 16 {
-            bail!("STRONG_KEY_INVALID: Invalid passphrase salt length");
-        }
-        let kek = derive_strong_passphrase_kek(
-            secret,
-            &salt,
-            bundle.memory_kib,
-            bundle.iterations,
-            bundle.parallelism,
-        )?;
-        Zeroizing::new(
-            decrypt_bytes(&kek, &bundle.passphrase_wrapped_dek, STRONG_PASSPHRASE_AAD)
-                .map_err(|_| anyhow::anyhow!("STRONG_UNLOCK_FAILED: Incorrect master passphrase"))?,
-        )
-    };
-    let dek: [u8; 32] = plain
-        .as_slice()
-        .try_into()
-        .map_err(|_| anyhow::anyhow!("STRONG_KEY_INVALID: Unwrapped DEK has invalid length"))?;
-    Ok(Zeroizing::new(dek))
+        .hash_password_into(secret.as_bytes(), salt, key.as_mut())
+        .map_err(|error| anyhow::anyhow!("Unable to derive key: {error}"))?;
+    Ok(key)
 }
 
 pub fn create_owner_pin_verifier(pin: &str) -> Result<OwnerPinVerifier> {
@@ -371,78 +244,6 @@ impl MasterKey {
 
     pub fn source(&self) -> &str {
         &self.source
-    }
-
-    pub fn from_ram_bytes(bytes: [u8; 32], source: impl Into<String>) -> Self {
-        Self {
-            bytes,
-            source: source.into(),
-        }
-    }
-
-    pub fn generate_random(source: impl Into<String>) -> Result<Self> {
-        let mut bytes = [0_u8; 32];
-        getrandom::fill(&mut bytes)
-            .map_err(|error| anyhow::anyhow!("Unable to generate vault master key:{error}"))?;
-        Ok(Self {
-            bytes,
-            source: source.into(),
-        })
-    }
-
-    pub(crate) fn clone_bytes(&self) -> Zeroizing<[u8; 32]> {
-        Zeroizing::new(self.bytes)
-    }
-
-    pub fn has_strong_key_bundle(data_dir: &Path) -> bool {
-        data_dir.join(STRONG_KEY_FILE).is_file()
-    }
-
-    pub fn persist_local_key(data_dir: &Path, bytes: &[u8; 32]) -> Result<String> {
-        prepare_private_directory(data_dir)?;
-        let encoded = Zeroizing::new(STANDARD_NO_PAD.encode(bytes));
-        let key_file = data_dir.join("master.key");
-        #[cfg(not(target_os = "macos"))]
-        {
-            let use_keyring = !crate::storage::uses_explicit_data_dir(data_dir);
-            if use_keyring && let Ok(entry) = keyring::Entry::new("mcp-vault", "master-key-v2") {
-                if entry.set_password(&encoded).is_ok() {
-                    let _ = fs::remove_file(&key_file);
-                    return Ok(system_storage_label().to_owned());
-                }
-            }
-        }
-        if key_file.exists() {
-            let _ = fs::remove_file(&key_file);
-        }
-        write_private_file(&key_file, encoded.as_bytes())?;
-        #[cfg(target_os = "macos")]
-        {
-            Ok("Application-private master key file".to_owned())
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            Ok("Local permissions key file".to_owned())
-        }
-    }
-
-    pub fn wipe_local_key(data_dir: &Path) -> Result<()> {
-        let key_file = data_dir.join("master.key");
-        if key_file.is_file() {
-            if let Ok(meta) = fs::metadata(&key_file) {
-                let zeros = vec![0_u8; meta.len().clamp(32, 4096) as usize];
-                let _ = fs::write(&key_file, zeros);
-            }
-            fs::remove_file(&key_file)
-                .context("Unable to remove local master.key after enabling Strong Mode")?;
-        }
-        #[cfg(not(target_os = "macos"))]
-        if !crate::storage::uses_explicit_data_dir(data_dir) {
-            if let Ok(entry) = keyring::Entry::new("mcp-vault", "master-key-v2") {
-                let _ = entry.delete_credential();
-            }
-        }
-        Ok(())
     }
 
     #[cfg(target_os = "macos")]

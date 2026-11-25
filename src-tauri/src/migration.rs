@@ -54,7 +54,7 @@ pub fn read(path: &Path, format: &str) -> Result<Parsed> {
     );
     if format == "ssh_config" {
         let (entries, preview) =
-            crate::smart_ingest::parse_ssh_config_bytes(&bytes, path.parent())?;
+            crate::extract::ingest::parse_ssh_config_bytes(&bytes, path.parent())?;
         return Ok(Parsed { entries, preview });
     }
     if format == "env" {
@@ -63,7 +63,7 @@ pub fn read(path: &Path, format: &str) -> Result<Parsed> {
             .and_then(|s| s.to_str())
             .map(|s| format!("Env · {s}"))
             .unwrap_or_else(|| "Imported .env".to_owned());
-        let (entries, preview) = crate::smart_ingest::parse_env_file(&bytes, &name)?;
+        let (entries, preview) = crate::extract::ingest::parse_env_file(&bytes, &name)?;
         return Ok(Parsed { entries, preview });
     }
     parse(&bytes, format)
@@ -76,11 +76,11 @@ pub fn parse(bytes: &[u8], format: &str) -> Result<Parsed> {
     );
     let bytes = bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(bytes);
     if format == "ssh_config" {
-        let (entries, preview) = crate::smart_ingest::parse_ssh_config_bytes(bytes, None)?;
+        let (entries, preview) = crate::extract::ingest::parse_ssh_config_bytes(bytes, None)?;
         return Ok(Parsed { entries, preview });
     }
     if format == "env" {
-        let (entries, preview) = crate::smart_ingest::parse_env_file(bytes, "Imported .env")?;
+        let (entries, preview) = crate::extract::ingest::parse_env_file(bytes, "Imported .env")?;
         return Ok(Parsed { entries, preview });
     }
     let mut preview = Preview::default();
@@ -313,7 +313,7 @@ fn bitwarden_item(
             field(&mut entry, "password", text(login, "password"))?;
             let totp = text(login, "totp");
             field(&mut entry, "totp", totp)?;
-            if !totp.is_empty() && crate::browser::current_totp(totp).is_err() {
+            if !totp.is_empty() && crate::crypto::totp::current_totp(totp).is_err() {
                 preview.warn("unsupportedTotp");
             }
             for uri in login["uris"].as_array().into_iter().flatten() {

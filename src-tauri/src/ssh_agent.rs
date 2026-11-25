@@ -554,7 +554,7 @@ mod tests {
     use super::*;
     use crate::{
         model::{ConnectionInput, ItemModule, SecretBundle},
-        smart_ingest::generate_ed25519_keypair,
+        crypto::ssh_keygen::generate_ed25519_keypair,
     };
     use russh::keys::{
         agent::client::AgentClient,
