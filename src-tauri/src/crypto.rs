@@ -1,6 +1,8 @@
 pub mod key_location;
 pub mod ssh_keygen;
 pub mod totp;
+#[cfg(windows)]
+mod windows_acl;
 
 use crate::model::{OwnerPinVerifier, SecretEnvelope};
 use anyhow::{Context, Result, bail};
@@ -250,6 +252,14 @@ fn write_private_file(path: &Path, bytes: &[u8]) -> Result<()> {
     let mut file = options
         .open(path)
         .context("Unable to create local permissions key file")?;
+    // On Windows, apply an owner-only protected NTFS DACL before writing key
+    // bytes so the key never rests on disk under inherited shared permissions.
+    #[cfg(windows)]
+    if let Err(error) = harden_private_file(path) {
+        drop(file);
+        let _ = fs::remove_file(path);
+        return Err(error);
+    }
     file.write_all(bytes)
         .context("Unable to write local permissions key file")?;
     file.sync_all()
@@ -259,12 +269,22 @@ fn write_private_file(path: &Path, bytes: &[u8]) -> Result<()> {
 
 fn prepare_private_directory(path: &Path) -> Result<()> {
     fs::create_dir_all(path).context("Unable to create vault directory")?;
+    harden_private_directory(path)
+}
+
+fn harden_private_directory(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(path, fs::Permissions::from_mode(0o700))
             .context("Unable to tighten vault directory permissions")?;
     }
+    #[cfg(windows)]
+    {
+        windows_acl::harden_owner_only(path, true)?;
+    }
+    #[cfg(not(any(unix, windows)))]
+    let _ = path;
     Ok(())
 }
 
@@ -275,7 +295,11 @@ fn harden_private_file(path: &Path) -> Result<()> {
         fs::set_permissions(path, fs::Permissions::from_mode(0o600))
             .context("Unable to tighten local permissions key file permissions")?;
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        windows_acl::harden_owner_only(path, false)?;
+    }
+    #[cfg(not(any(unix, windows)))]
     let _ = path;
     Ok(())
 }

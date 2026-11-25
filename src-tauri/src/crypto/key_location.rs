@@ -6,7 +6,8 @@
 //! who zips, uploads or syncs it, does not carry the key with the ciphertext.
 //!
 //! Candidates, in the order they are tried:
-//! 1. the OS keyring (Windows and Linux, default data directory only);
+//! 1. the OS keyring (Windows and Linux, default data directory when
+//!    `OPENKEYLET_KEY_FILE` is not set);
 //! 2. the resolved key file (see [`resolve_key_file`]);
 //! 3. `<data_dir>/master.key`, when that is not the resolved file;
 //! 4. on macOS, the legacy keychain item, read without UI and only for an
@@ -187,27 +188,53 @@ pub struct KeyLocations {
     legacy_keychain: Option<Box<dyn SystemKeySlot>>,
 }
 
+/// Whether the OS keyring should be used for a vault with the given mode.
+/// Explicit `--data-dir` / `OPENKEYLET_DATA_DIR` stays self-contained, and an
+/// explicit `OPENKEYLET_KEY_FILE` overrides the OS keyring so the caller's
+/// chosen key file is always respected instead of being bypassed.
+fn uses_os_keyring(explicit_data_dir: bool, env_value: Option<&OsStr>) -> bool {
+    !explicit_data_dir && env_value.is_none()
+}
+
 impl KeyLocations {
     pub fn for_data_dir(data_dir: &Path) -> Result<Self> {
         let explicit = crate::storage::uses_explicit_data_dir(data_dir);
         let env_value = key_file_env();
-        let (key_file, place) = resolve_key_file(
-            env_value.as_deref(),
-            explicit,
-            data_dir,
-            default_key_dir().as_deref(),
-        )?;
-        let mut locations = Self::new(data_dir, key_file, place);
-        if cfg!(test) {
-            return Ok(locations);
-        }
         #[cfg(not(target_os = "macos"))]
-        if !explicit {
-            locations.keyring = Some(Box::new(OsKeyring));
-        }
+        let keyring: Option<Box<dyn SystemKeySlot>> = if cfg!(test) {
+            None
+        } else {
+            Some(Box::new(OsKeyring))
+        };
         #[cfg(target_os = "macos")]
-        {
+        let keyring: Option<Box<dyn SystemKeySlot>> = None;
+        #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+        let mut locations = Self::build(
+            data_dir,
+            explicit,
+            env_value.as_deref(),
+            default_key_dir().as_deref(),
+            keyring,
+        )?;
+        #[cfg(target_os = "macos")]
+        if !cfg!(test) {
             locations.legacy_keychain = Some(Box::new(LegacyMacosKeychain));
+        }
+        Ok(locations)
+    }
+
+    fn build(
+        data_dir: &Path,
+        explicit_data_dir: bool,
+        env_value: Option<&OsStr>,
+        user_key_dir: Option<&Path>,
+        keyring: Option<Box<dyn SystemKeySlot>>,
+    ) -> Result<Self> {
+        let (key_file, place) =
+            resolve_key_file(env_value, explicit_data_dir, data_dir, user_key_dir)?;
+        let mut locations = Self::new(data_dir, key_file, place);
+        if uses_os_keyring(explicit_data_dir, env_value) {
+            locations.keyring = keyring;
         }
         Ok(locations)
     }
@@ -475,20 +502,51 @@ fn is_hard_link_unsupported(error: &anyhow::Error) -> bool {
         })
 }
 
-/// Creates missing directories as 0700 on Unix. Directories that already exist
-/// are left as they are: the parent of OPENKEYLET_KEY_FILE may be shared with
-/// other software.
+/// Creates missing directories as owner-only (`0700` on Unix, protected
+/// owner+SYSTEM DACL on Windows). Directories that already exist are left as
+/// they are: the parent of OPENKEYLET_KEY_FILE may be shared with other
+/// software.
 fn create_private_dir_all(path: &Path) -> Result<()> {
-    let mut builder = fs::DirBuilder::new();
-    builder.recursive(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt;
-        builder.mode(0o700);
+        let mut builder = fs::DirBuilder::new();
+        builder.recursive(true).mode(0o700);
+        builder
+            .create(path)
+            .context("Unable to create the master key directory")
     }
-    builder
-        .create(path)
-        .context("Unable to create the master key directory")
+    #[cfg(not(unix))]
+    {
+        if path.is_dir() {
+            return Ok(());
+        }
+        let mut missing = Vec::new();
+        let mut cursor = Some(path);
+        while let Some(dir) = cursor {
+            if dir.exists() {
+                break;
+            }
+            missing.push(dir.to_path_buf());
+            cursor = dir.parent();
+        }
+        for dir in missing.into_iter().rev() {
+            match fs::create_dir(&dir) {
+                Ok(()) => {
+                    #[cfg(windows)]
+                    super::harden_private_directory(&dir)?;
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists && dir.is_dir() => {}
+                Err(error) => {
+                    return Err(error).context("Unable to create the master key directory");
+                }
+            }
+        }
+        if !path.is_dir() {
+            fs::create_dir(path).context("Unable to create the master key directory")?;
+        }
+        Ok(())
+    }
 }
 
 /// Makes the new directory entry durable before the legacy copy is removed.

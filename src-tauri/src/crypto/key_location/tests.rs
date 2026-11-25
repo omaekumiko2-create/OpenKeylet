@@ -514,3 +514,120 @@ fn key_files_and_new_directories_are_private() {
     assert_eq!(mode(&moved.resolved()), 0o600);
     assert_eq!(mode(&moved.user), 0o700);
 }
+
+#[test]
+fn openkeylet_key_file_overrides_os_keyring_in_default_mode() {
+    let dirs = temp_dirs();
+    let custom_key = dirs._root.path().join("custom").join("vault.key");
+    let keyring = FakeSlot::new(true);
+    keyring.set([42; 32]);
+
+    // Default data directory + explicit OPENKEYLET_KEY_FILE must bypass the OS
+    // keyring instead of silently reading from or creating into it.
+    let locations = KeyLocations::build(
+        &dirs.data,
+        false,
+        Some(custom_key.as_os_str()),
+        Some(&dirs.user),
+        Some(Box::new(keyring.clone())),
+    )
+    .unwrap();
+    assert!(locations.keyring.is_none());
+
+    let vault = open(&dirs.data, locations).unwrap();
+    let id = store_secret(&vault, "env-file-secret");
+    assert_eq!(vault.key_place(), KeyPlace::FileFromEnv);
+    assert_eq!(vault.key_file(), Some(custom_key.as_path()));
+    assert!(custom_key.is_file());
+    assert!(!dirs.resolved().exists());
+    assert!(!dirs.legacy().exists());
+    assert_eq!(
+        keyring.get(),
+        Some([42; 32]),
+        "existing OS keyring entry must not be modified or preferred"
+    );
+    drop(vault);
+
+    // Reopening with OPENKEYLET_KEY_FILE reads the custom key file directly.
+    let reopen_locations = KeyLocations::build(
+        &dirs.data,
+        false,
+        Some(custom_key.as_os_str()),
+        Some(&dirs.user),
+        Some(Box::new(keyring.clone())),
+    )
+    .unwrap();
+    let reopened = open(&dirs.data, reopen_locations).unwrap();
+    assert_eq!(secret(&reopened, id), "env-file-secret");
+    assert_eq!(reopened.key_place(), KeyPlace::FileFromEnv);
+    assert_eq!(reopened.key_file(), Some(custom_key.as_path()));
+
+    // Without OPENKEYLET_KEY_FILE in default mode, OS keyring stays enabled.
+    let default_locations = KeyLocations::build(
+        &dirs.data,
+        false,
+        None,
+        Some(&dirs.user),
+        Some(Box::new(keyring)),
+    )
+    .unwrap();
+    assert!(default_locations.keyring.is_some());
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_key_files_and_new_directories_have_owner_only_protected_dacl() {
+    use super::super::windows_acl::{current_user_sid, read_dacl_sddl};
+
+    let sid = current_user_sid().unwrap();
+    let assert_owner_only = |path: &Path| {
+        let sddl = read_dacl_sddl(path).unwrap();
+        assert!(
+            sddl.starts_with("D:P"),
+            "expected protected DACL on {}: {sddl}",
+            path.display()
+        );
+        assert!(
+            sddl.contains(sid),
+            "expected current user SID {sid} in DACL on {}: {sddl}",
+            path.display()
+        );
+        for broad in [";;;WD)", ";;;BU)", ";;;AU)"] {
+            assert!(
+                !sddl.contains(broad),
+                "unexpected broad principal {broad} in DACL on {}: {sddl}",
+                path.display()
+            );
+        }
+    };
+
+    // 1. Fresh vault creates private key file, new key dir, and data dir.
+    let created = temp_dirs();
+    open(&created.data, created.locations()).unwrap();
+    assert_owner_only(&created.resolved());
+    assert_owner_only(&created.user);
+    assert_owner_only(&created.data);
+
+    // 2. Existing parent directory for OPENKEYLET_KEY_FILE is left untouched,
+    //    while the newly created key file itself gets a protected owner-only DACL.
+    let env_case = temp_dirs();
+    let shared_parent = env_case._root.path().join("existing-shared");
+    fs::create_dir_all(&shared_parent).unwrap();
+    let parent_sddl_before = read_dacl_sddl(&shared_parent).unwrap();
+    let custom_key = shared_parent.join("custom.key");
+    let locations = KeyLocations::build(
+        &env_case.data,
+        false,
+        Some(custom_key.as_os_str()),
+        Some(&env_case.user),
+        None,
+    )
+    .unwrap();
+    open(&env_case.data, locations).unwrap();
+    assert_owner_only(&custom_key);
+    assert_eq!(
+        read_dacl_sddl(&shared_parent).unwrap(),
+        parent_sddl_before,
+        "existing parent directory ACL must not be rewritten"
+    );
+}

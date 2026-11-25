@@ -71,7 +71,7 @@ OpenKeylet 跟随 HTTP/HTTPS 重定向，直到服务停止重定向或达到调
 
 ## 本地数据与备份
 
-Vault（`vault.json`）保存在当前用户的应用数据目录（`…/mcp-vault/v2`）。默认模式下，256 位 Vault 密钥保存在数据目录之外：优先使用操作系统凭据存储（Windows 凭据管理器或 Linux Secret Service），不可用或处于 macOS 时则存放在独立的用户密钥目录（Linux/Unix 为 `~/.config/openkeylet/master.key`，Windows 为 `%LOCALAPPDATA%\OpenKeylet\master.key`，macOS 为 `~/Library/Application Support/OpenKeylet/master.key`）。旧版留在数据目录内的 `<data_dir>/master.key` 会在验证可解开 `vault.json` 后保守迁移到外部目录，且旧位置永久保留为读取后备。显式指定数据目录（`OPENKEYLET_DATA_DIR`）时密钥仍保存在 `<data_dir>/master.key` 以保持便携自包含；任何模式下都可通过绝对路径环境变量 `OPENKEYLET_KEY_FILE` 指定独立密钥文件位置。**请注意：默认模式下单独拷贝数据目录不再等于完整备份密码库**（因为密钥不在目录内），正式备份请使用口令保护的 `.mvault` 导出或仓库同步。静态机密性仍取决于操作系统账号和全盘加密：能同时读取数据目录与该账号凭据存储或密钥目录的人即可解密 Vault。
+Vault（`vault.json`）保存在当前用户的应用数据目录（`…/mcp-vault/v2`）。默认模式下，256 位 Vault 密钥保存在数据目录之外：优先使用操作系统凭据存储（Windows 凭据管理器或 Linux Secret Service），不可用或处于 macOS 时则存放在独立的用户密钥目录（Linux/Unix 为 `~/.config/openkeylet/master.key`，Windows 为 `%LOCALAPPDATA%\OpenKeylet\master.key`，macOS 为 `~/Library/Application Support/OpenKeylet/master.key`）。密钥文件及新建的密钥目录仅限当前用户访问（Unix 上为 `0600`/`0700`，Windows NTFS 上为禁用继承的仅当前用户+`SYSTEM` 受保护 DACL）。旧版留在数据目录内的 `<data_dir>/master.key` 会在验证可解开 `vault.json` 后保守迁移到外部目录，且旧位置永久保留为读取后备。显式指定数据目录（`OPENKEYLET_DATA_DIR`）时密钥仍保存在 `<data_dir>/master.key` 以保持便携自包含；任何模式下都可通过绝对路径环境变量 `OPENKEYLET_KEY_FILE` 指定独立密钥文件位置（并优先于默认位置与操作系统凭据存储）。**请注意：默认模式下单独拷贝数据目录不再等于完整备份密码库**（因为密钥不在目录内），正式备份请使用口令保护的 `.mvault` 导出或仓库同步。静态机密性仍取决于操作系统账号和全盘加密：能同时读取数据目录与该账号凭据存储或密钥目录的人即可解密 Vault。
 
 只有每个条目的秘密包（密码、用户名、私钥、令牌、TOTP 种子、Passkey、银行卡/身份/安全笔记字段、密码历史和 Agent 备注）是加密的。条目名称、描述、文件夹、主机、端口、服务 URL、网址规则和自定义字段名以未加密形式保存在 `vault.json` 中；活动记录以未加密形式保存在数据目录中单独的本机文件 `activity.jsonl` 里，从不上传或导出。
 
