@@ -882,6 +882,9 @@ pub struct McpState {
 pub struct SecurityState {
     pub encrypted: bool,
     pub storage: String,
+    /// `KeyPlace::code()`, localized by the renderer.
+    pub key_location: String,
+    pub key_file: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]

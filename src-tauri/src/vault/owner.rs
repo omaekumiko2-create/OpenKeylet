@@ -264,6 +264,10 @@ impl Vault {
             security: SecurityState {
                 encrypted: true,
                 storage: self.storage_label(),
+                key_location: self.key_place().code().to_owned(),
+                key_file: self
+                    .key_file()
+                    .map(|path| path.to_string_lossy().into_owned()),
             },
             settings: document.settings.clone(),
         })

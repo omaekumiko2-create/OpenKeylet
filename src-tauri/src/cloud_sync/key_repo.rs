@@ -109,8 +109,11 @@ impl GithubBackup {
                     .send()
                     .await
                     .context("GITHUB_CREATE_UNCONFIRMED")?;
+                let mut created_conflict = false;
                 // 422 means another device created it first; the lookup below settles it.
-                if response.status() != StatusCode::UNPROCESSABLE_ENTITY {
+                if response.status() == StatusCode::UNPROCESSABLE_ENTITY {
+                    created_conflict = true;
+                } else {
                     if response.status().is_server_error() {
                         bail!("GITHUB_CREATE_UNCONFIRMED");
                     }
@@ -121,9 +124,20 @@ impl GithubBackup {
                         _ => error,
                     })?;
                 }
-                self.find_repository(owner, key_repo, token, provider, server_url)
+                let created = self
+                    .find_repository(owner, key_repo, token, provider, server_url)
                     .await?
-                    .context("GITHUB_CREATE_UNCONFIRMED")?
+                    .context("GITHUB_CREATE_UNCONFIRMED")?;
+                // If another device won the race to create the repository and already
+                // uploaded the sync key, reuse that key instead of colliding on PUT.
+                if created_conflict
+                    && let Some(existing) = self
+                        .read_repo_key(owner, key_repo, token, provider, server_url)
+                        .await?
+                {
+                    return Ok(existing);
+                }
+                created
             }
         };
 
@@ -159,6 +173,15 @@ impl GithubBackup {
             .send()
             .await
             .context("GITHUB_UPLOAD_UNCONFIRMED")?;
+        if matches!(
+            response.status(),
+            StatusCode::CONFLICT | StatusCode::UNPROCESSABLE_ENTITY
+        ) && let Some(existing) = self
+            .read_repo_key(owner, key_repo, token, provider, server_url)
+            .await?
+        {
+            return Ok(existing);
+        }
         check_response(&response)?;
         let result: serde_json::Value = read_json(response).await?;
         if result
@@ -169,5 +192,45 @@ impl GithubBackup {
             bail!("GITHUB_UPLOAD_UNCONFIRMED");
         }
         Ok(key)
+    }
+
+    /// Ensures the paired key repository has not been flipped to public since initial
+    /// binding. A deleted (404) or inaccessible (non-rate-limit 403) key repository does
+    /// not block an already-connected device that keeps its key locally.
+    pub(super) async fn check_key_repository_private(&self, config: &DeviceConfig) -> Result<()> {
+        if config.key_repo.is_empty() {
+            return Ok(());
+        }
+        let response = self
+            .request_for(
+                Method::GET,
+                &config.owner,
+                &config.key_repo,
+                &[],
+                &config.token,
+                &config.provider,
+                &config.server_url,
+            )?
+            .send()
+            .await
+            .context("GITHUB_NETWORK")?;
+        if response.status() == StatusCode::NOT_FOUND {
+            return Ok(());
+        }
+        if response.status() == StatusCode::FORBIDDEN
+            && response
+                .headers()
+                .get("x-ratelimit-remaining")
+                .is_none_or(|value| value != "0")
+            && !response.headers().contains_key("retry-after")
+        {
+            return Ok(());
+        }
+        check_response(&response)?;
+        let repository: Repository = read_json(response).await?;
+        if !repository.private {
+            bail!("GITHUB_KEY_REPO_PUBLIC");
+        }
+        Ok(())
     }
 }

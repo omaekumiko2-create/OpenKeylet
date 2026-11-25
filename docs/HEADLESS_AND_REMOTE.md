@@ -189,11 +189,12 @@ openkeylet backup export local-only.mvault --self-unlocking
 
 ## 5. Shared Vault Directories vs. Encrypted Cloud Sync
 
-### Explicit Data Directory (`OPENKEYLET_DATA_DIR` / `KRU_DATA_DIR`)
-When `OPENKEYLET_DATA_DIR` (or legacy `KRU_DATA_DIR`) is set to an absolute path:
-- OpenKeylet **always** prefers `<DATA_DIR>/master.key` instead of silently consulting an unrelated OS keyring entry.
-- If `vault.json` exists while `master.key` is missing, OpenKeylet refuses to generate a new key so existing encrypted data is never overwritten.
-- Run `openkeylet vault status` to inspect the active `dataDir` and `keySource` without exposing key material.
+### Key File Location (`OPENKEYLET_KEY_FILE`) & Explicit Data Directory (`OPENKEYLET_DATA_DIR` / `KRU_DATA_DIR`)
+- **Default data directory**: OpenKeylet keeps the vault key outside the data directory — in the OS keyring when available (Windows/Linux), or in a separate per-user key file (`~/.config/openkeylet/master.key` on Linux/Unix, `%LOCALAPPDATA%\OpenKeylet\master.key` on Windows, `~/Library/Application Support/OpenKeylet/master.key` on macOS). Because the key is not inside the data directory, **copying the data directory alone is no longer a complete backup**; use passphrase-protected `.mvault` export or encrypted repository sync instead.
+- **Explicit data directory (`OPENKEYLET_DATA_DIR` / legacy `KRU_DATA_DIR`)**: must be an absolute path. By default OpenKeylet keeps `<DATA_DIR>/master.key` inside that directory so portable/isolated directories remain self-contained and never touch the OS keyring.
+- **Explicit key file (`OPENKEYLET_KEY_FILE`)**: must be an absolute path to the master key file. Overrides the file key location in every mode — useful on headless servers and containers to mount the key on a separate volume or secret store (e.g. `/run/secrets/openkeylet.key`). OpenKeylet leaves the permissions of an `OPENKEYLET_KEY_FILE` untouched so read-only secret mounts work.
+- If `vault.json` exists while no usable master key is found, OpenKeylet refuses to generate a new key so existing encrypted data is never overwritten.
+- Run `openkeylet vault status` to inspect the active `dataDir`, `keySource`, and `keyFile` (when a file key is used) without exposing key material.
 
 ### Concurrency & File Safety Model
 OpenKeylet uses:

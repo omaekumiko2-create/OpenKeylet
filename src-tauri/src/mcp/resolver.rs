@@ -24,6 +24,54 @@ pub(super) fn strip_match_urls(inspected: &mut Value) {
     }
 }
 
+/// Strips credentials in userinfo and masks query values (`?code=…`) and fragments (`#…`) on
+/// URLs returned by browser MCP tools so OAuth codes, magic-link tokens, or reset tokens never
+/// leak into agent context, even if an older browser extension sent the raw URL.
+pub(super) fn mask_browser_url(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let Ok(mut parsed) = url::Url::parse(trimmed) else {
+        return String::new();
+    };
+    let has_query = parsed.query().is_some();
+    let mut keys: Vec<String> = Vec::new();
+    if has_query {
+        for (key, _) in parsed.query_pairs() {
+            let owned = key.into_owned();
+            if !keys.contains(&owned) {
+                keys.push(owned);
+            }
+        }
+    }
+    let has_fragment = parsed.fragment().is_some_and(|frag| !frag.is_empty());
+    let _ = parsed.set_username("");
+    let _ = parsed.set_password(None);
+    parsed.set_query(None);
+    parsed.set_fragment(None);
+    let mut out = parsed.to_string();
+    if has_query {
+        out.push('?');
+        if keys.is_empty() {
+            out.push('…');
+        } else {
+            for (idx, key) in keys.iter().enumerate() {
+                if idx > 0 {
+                    out.push('&');
+                }
+                let encoded: String = url::form_urlencoded::byte_serialize(key.as_bytes()).collect();
+                out.push_str(&encoded);
+                out.push_str("=…");
+            }
+        }
+    }
+    if has_fragment {
+        out.push_str("#…");
+    }
+    out
+}
+
 pub(super) fn website_matches_stored(stored: &crate::model::StoredConnection, website: &str) -> bool {
     if !stored.login_uris.is_empty() {
         return stored

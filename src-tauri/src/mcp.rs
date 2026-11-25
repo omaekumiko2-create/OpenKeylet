@@ -9,7 +9,7 @@ use crate::{
     },
     model::NewActivity,
     exec::terminal::{TerminalManager, TerminalOpenResult, TerminalReadResult},
-    policy::{Redactor, redact_values, redaction_candidates},
+    policy::{Redactor, redaction_candidates},
     vault::{DecryptedConnection, Vault},
 };
 use anyhow::{Context, Result, bail};
@@ -27,8 +27,11 @@ use serde_json::{Value, json};
 use std::{
     collections::{HashMap, HashSet},
     path::Path,
-    sync::{Arc, RwLock},
-    time::{Duration, Instant},
+    sync::{
+        Arc, RwLock,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{Duration, Instant, SystemTime},
 };
 use uuid::Uuid;
 
@@ -48,6 +51,20 @@ const VAULT_REDACTION_MIN_CHARS: usize = 8;
 /// Bounds the memory of a long session; the oldest values are dropped first.
 const MAX_SESSION_SECRETS: usize = 2048;
 
+#[derive(Clone, PartialEq, Eq)]
+struct RedactionCacheKey {
+    vault_rev: u64,
+    vault_file: Option<(SystemTime, u64)>,
+    active_item: Option<Uuid>,
+    session_gen: u64,
+}
+
+struct CachedRedaction {
+    key: RedactionCacheKey,
+    values: Arc<Vec<String>>,
+    redactor: Arc<Redactor>,
+}
+
 #[derive(Clone)]
 pub struct VaultMcp {
     vault: Vault,
@@ -60,6 +77,8 @@ pub struct VaultMcp {
     /// filled. Every later tool result is redacted with them, whichever item it names, because
     /// a value placed in a file or process environment can resurface in any later output.
     session_secrets: Arc<RwLock<Vec<String>>>,
+    session_secrets_gen: Arc<AtomicU64>,
+    redaction_cache: Arc<RwLock<Option<CachedRedaction>>>,
     client_name: Arc<RwLock<String>>,
     tool_router: ToolRouter<Self>,
 }
@@ -79,6 +98,8 @@ impl VaultMcp {
             active_terminal: Arc::new(RwLock::new(None)),
             terminal_items: Arc::new(RwLock::new(HashMap::new())),
             session_secrets: Arc::new(RwLock::new(Vec::new())),
+            session_secrets_gen: Arc::new(AtomicU64::new(0)),
+            redaction_cache: Arc::new(RwLock::new(None)),
             client_name: Arc::new(RwLock::new(String::new())),
             vault,
             tool_router: Self::tool_router(),
@@ -96,6 +117,7 @@ impl VaultMcp {
                 secrets.remove(0);
             }
             secrets.push(value.to_owned());
+            self.session_secrets_gen.fetch_add(1, Ordering::Release);
         }
     }
 
@@ -107,20 +129,31 @@ impl VaultMcp {
         }
     }
 
-    /// Raw values to redact from a terminal, SSH, HTTP or browser result whatever item the
-    /// call names: the session set, the current item's hidden values, and the hidden values of
-    /// every enabled item (see the length constants above). This costs one vault read and
-    /// decryption per call, which resolving an item already does several times.
-    fn output_redactions(&self) -> Vec<String> {
+    fn cached_redaction(&self) -> (Arc<Vec<String>>, Arc<Redactor>) {
+        let (vault_rev, vault_file) = self.vault.redaction_stamp();
+        let active_item = self.active_item.read().ok().and_then(|item| *item);
+        let session_gen = self.session_secrets_gen.load(Ordering::Acquire);
+        let key = RedactionCacheKey {
+            vault_rev,
+            vault_file,
+            active_item,
+            session_gen,
+        };
+        if let Ok(guard) = self.redaction_cache.read()
+            && let Some(cached) = guard.as_ref()
+            && cached.key == key
+        {
+            return (Arc::clone(&cached.values), Arc::clone(&cached.redactor));
+        }
+
         let mut values = self
             .session_secrets
             .read()
             .map(|secrets| secrets.clone())
             .unwrap_or_default();
-        let active = self.active_item.read().ok().and_then(|item| *item);
         if let Ok(connections) = self.vault.list_decrypted_connections() {
             for connection in &connections {
-                let min_chars = if Some(connection.stored.id) == active {
+                let min_chars = if Some(connection.stored.id) == active_item {
                     SESSION_REDACTION_MIN_CHARS
                 } else if connection.stored.enabled {
                     VAULT_REDACTION_MIN_CHARS
@@ -132,23 +165,58 @@ impl VaultMcp {
         }
         values.sort();
         values.dedup();
-        values
+        let redactor = Arc::new(Redactor::new(&redaction_candidates(&values)));
+        let values = Arc::new(values);
+        if let Ok(mut guard) = self.redaction_cache.write() {
+            *guard = Some(CachedRedaction {
+                key,
+                values: Arc::clone(&values),
+                redactor: Arc::clone(&redactor),
+            });
+        }
+        (values, redactor)
     }
 
-    /// Serializes a tool result after redacting `values` (raw) from every string in it.
+    /// Raw values to redact from a terminal, SSH, HTTP or browser result whatever item the
+    /// call names: the session set, the current item's hidden values, and the hidden values of
+    /// every enabled item (see the length constants above). Cached until the vault file,
+    /// active item, or session secret set changes.
+    fn output_redactions(&self) -> Vec<String> {
+        (*self.cached_redaction().0).clone()
+    }
+
+    /// Cached compiled [`Redactor`] matching [`Self::output_redactions`].
+    fn output_redactor(&self) -> Arc<Redactor> {
+        self.cached_redaction().1
+    }
+
+    /// Serializes a tool result after redacting with the cached session/vault [`Redactor`].
+    fn redacted_session_result<T: Serialize>(&self, result: Result<T, String>) -> CallToolResult {
+        self.apply_redactor(result, &self.output_redactor())
+    }
+
+    #[cfg(test)]
     fn redacted_result<T: Serialize>(
         &self,
         result: Result<T, String>,
         values: &[String],
     ) -> CallToolResult {
         let redactor = Redactor::new(&redaction_candidates(values));
+        self.apply_redactor(result, &redactor)
+    }
+
+    fn apply_redactor<T: Serialize>(
+        &self,
+        result: Result<T, String>,
+        redactor: &Redactor,
+    ) -> CallToolResult {
         if redactor.is_empty() {
             return into_tool_result(result);
         }
         match result {
             Ok(output) => match serde_json::to_value(output) {
                 Ok(mut value) => {
-                    redact_json_strings(&mut value, &redactor);
+                    redact_json_strings(&mut value, redactor);
                     tool_success(value)
                 }
                 Err(_) => tool_error("OpenKeylet could not serialize the tool result."),
@@ -157,12 +225,12 @@ impl VaultMcp {
         }
     }
 
-    /// Like [`Self::redacted_result`] for a result whose output the executor already redacted
-    /// with [`Self::output_redactions`]; only an error message is scanned.
+    /// Like [`Self::redacted_session_result`] for a result whose output the executor already
+    /// redacted with [`Self::output_redactions`]; only an error message is scanned.
     fn redacted_error<T: Serialize>(&self, result: Result<T, String>) -> CallToolResult {
         match result {
             Ok(output) => tool_success(output),
-            Err(message) => tool_error(redact_values(message, &self.output_redactions())),
+            Err(message) => tool_error(self.output_redactor().redact_string(message)),
         }
     }
 

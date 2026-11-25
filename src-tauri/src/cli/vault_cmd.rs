@@ -367,6 +367,7 @@ pub fn run_vault(vault: &Vault, action: VaultCommand) -> Result<()> {
                     "dataDir": vault.data_dir().to_string_lossy(),
                     "explicitDataDir": uses_explicit_data_dir(vault.data_dir()),
                     "keySource": vault.storage_label(),
+                    "keyFile": vault.key_file().map(|path| path.to_string_lossy()),
                     "ownerPinConfigured": vault.owner_pin_configured()?,
                     "itemCount": items.len(),
                     "enabledItemCount": enabled_count,

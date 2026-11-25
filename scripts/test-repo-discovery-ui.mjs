@@ -54,7 +54,11 @@ try {
       activities: [],
       mcp: { status: "ready", stdioCommand: "openkeylet" },
       browserBridge: { status: "off" },
-      security: { encrypted: true },
+      security: {
+        encrypted: true,
+        keyLocation: "fileOutsideDataDir",
+        keyFile: "/home/demo/.config/openkeylet/keys/a1b2c3d4e5f60718/master.key",
+      },
     };
 
     window.fixture = {
@@ -221,17 +225,23 @@ try {
     }),
   ), selectors);
   const headings = {
-    en: "GITHUB PASSWORD SYNC",
-    zh: "GitHub 密码同步",
-    "zh-TW": "GitHub 密碼同步",
-    ja: "GitHub パスワード同期",
-    ko: "GitHub 비밀번호 동기화",
-    es: "SINCRONIZACIÓN CON GITHUB",
+    en: { heading: "GITHUB PASSWORD SYNC", keyKind: "VAULT KEY · KEY FILE OUTSIDE THE DATA DIRECTORY" },
+    zh: { heading: "GitHub 密码同步", keyKind: "密码库密钥 · 数据目录外的密钥文件" },
+    "zh-TW": { heading: "GitHub 密碼同步", keyKind: "密碼庫金鑰 · 資料目錄外的金鑰檔" },
+    ja: { heading: "GitHub パスワード同期", keyKind: "金庫キー · データフォルダ外の鍵ファイル" },
+    ko: { heading: "GitHub 비밀번호 동기화", keyKind: "금고 키 · 데이터 디렉터리 외부의 키 파일" },
+    es: { heading: "SINCRONIZACIÓN CON GITHUB", keyKind: "CLAVE DE LA BÓVEDA · ARCHIVO DE CLAVE FUERA DEL DIRECTORIO DE DATOS" },
   };
-  for (const [lang, heading] of Object.entries(headings)) {
+  for (const [lang, expected] of Object.entries(headings)) {
     await page.goto(`http://127.0.0.1:${port}/index.html?lang=${lang}`, { waitUntil: "networkidle" });
     await page.click('.nav-item[data-page="settings"]');
-    assert.equal(await page.locator("#github-heading").textContent(), heading);
+    assert.equal(await page.locator("#github-heading").textContent(), expected.heading);
+    assert.equal(await page.locator("#key-location-box").evaluate((el) => el.classList.contains("hidden")), false);
+    assert.equal(await page.locator("#key-location-kind").textContent(), expected.keyKind);
+    assert.equal(
+      await page.locator("#key-location-path").textContent(),
+      "/home/demo/.config/openkeylet/keys/a1b2c3d4e5f60718/master.key",
+    );
     await page.click("#github-connect");
     await page.waitForSelector("#github-modal:not(.hidden)");
     await page.click("#github-check-account");
@@ -247,8 +257,8 @@ try {
     await page.waitForFunction(() => document.querySelector("#github-key-repository-value").textContent.endsWith("-key"));
     for (const theme of ["dark", "light"]) {
       await page.evaluate((t) => document.documentElement.setAttribute("data-theme", t), theme);
-      const overflow = await widthOverflow(["#github-backup-card", "#github-details"]);
-      assert.ok(overflow <= 1, `sync card overflows in ${lang}/${theme}: ${overflow}`);
+      const overflow = await widthOverflow(["#github-backup-card", "#github-details", "#key-location-box"]);
+      assert.ok(overflow <= 1, `sync/key-location card overflows in ${lang}/${theme}: ${overflow}`);
     }
   }
 

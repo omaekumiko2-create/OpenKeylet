@@ -1564,6 +1564,108 @@ fn push_env_lines(out: &mut String, lines: &[EnvLine<'_>]) {
     }
 }
 
+/// Adds or updates `.env` / properties entries onto `input` using vault-safe field names.
+/// Reserved names (`PASSWORD`, `TOKEN`, `API_KEY`, `USERNAME`, `PRIVATE_KEY`, etc.) map onto
+/// their built-in vault modules instead of failing validation as `customSecret`, and clashes
+/// get a disambiguated suffix. Returns `(env_key, vault_field, value)` in input order.
+pub fn apply_env_vars_to_connection(
+    input: &mut ConnectionInput,
+    vars: &[ParsedEnvVar],
+    overwrite: bool,
+    existing_item_name: Option<&str>,
+) -> Result<Vec<(String, String, String)>> {
+    let mut mapped = Vec::with_capacity(vars.len());
+    let mut assigned_in_batch: HashSet<String> = HashSet::new();
+
+    for var in vars {
+        let base_name = super::reconcile::sanitize_name(&var.key, MAX_ENV_KEY_CHARS);
+        let norm = super::reconcile::normalized_secret_field_name(&base_name);
+        let canonical = match norm.as_str() {
+            "username" => Some(("username", "username")),
+            "password" => Some(("password", "password")),
+            "passphrase" => Some(("passphrase", "passphrase")),
+            "privatekey" => Some(("privateKey", "privateKey")),
+            "totp" => Some(("totp", "totp")),
+            "apicredential" | "token" | "apikey" => Some(("apiCredential", "apiCredential")),
+            "securenote" => Some(("secureNote", "secureNote")),
+            _ => None,
+        };
+
+        if let Some((kind, field)) = canonical
+            && !assigned_in_batch.contains(field)
+        {
+            let already_on_item = input.modules.iter().any(|m| m.kind == kind);
+            if already_on_item {
+                if input.secrets.get(field).is_some() && !overwrite {
+                    let label = existing_item_name.unwrap_or(&input.name);
+                    anyhow::bail!(
+                        "Field '{field}' already exists on '{label}'. Pass overwrite=true to update it."
+                    );
+                }
+            } else {
+                input.modules.push(super::reconcile::secret_mod(kind, field));
+            }
+            match field {
+                "password" => input.secrets.password = Some(var.value.clone()),
+                "passphrase" => input.secrets.passphrase = Some(var.value.clone()),
+                "privateKey" => input.secrets.private_key = Some(var.value.clone()),
+                _ => {
+                    input
+                        .secrets
+                        .named_secrets
+                        .insert(field.to_owned(), var.value.clone());
+                }
+            }
+            assigned_in_batch.insert(field.to_owned());
+            mapped.push((var.key.clone(), field.to_owned(), var.value.clone()));
+            continue;
+        }
+
+        let target_norm = if super::reconcile::is_reserved_custom_secret_name(&base_name) {
+            super::reconcile::normalized_secret_field_name(&super::reconcile::sanitize_name(
+                &format!("{base_name}_secret"),
+                MAX_ENV_KEY_CHARS,
+            ))
+        } else {
+            norm
+        };
+        if let Some((field_name, field_norm)) = input
+            .modules
+            .iter()
+            .filter(|m| m.kind == "customSecret")
+            .find_map(|m| {
+                let m_norm = super::reconcile::normalized_secret_field_name(&m.name);
+                (m_norm == target_norm && !assigned_in_batch.contains(&m_norm))
+                    .then(|| (m.name.clone(), m_norm))
+            })
+        {
+            if input.secrets.get(&field_name).is_some() && !overwrite {
+                let label = existing_item_name.unwrap_or(&input.name);
+                anyhow::bail!(
+                    "Field '{field_name}' already exists on '{label}'. Pass overwrite=true to update it."
+                );
+            }
+            input
+                .secrets
+                .named_secrets
+                .insert(field_name.clone(), var.value.clone());
+            assigned_in_batch.insert(field_norm);
+            mapped.push((var.key.clone(), field_name, var.value.clone()));
+            continue;
+        }
+
+        let before = input.modules.len();
+        super::reconcile::push_vault_safe_secret_module(input, &var.key, var.value.clone());
+        if let Some(field) = input.modules.get(before).and_then(ItemModule::secret_name) {
+            let field_owned = field.to_owned();
+            assigned_in_batch.insert(super::reconcile::normalized_secret_field_name(&field_owned));
+            mapped.push((var.key.clone(), field_owned, var.value.clone()));
+        }
+    }
+
+    Ok(mapped)
+}
+
 /// An `.env` import plus what is needed to write a template whose placeholders resolve.
 pub struct EnvFileImport {
     pub entries: Vec<(PortableConnection, SecretBundle)>,

@@ -1,3 +1,4 @@
+pub mod key_location;
 pub mod ssh_keygen;
 pub mod totp;
 
@@ -12,8 +13,12 @@ use chacha20poly1305::{
     Key, XChaCha20Poly1305, XNonce,
     aead::{Aead, KeyInit, Payload},
 };
+use key_location::{KeyLocations, KeyPlace};
 use serde::{Serialize, de::DeserializeOwned};
-use std::{fs, path::Path};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 use subtle::ConstantTimeEq;
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
@@ -109,7 +114,9 @@ fn derive_owner_pin_hash(pin: &str, salt: &[u8]) -> Result<[u8; 32]> {
 pub struct MasterKey {
     bytes: [u8; 32],
     #[zeroize(skip)]
-    source: String,
+    place: KeyPlace,
+    #[zeroize(skip)]
+    key_file: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for MasterKey {
@@ -117,157 +124,46 @@ impl std::fmt::Debug for MasterKey {
         formatter
             .debug_struct("MasterKey")
             .field("bytes", &"[REDACTED]")
-            .field("source", &self.source)
+            .field("place", &self.place)
+            .field("key_file", &self.key_file)
             .finish()
     }
 }
 
 impl MasterKey {
-    pub fn load_or_create(data_dir: &Path, vault_exists: bool) -> Result<Self> {
-        #[cfg(target_os = "macos")]
-        {
-            let key_file = data_dir.join("master.key");
-            let legacy_key = if vault_exists && !key_file.exists() {
-                load_legacy_macos_key_without_ui()
-            } else {
-                None
-            };
-            Self::load_or_create_file_key(data_dir, vault_exists, legacy_key)
-        }
-
-        #[cfg(not(target_os = "macos"))]
-        {
-            let use_keyring = !crate::storage::uses_explicit_data_dir(data_dir);
-            Self::load_or_create_inner(data_dir, vault_exists, use_keyring)
-        }
-    }
-
-    #[cfg(any(target_os = "macos", test))]
-    fn load_or_create_file_key(
-        data_dir: &Path,
+    /// Loads the vault key; `key_location` documents where it is looked for,
+    /// how `probes` (envelopes from the existing `vault.json`) decide between
+    /// candidates, and when a key is created or moved.
+    pub fn load_or_create(
+        locations: &KeyLocations,
         vault_exists: bool,
-        legacy_key: Option<[u8; 32]>,
+        probes: &[&SecretEnvelope],
     ) -> Result<Self> {
-        prepare_private_directory(data_dir)?;
-        let key_file = data_dir.join("master.key");
-
-        if key_file.exists() {
-            harden_private_file(&key_file)?;
-            let encoded = fs::read_to_string(&key_file)
-                .context("Unable to read the local permissions key file")?;
-            return Ok(Self {
-                bytes: decode_key(encoded.trim())?,
-                source: "Application-private master key file".to_owned(),
-            });
-        }
-
-        if let Some(bytes) = legacy_key {
-            write_private_file(&key_file, STANDARD_NO_PAD.encode(bytes).as_bytes())?;
-            return Ok(Self {
-                bytes,
-                source: "Application-private master key file".to_owned(),
-            });
-        }
-
-        if vault_exists {
-            bail!(
-                "Vault master key is missing; OpenKeylet will not show a macOS Keychain authorization prompt or generate a new key that overwrites existing data"
-            );
-        }
-
-        let mut bytes = [0_u8; 32];
-        getrandom::fill(&mut bytes)
-            .map_err(|error| anyhow::anyhow!("Unable to generate vault master key:{error}"))?;
-        write_private_file(&key_file, STANDARD_NO_PAD.encode(bytes).as_bytes())?;
-        Ok(Self {
-            bytes,
-            source: "Application-private master key file".to_owned(),
-        })
+        key_location::load_or_create(locations, vault_exists, probes)
     }
 
-    #[cfg(not(target_os = "macos"))]
-    fn load_or_create_inner(
-        data_dir: &Path,
-        vault_exists: bool,
-        use_keyring: bool,
-    ) -> Result<Self> {
-        prepare_private_directory(data_dir)?;
-        let key_file = data_dir.join("master.key");
-
-        if use_keyring && let Ok(entry) = keyring::Entry::new("mcp-vault", "master-key-v2") {
-            if let Ok(encoded) = entry.get_password() {
-                if let Ok(bytes) = decode_key(&encoded) {
-                    return Ok(Self {
-                        bytes,
-                        source: system_storage_label().to_owned(),
-                    });
-                }
-            }
-        }
-
-        if key_file.exists() {
-            harden_private_file(&key_file)?;
-            let encoded = fs::read_to_string(&key_file)
-                .context("Unable to read the local permissions key file")?;
-            return Ok(Self {
-                bytes: decode_key(encoded.trim())?,
-                source: "Local permissions key file".to_owned(),
-            });
-        }
-
-        if vault_exists {
-            bail!(
-                "Vault master key is missing; to avoid overwriting data, the program refused to generate a new key"
-            );
-        }
-
-        let mut bytes = [0_u8; 32];
-        getrandom::fill(&mut bytes)
-            .map_err(|error| anyhow::anyhow!("Unable to generate vault master key:{error}"))?;
-        let encoded = STANDARD_NO_PAD.encode(bytes);
-
-        if use_keyring && let Ok(entry) = keyring::Entry::new("mcp-vault", "master-key-v2") {
-            if entry.set_password(&encoded).is_ok() {
-                return Ok(Self {
-                    bytes,
-                    source: system_storage_label().to_owned(),
-                });
-            }
-        }
-
-        write_private_file(&key_file, encoded.as_bytes())?;
-        Ok(Self {
-            bytes,
-            source: "Local permissions key file".to_owned(),
-        })
+    pub fn place(&self) -> KeyPlace {
+        self.place
     }
 
-    pub fn source(&self) -> &str {
-        &self.source
+    /// The key file in use, or `None` when the key came from an OS key store.
+    pub fn key_file(&self) -> Option<&Path> {
+        self.key_file.as_deref()
     }
 
     #[cfg(target_os = "macos")]
     pub fn migrate_legacy_macos_key(data_dir: &Path) -> Result<bool> {
-        prepare_private_directory(data_dir)?;
-        let key_file = data_dir.join("master.key");
-        if key_file.exists() {
-            harden_private_file(&key_file)?;
-            return Ok(false);
-        }
-        if !data_dir.join("vault.json").exists() {
-            bail!("No legacy vault needs to be migrated");
-        }
-
-        let entry = keyring::Entry::new("mcp-vault", "master-key-v2")
-            .context("Unable to access the legacy macOS Keychain item")?;
-        let mut encoded = entry
-            .get_password()
-            .context("Not authorized to read the legacy macOS Keychain master key")?;
-        let decoded = decode_key(&encoded);
-        encoded.zeroize();
-        let bytes = decoded?;
-        write_private_file(&key_file, STANDARD_NO_PAD.encode(bytes).as_bytes())?;
-        Ok(true)
+        let locations = KeyLocations::for_data_dir(data_dir)?;
+        key_location::import_legacy_key(&locations, || {
+            let entry = keyring::Entry::new("mcp-vault", "master-key-v2")
+                .context("Unable to access the legacy macOS Keychain item")?;
+            let encoded = Zeroizing::new(
+                entry
+                    .get_password()
+                    .context("Not authorized to read the legacy macOS Keychain master key")?,
+            );
+            decode_key(&encoded)
+        })
     }
 
     pub fn encrypt<T: Serialize>(&self, value: &T) -> Result<SecretEnvelope> {
@@ -289,16 +185,6 @@ fn decode_key(encoded: &str) -> Result<[u8; 32]> {
     decoded
         .try_into()
         .map_err(|_| anyhow::anyhow!("Invalid master key length"))
-}
-
-#[cfg(not(target_os = "macos"))]
-fn system_storage_label() -> &'static str {
-    #[cfg(target_os = "windows")]
-    return "Windows Credential Manager";
-    #[cfg(all(unix, not(target_os = "macos")))]
-    return "Linux Secret Service";
-    #[allow(unreachable_code)]
-    "System secure storage"
 }
 
 #[cfg(target_os = "macos")]
@@ -351,23 +237,23 @@ pub fn decrypt_bytes(key: &[u8; 32], envelope: &SecretEnvelope, aad: &[u8]) -> R
 }
 
 fn write_private_file(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::{fs::OpenOptions, io::Write};
+    let mut options = OpenOptions::new();
+    // `create_new` on every platform: a key file that already exists may be
+    // the only copy of some vault's key, so it is never truncated or replaced.
+    options.create_new(true).write(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        use std::{fs::OpenOptions, io::Write};
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .mode(0o600)
-            .open(path)
-            .context("Unable to create local permissions key file")?;
-        file.write_all(bytes)
-            .context("Unable to write local permissions key file")?;
-        file.sync_all()
-            .context("Unable to sync local permissions key file")?;
+        options.mode(0o600);
     }
-    #[cfg(not(unix))]
-    fs::write(path, bytes).context("Unable to write local permissions key file")?;
+    let mut file = options
+        .open(path)
+        .context("Unable to create local permissions key file")?;
+    file.write_all(bytes)
+        .context("Unable to write local permissions key file")?;
+    file.sync_all()
+        .context("Unable to sync local permissions key file")?;
     Ok(())
 }
 
@@ -422,73 +308,36 @@ mod tests {
     }
 
     #[test]
-    fn existing_vault_without_master_key_is_rejected() {
-        let directory = tempdir().unwrap();
-        let result = MasterKey::load_or_create_file_key(directory.path(), true, None);
-        assert!(result.is_err());
-        assert!(!directory.path().join("master.key").exists());
-    }
-
-    #[test]
-    fn file_key_is_created_and_reused() {
-        let directory = tempdir().unwrap();
-        let first = MasterKey::load_or_create_file_key(directory.path(), false, None).unwrap();
-        let envelope = first.encrypt(&"kept secret").unwrap();
-        drop(first);
-
-        let second = MasterKey::load_or_create_file_key(directory.path(), true, None).unwrap();
-        assert_eq!(second.source(), "Application-private master key file");
-        assert_eq!(second.decrypt::<String>(&envelope).unwrap(), "kept secret");
-    }
-
-    #[test]
-    fn legacy_key_is_migrated_to_private_file() {
-        let directory = tempdir().unwrap();
-        let legacy_key = [42_u8; 32];
-        let migrated =
-            MasterKey::load_or_create_file_key(directory.path(), true, Some(legacy_key)).unwrap();
-        let envelope = migrated.encrypt(&"migrated secret").unwrap();
-        drop(migrated);
-
-        let reopened = MasterKey::load_or_create_file_key(directory.path(), true, None).unwrap();
-        assert_eq!(
-            reopened.decrypt::<String>(&envelope).unwrap(),
-            "migrated secret"
-        );
-    }
-
-    #[test]
     fn explicit_data_directory_uses_directory_master_key_without_os_keyring() {
         let directory = tempdir().unwrap();
         assert!(crate::storage::uses_explicit_data_dir(directory.path()));
-        let key = MasterKey::load_or_create(directory.path(), false).unwrap();
+        let locations = KeyLocations::for_data_dir(directory.path()).unwrap();
+        let key = MasterKey::load_or_create(&locations, false, &[]).unwrap();
         assert!(directory.path().join("master.key").is_file());
+        assert_eq!(key.place(), KeyPlace::FileInsideDataDir);
+        assert_eq!(
+            key.key_file(),
+            Some(directory.path().join("master.key").as_path())
+        );
         let envelope = key.encrypt(&"shared-vault-secret").unwrap();
         drop(key);
-        let reopened = MasterKey::load_or_create(directory.path(), true).unwrap();
+        let reopened = MasterKey::load_or_create(&locations, true, &[&envelope]).unwrap();
         assert_eq!(
             reopened.decrypt::<String>(&envelope).unwrap(),
             "shared-vault-secret"
         );
         // Existing vault without master.key in an explicit directory must fail closed.
         fs::remove_file(directory.path().join("master.key")).unwrap();
-        assert!(MasterKey::load_or_create(directory.path(), true).is_err());
+        assert!(MasterKey::load_or_create(&locations, true, &[&envelope]).is_err());
+        assert!(!directory.path().join("master.key").exists());
     }
 
-    #[cfg(unix)]
     #[test]
-    fn private_storage_permissions_are_restricted() {
-        use std::os::unix::fs::PermissionsExt;
-
+    fn writing_a_key_file_never_replaces_an_existing_one() {
         let directory = tempdir().unwrap();
-        MasterKey::load_or_create_file_key(directory.path(), false, None).unwrap();
-        let directory_mode = fs::metadata(directory.path()).unwrap().permissions().mode() & 0o777;
-        let key_mode = fs::metadata(directory.path().join("master.key"))
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777;
-        assert_eq!(directory_mode, 0o700);
-        assert_eq!(key_mode, 0o600);
+        let path = directory.path().join("master.key");
+        fs::write(&path, "existing").unwrap();
+        assert!(write_private_file(&path, b"replacement").is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "existing");
     }
 }

@@ -1,11 +1,16 @@
 use crate::{
     api_catalog,
-    crypto::{MasterKey, create_owner_pin_verifier, verify_owner_pin},
+    crypto::{
+        MasterKey, create_owner_pin_verifier,
+        key_location::{KeyLocations, KeyPlace},
+        verify_owner_pin,
+    },
     model::{
         Activity, AppState, ConnectionInput, ImportSummary, ItemModule, McpState, NewActivity,
         OwnerEditorDraft, OwnerSecretField, OwnerSecretView, PortableConnection, PublicConnection,
-        SecretBundle, SecretField, SecretProfile, SecurityState, Settings, SettingsPatch,
-        StoredConnection, StoredEditorDraft, VaultDocument, module_kind_has_plaintext_reveal,
+        SecretBundle, SecretEnvelope, SecretField, SecretProfile, SecurityState, Settings,
+        SettingsPatch, StoredConnection, StoredEditorDraft, VaultDocument,
+        module_kind_has_plaintext_reveal,
     },
 };
 use anyhow::{Context, Result, bail};
@@ -16,7 +21,11 @@ use std::{
     fs::{self, File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{SystemTime, UNIX_EPOCH},
 };
 use url::Url;
 use uuid::Uuid;
@@ -55,6 +64,9 @@ struct VaultInner {
     /// `(byte length, line count)` of `activity.jsonl` as last seen by this
     /// handle, so appends need not re-read the log to decide on compaction.
     activity_log_cache: Mutex<Option<(u64, usize)>>,
+    /// Monotonic counter bumped on every in-process vault write so caches (such
+    /// as MCP output redaction) invalidate even within sub-millisecond writes.
+    revision: AtomicU64,
 }
 
 pub struct DecryptedConnection {
@@ -64,6 +76,14 @@ pub struct DecryptedConnection {
 
 impl Vault {
     pub fn open(data_dir: PathBuf) -> Result<Self> {
+        let key_locations = KeyLocations::for_data_dir(&data_dir)?;
+        Self::open_with_key_locations(data_dir, key_locations)
+    }
+
+    pub(crate) fn open_with_key_locations(
+        data_dir: PathBuf,
+        key_locations: KeyLocations,
+    ) -> Result<Self> {
         fs::create_dir_all(&data_dir).context("Unable to create vault directory")?;
         let bootstrap = OpenOptions::new()
             .create(true)
@@ -76,7 +96,19 @@ impl Vault {
 
         let result = (|| {
             let vault_path = data_dir.join("vault.json");
-            let key = MasterKey::load_or_create(&data_dir, vault_path.exists())?;
+            let vault_exists = vault_path.exists();
+            // Read before the key is chosen, so that the choice is checked
+            // against this vault's own ciphertext. A file that cannot be read
+            // or parsed gives no probes; the version check below reports it.
+            let existing = if vault_exists {
+                fs::read(&vault_path)
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<VaultDocument>(&bytes).ok())
+            } else {
+                None
+            };
+            let probes = existing.as_ref().map(key_probes).unwrap_or_default();
+            let key = MasterKey::load_or_create(&key_locations, vault_exists, &probes)?;
             let vault = Self {
                 inner: Arc::new(VaultInner {
                     lock_path: data_dir.join("vault.lock"),
@@ -84,6 +116,7 @@ impl Vault {
                     vault_path,
                     key,
                     activity_log_cache: Mutex::new(None),
+                    revision: AtomicU64::new(0),
                 }),
             };
 
@@ -117,7 +150,27 @@ impl Vault {
     }
 
     pub fn storage_label(&self) -> String {
-        self.inner.key.source().to_owned()
+        self.inner.key.place().label()
+    }
+
+    pub fn key_place(&self) -> KeyPlace {
+        self.inner.key.place()
+    }
+
+    /// The key file in use, or `None` when the key is in an OS key store. The
+    /// path is not secret.
+    pub fn key_file(&self) -> Option<&Path> {
+        self.inner.key.key_file()
+    }
+
+    /// Cheap change stamp combining in-process write revision with the on-disk
+    /// `vault.json` mtime and length so cross-process edits also invalidate caches.
+    pub(crate) fn redaction_stamp(&self) -> (u64, Option<(SystemTime, u64)>) {
+        let rev = self.inner.revision.load(Ordering::Acquire);
+        let file = fs::metadata(&self.inner.vault_path)
+            .ok()
+            .map(|meta| (meta.modified().unwrap_or(UNIX_EPOCH), meta.len()));
+        (rev, file)
     }
 
     fn with_key<T>(&self, action: impl FnOnce(&MasterKey) -> Result<T>) -> Result<T> {
@@ -179,6 +232,7 @@ impl Vault {
             .context("Could not create temporary vault file")?;
         file.write_all(&bytes).context("Could not write vault")?;
         file.commit().context("Could not commit vault file")?;
+        self.inner.revision.fetch_add(1, Ordering::Release);
         Ok(())
     }
 
@@ -227,6 +281,27 @@ impl Vault {
     }
 }
 
+
+/// Every envelope encrypted with the vault key. A candidate key is accepted if
+/// it decrypts any of them, so one damaged entry cannot lock the owner out of
+/// the whole vault.
+fn key_probes(document: &VaultDocument) -> Vec<&SecretEnvelope> {
+    document
+        .connections
+        .iter()
+        .map(|connection| &connection.encrypted_secrets)
+        .chain(
+            document
+                .trash
+                .iter()
+                .map(|item| &item.connection.encrypted_secrets),
+        )
+        .chain(document.editor_drafts.iter().map(|draft| &draft.payload))
+        .chain(document.browser_bridge_secret.iter())
+        // Version 0 marks a placeholder that no key decrypts.
+        .filter(|envelope| envelope.version == 1)
+        .collect()
+}
 
 #[cfg(test)]
 mod tests;

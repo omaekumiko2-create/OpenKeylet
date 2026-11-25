@@ -1089,6 +1089,7 @@ impl GithubBackup {
         if repository.default_branch != config.branch {
             bail!("GITHUB_BRANCH_CHANGED");
         }
+        self.check_key_repository_private(config).await?;
         Ok(())
     }
 

@@ -116,8 +116,30 @@ export async function scanAgents(showToast = false) {
   }
 }
 
+// Read-only: shows where the vault key is kept, so the owner can tell whether
+// a copy of the data directory would carry the key with it.
+function renderKeyLocation(security) {
+  const box = $('#key-location-box');
+  if (!box) return;
+  const kinds = {
+    osKeyring: localized('系统凭据存储', 'OS KEYRING'),
+    fileOutsideDataDir: localized('数据目录外的密钥文件', 'KEY FILE OUTSIDE THE DATA DIRECTORY'),
+    fileInsideDataDir: localized('数据目录内的密钥文件', 'KEY FILE INSIDE THE DATA DIRECTORY'),
+    fileFromEnv: localized('OPENKEYLET_KEY_FILE 指定的密钥文件', 'KEY FILE FROM OPENKEYLET_KEY_FILE'),
+  };
+  const kind = kinds[security?.keyLocation];
+  box.classList.toggle('hidden', !kind);
+  if (!kind) return;
+  $('#key-location-kind').textContent = `${localized('密码库密钥', 'VAULT KEY')} · ${kind}`;
+  const path = $('#key-location-path');
+  path.textContent = security.keyFile || '';
+  path.title = security.keyFile || '';
+  path.classList.toggle('hidden', !security.keyFile);
+}
+
 export function renderSettings() {
   const state = store.state;
+  renderKeyLocation(state.security);
   store.githubBackup?.render();
   store.appUpdater?.render();
   $('#mcp-endpoint').textContent = `${state.mcp.stdioCommand} mcp stdio`;

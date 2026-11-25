@@ -540,6 +540,21 @@ async fn key_repository_must_be_creatable_private_and_well_formed() {
     assert_eq!(connect().await.unwrap().key_repository, "test/vault-key");
     let state = remote.state.lock().unwrap();
     assert_eq!((state.key_creates, state.key_writes), (0, 1));
+    drop(state);
+
+    // Flipping the key repository public after binding must stop sync immediately.
+    remote.state.lock().unwrap().key_repo_public = true;
+    assert_eq!(
+        manager.sync().await.err().unwrap().to_string(),
+        "GITHUB_KEY_REPO_PUBLIC"
+    );
+
+    // Restoring privacy allows sync again; deleting the key repo does not lock out
+    // an already-connected device that already holds the key locally.
+    remote.state.lock().unwrap().key_repo_public = false;
+    assert!(manager.sync().await.is_ok());
+    remote.state.lock().unwrap().key_repo_exists = false;
+    assert!(manager.sync().await.is_ok());
 }
 
 fn add_item(vault: &Vault, id: Uuid, name: &str, secret: &str) {

@@ -942,7 +942,7 @@ async function openTabJob(payload = {}, expiresAt) {
     message: `Opened ${finalOrigin}`,
     data: {
       tabId: tab.id,
-      url: finalUrl,
+      url: urlWithMaskedQuery(finalUrl),
       origin: finalOrigin,
       title: (finalTab?.title || "").slice(0, 160),
     },
@@ -1129,6 +1129,7 @@ async function fillLoginJob(payload = {}, expiresAt) {
       });
       const result = execution?.result;
       if (result?.ok) {
+        if (result.data?.url) result.data.url = urlWithMaskedQuery(result.data.url);
         if (frame.frameId !== 0 && result.data) {
           result.data.frameId = frame.frameId;
           result.data.frameOrigin = frame.origin;
@@ -1180,6 +1181,7 @@ async function fillFieldJob(value, submit, payload = {}, expiresAt) {
       });
       const result = execution?.result;
       if (result?.ok) {
+        if (result.data?.url) result.data.url = urlWithMaskedQuery(result.data.url);
         if (frame.frameId !== 0 && result.data) {
           result.data.frameId = frame.frameId;
           result.data.frameOrigin = frame.origin;
@@ -1242,7 +1244,7 @@ async function fillPersonalJob(payload = {}, expiresAt) {
   return {
     ok: true,
     message: `Filled ${totalFilled} ${payload.itemType} field(s)`,
-    data: { filled: totalFilled, itemType: payload.itemType, url: tab.url, origin: url.origin },
+    data: { filled: totalFilled, itemType: payload.itemType, url: urlWithMaskedQuery(tab.url), origin: url.origin },
   };
 }
 
@@ -1267,6 +1269,7 @@ async function clickJob(payload = {}, expiresAt) {
       });
       const result = execution?.result;
       if (result?.ok) {
+        if (result.data?.url) result.data.url = urlWithMaskedQuery(result.data.url);
         if (frame.frameId !== 0 && result.data) {
           result.data.frameId = frame.frameId;
           result.data.frameOrigin = frame.origin;

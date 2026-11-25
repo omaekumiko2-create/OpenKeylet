@@ -87,6 +87,7 @@ export function createCloudSync({ invoke, localized, toast, isUnlocked, confirmA
       GITHUB_KEY_REPO_MISSING: ['找不到钥匙仓库，或其中没有钥匙文件。请确认授权能访问它；如果它已不存在，可在下方填写离线保存的恢复密钥。', 'The key repository or its key file was not found. Check that your authorization can access it, or enter the recovery key you kept offline below.'],
       GITHUB_KEY_REPO_CREATE: ['无法创建钥匙仓库。请先在网页上创建名称为密文仓库名加 -key 的私有仓库，或改用有创建权限的授权。', 'The key repository could not be created. Create a private repository named after the vault repo plus -key on the web first, or use an authorization that can create repositories.'],
       GITHUB_KEY_REPO_INVALID: ['钥匙仓库里的钥匙文件无法识别。', 'The key file in the key repository is not valid.'],
+      GITHUB_KEY_REPO_PUBLIC: ['钥匙仓库已被设为公开，已停止同步以防泄密。请立即将钥匙仓库改回私有。', 'The key repository is public; sync stopped to prevent exposure. Make the key repository private again right away.'],
       GITHUB_KEY_MISMATCH: ['密钥不匹配，或云端备份已损坏。本地数据未被恢复操作修改。', 'The key does not match, or the backup is damaged. No data was restored.'],
       GITHUB_PRIVATE_REQUIRED: ['只支持私有仓库。请检查仓库可见性。', 'Only private repositories are supported. Check its visibility.'],
       GITHUB_AUTH: ['令牌无效或已过期，请更新连接。', 'The token is invalid or expired. Reconnect with a new token.'],

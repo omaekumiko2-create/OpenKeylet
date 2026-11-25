@@ -253,6 +253,7 @@ async fn api_status(
         "dataDir": state.vault.data_dir().to_string_lossy(),
         "explicitDataDir": uses_explicit_data_dir(state.vault.data_dir()),
         "keySource": state.vault.storage_label(),
+        "keyFile": state.vault.key_file().map(|path| path.to_string_lossy()),
         "ownerPinConfigured": pin_configured,
         "itemCount": items.len(),
         "enabledItemCount": enabled_count,

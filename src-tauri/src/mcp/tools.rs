@@ -202,7 +202,7 @@ impl VaultMcp {
             })
         }
         .await;
-        self.redacted_result(result, &self.output_redactions())
+        self.redacted_session_result(result)
     }
 
     #[tool(
@@ -786,7 +786,7 @@ impl VaultMcp {
             .await
         }
         .await;
-        self.redacted_result(result, &self.output_redactions())
+        self.redacted_session_result(result)
     }
 
     #[tool(
@@ -828,7 +828,7 @@ impl VaultMcp {
             .await
         }
         .await;
-        self.redacted_result(result, &self.output_redactions())
+        self.redacted_session_result(result)
     }
 
     #[tool(
@@ -1010,7 +1010,7 @@ impl VaultMcp {
             }
         }
         .await;
-        self.redacted_result(result, &self.output_redactions())
+        self.redacted_session_result(result)
     }
 
     #[tool(
@@ -1051,13 +1051,13 @@ impl VaultMcp {
             let data = response.data.unwrap_or_else(|| json!({}));
             Ok(BrowserOpenOutput {
                 tab_id: data["tabId"].as_i64().unwrap_or(0),
-                url: data["url"].as_str().unwrap_or(parsed.as_str()).to_owned(),
+                url: mask_browser_url(data["url"].as_str().unwrap_or(parsed.as_str())),
                 origin: data["origin"].as_str().unwrap_or_default().to_owned(),
                 title: data["title"].as_str().unwrap_or_default().to_owned(),
             })
         }
         .await;
-        self.redacted_result(result, &self.output_redactions())
+        self.redacted_session_result(result)
     }
 
     #[tool(
@@ -1069,7 +1069,7 @@ impl VaultMcp {
         &self,
         Parameters(input): Parameters<BrowserInspectInput>,
     ) -> CallToolResult {
-        let redactor = Redactor::new(&redaction_candidates(&self.output_redactions()));
+        let redactor = self.output_redactor();
         let result: Result<Value, String> = async {
             let mut inspected = self
                 .browser
@@ -1244,12 +1244,12 @@ impl VaultMcp {
                 item: item_name,
                 filled_fields,
                 submitted: data["submitted"].as_bool().unwrap_or(false),
-                url: data["url"].as_str().unwrap_or_default().to_owned(),
+                url: mask_browser_url(data["url"].as_str().unwrap_or_default()),
                 origin: data["origin"].as_str().unwrap_or_default().to_owned(),
             })
         }
         .await;
-        self.redacted_result(result, &self.output_redactions())
+        self.redacted_session_result(result)
     }
 
     #[tool(
@@ -1308,12 +1308,12 @@ impl VaultMcp {
                 item: item_name,
                 item_type,
                 filled: data["filled"].as_u64().unwrap_or(0),
-                url: data["url"].as_str().unwrap_or_default().to_owned(),
+                url: mask_browser_url(data["url"].as_str().unwrap_or_default()),
                 origin: data["origin"].as_str().unwrap_or_default().to_owned(),
             })
         }
         .await;
-        self.redacted_result(result, &self.output_redactions())
+        self.redacted_session_result(result)
     }
 
     #[tool(
@@ -1344,12 +1344,12 @@ impl VaultMcp {
             Ok(BrowserClickOutput {
                 clicked_text: data["clickedText"].as_str().unwrap_or_default().to_owned(),
                 tag: data["tag"].as_str().unwrap_or_default().to_owned(),
-                url: data["url"].as_str().unwrap_or_default().to_owned(),
+                url: mask_browser_url(data["url"].as_str().unwrap_or_default()),
                 origin: data["origin"].as_str().unwrap_or_default().to_owned(),
             })
         }
         .await;
-        self.redacted_result(result, &self.output_redactions())
+        self.redacted_session_result(result)
     }
 
     #[tool(
@@ -1531,7 +1531,7 @@ impl VaultMcp {
             }
         }
         .await;
-        self.redacted_result(result, &self.output_redactions())
+        self.redacted_session_result(result)
     }
 
     #[tool(
@@ -2203,75 +2203,25 @@ impl VaultMcp {
                 || (fmt == "auto" && raw.contains("PRIVATE KEY-----"));
 
             let mut ingested_keys: Vec<String> = Vec::new();
-            let mut new_modules: Vec<crate::model::ItemModule> = Vec::new();
-            let mut new_secrets = crate::model::SecretBundle::default();
-            let detected_type: &str;
-
-            if is_private_key {
-                if !raw.contains("PRIVATE KEY-----") {
-                    return Err("File does not appear to be a PEM/OpenSSH private key".to_owned());
-                }
-                detected_type = "ssh";
-                new_modules.push(crate::model::ItemModule {
-                    kind: "privateKey".to_owned(),
-                    name: "privateKey".to_owned(),
-                    value: String::new(),
-                    agent_visible: Some(false),
-                });
-                self.remember_secret(&raw);
-                new_secrets.private_key = Some(raw.to_string());
-                new_secrets.private_key_name = Some(file_name.clone());
-                ingested_keys.push("privateKey".to_owned());
+            let mut sealed_fields: std::collections::BTreeMap<String, String> =
+                std::collections::BTreeMap::new();
+            let existing = if !input.item.trim().is_empty() {
+                Some(self.resolve_item_for_action(&input.item, None)?)
             } else {
-                let vars = crate::extract::ingest::parse_env_vars(&raw);
-                if vars.is_empty() {
-                    return Err("No KEY=VALUE entries found in source file".to_owned());
-                }
-                detected_type = "custom";
-                for var in vars {
-                    new_modules.push(crate::model::ItemModule {
-                        kind: "customSecret".to_owned(),
-                        name: var.key.clone(),
-                        value: String::new(),
-                        agent_visible: Some(false),
-                    });
-                    if field_holds_secret(&var.key, &var.value) {
-                        self.remember_secret(&var.value);
-                    }
-                    new_secrets.named_secrets.insert(var.key.clone(), var.value);
-                    ingested_keys.push(var.key);
-                }
-            }
-
-            let saved = if !input.item.trim().is_empty() {
-                let existing = self.resolve_item_for_action(&input.item, None)?;
-                for key in &ingested_keys {
-                    if existing.secrets.get(key).is_some() && !input.overwrite {
-                        return Err(format!(
-                            "Field '{key}' already exists on '{}'. Pass overwrite=true to update it.",
-                            existing.stored.name
-                        ));
-                    }
-                }
-                let mut modules = existing.stored.modules.clone();
-                for m in new_modules {
-                    let exists = modules.iter().any(|cur| {
-                        cur.kind == m.kind
-                            && (cur.kind != "customSecret" || cur.name.eq_ignore_ascii_case(&m.name))
-                    });
-                    if !exists {
-                        modules.push(m);
-                    }
-                }
+                None
+            };
+            let expected_updated_at = existing
+                .as_ref()
+                .map(|conn| conn.stored.updated_at.clone());
+            let mut conn_input = if let Some(existing) = existing {
                 let item_type = existing.stored.item_type().to_owned();
-                let expected = existing.stored.updated_at.clone();
-                let conn_input = crate::model::ConnectionInput {
+                crate::model::ConnectionInput {
                     login_uris: existing.stored.login_uris,
                     item_type,
                     folder: existing.stored.folder,
                     favorite: existing.stored.favorite,
                     id: Some(existing.stored.id),
-                    modules,
+                    modules: existing.stored.modules,
                     name: existing.stored.name,
                     enabled: existing.stored.enabled,
                     description: existing.stored.description,
@@ -2283,20 +2233,17 @@ impl VaultMcp {
                     api_auth_headers: existing.stored.api_auth_headers,
                     test_path: existing.stored.test_path,
                     remove_secret_names: Vec::new(),
-                    secrets: new_secrets,
-                };
-                self.vault
-                    .save_connection_checked(conn_input, Some(expected.as_str()))
-                    .map_err(|e| e.to_string())?
+                    secrets: existing.secrets,
+                }
             } else {
                 let name = if input.name.trim().is_empty() {
                     format!("Env · {file_name}")
                 } else {
                     input.name.trim().to_owned()
                 };
-                let conn_input = crate::model::ConnectionInput {
+                crate::model::ConnectionInput {
                     login_uris: Vec::new(),
-                    item_type: detected_type.to_owned(),
+                    item_type: if is_private_key { "ssh" } else { "custom" }.to_owned(),
                     folder: if input.folder.trim().is_empty() {
                         if is_private_key {
                             "SSH".to_owned()
@@ -2308,7 +2255,7 @@ impl VaultMcp {
                     },
                     favorite: false,
                     id: None,
-                    modules: new_modules,
+                    modules: Vec::new(),
                     name,
                     enabled: true,
                     description: if input.description.trim().is_empty() {
@@ -2324,17 +2271,61 @@ impl VaultMcp {
                     api_auth_headers: Vec::new(),
                     test_path: String::new(),
                     remove_secret_names: Vec::new(),
-                    secrets: new_secrets,
-                };
-                self.vault
-                    .save_connection(conn_input)
-                    .map_err(|e| e.to_string())?
+                    secrets: crate::model::SecretBundle::default(),
+                }
             };
 
-            let mut written_template: Option<String> = None;
-            let mut template_removed_keys: Vec<String> = Vec::new();
-            let mut template_removed_lines = 0;
-            if let Some(tpl_raw) = input.seal_template_path.as_deref().filter(|s| !s.trim().is_empty()) {
+            if is_private_key {
+                if !raw.contains("PRIVATE KEY-----") {
+                    return Err("File does not appear to be a PEM/OpenSSH private key".to_owned());
+                }
+                if conn_input.secrets.get("privateKey").is_some() && !input.overwrite {
+                    return Err(format!(
+                        "Field 'privateKey' already exists on '{}'. Pass overwrite=true to update it.",
+                        conn_input.name
+                    ));
+                }
+                if !conn_input.modules.iter().any(|m| m.kind == "privateKey") {
+                    conn_input.modules.push(crate::model::ItemModule {
+                        kind: "privateKey".to_owned(),
+                        name: "privateKey".to_owned(),
+                        value: String::new(),
+                        agent_visible: Some(false),
+                    });
+                }
+                self.remember_secret(&raw);
+                conn_input.secrets.private_key = Some(raw.to_string());
+                conn_input.secrets.private_key_name = Some(file_name.clone());
+                ingested_keys.push("privateKey".to_owned());
+            } else {
+                let vars = crate::extract::ingest::parse_env_config_vars(&raw);
+                if vars.is_empty() {
+                    return Err("No KEY=VALUE entries found in source file".to_owned());
+                }
+                let target_name = expected_updated_at
+                    .as_ref()
+                    .map(|_| conn_input.name.clone());
+                let mapped = crate::extract::ingest::apply_env_vars_to_connection(
+                    &mut conn_input,
+                    &vars,
+                    input.overwrite,
+                    target_name.as_deref(),
+                )
+                .map_err(|e| e.to_string())?;
+                for (env_key, vault_field, value) in mapped {
+                    if field_holds_secret(&vault_field, &value) {
+                        self.remember_secret(&value);
+                    }
+                    sealed_fields.insert(env_key, vault_field.clone());
+                    ingested_keys.push(vault_field);
+                }
+            }
+
+            let template_target = if let Some(tpl_raw) = input
+                .seal_template_path
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+            {
                 if is_private_key {
                     return Err("sealTemplatePath is only supported for .env files".to_owned());
                 }
@@ -2346,13 +2337,46 @@ impl VaultMcp {
                             .to_owned(),
                     );
                 }
+                let same_as_source = match (
+                    std::fs::canonicalize(&tpl_path),
+                    std::fs::canonicalize(&source_path),
+                ) {
+                    (Ok(left), Ok(right)) => left == right,
+                    _ => tpl_path == source_path,
+                };
+                if same_as_source {
+                    return Err(
+                        "Refused to overwrite the source file with its sealed template; write the template to another path"
+                            .to_owned(),
+                    );
+                }
                 if tpl_path.exists() && !input.overwrite_template {
                     return Err(format!(
                         "Template path already exists and overwriteTemplate is false: {}",
                         tpl_path.display()
                     ));
                 }
-                let sealed_template = crate::extract::ingest::seal_env_template(&raw);
+                Some(tpl_path)
+            } else {
+                None
+            };
+
+            let saved = if let Some(expected) = expected_updated_at {
+                self.vault
+                    .save_connection_checked(conn_input, Some(expected.as_str()))
+                    .map_err(|e| e.to_string())?
+            } else {
+                self.vault
+                    .save_connection(conn_input)
+                    .map_err(|e| e.to_string())?
+            };
+
+            let mut written_template: Option<String> = None;
+            let mut template_removed_keys: Vec<String> = Vec::new();
+            let mut template_removed_lines = 0;
+            if let Some(tpl_path) = template_target {
+                let sealed_template =
+                    crate::extract::ingest::seal_env_template_with_fields(&raw, &sealed_fields);
                 template_removed_lines = sealed_template.removed_lines;
                 template_removed_keys = sealed_template.removed_keys;
                 let sealed = sealed_template.text;

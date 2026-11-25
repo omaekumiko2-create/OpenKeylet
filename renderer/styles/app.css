@@ -3709,6 +3709,7 @@ html[data-theme="light"] .metric-grid {
 .endpoint-box::after { content: none; }
 .endpoint-box span { color: var(--state-active-ink); font-size: 9px; letter-spacing: 0.08em; }
 .endpoint-box code { color: var(--ink); font-size: 11px; }
+#key-location-box { margin: var(--region-gap) 0 0; }
 
 .browser-connect-note { margin-top: 12px; padding: 0; grid-template-columns: 1fr; gap: 4px; }
 .browser-connect-note::before,

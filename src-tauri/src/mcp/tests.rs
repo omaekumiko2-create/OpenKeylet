@@ -3205,3 +3205,206 @@ fn only_secret_like_custom_fields_join_the_session_wide_redaction_set() {
         assert!(!field_holds_secret(name, value), "{name}={value}");
     }
 }
+
+#[tokio::test]
+async fn secret_ingest_file_maps_reserved_lowercase_and_dotted_keys_safely() {
+    let dir = tempdir().unwrap();
+    let vault = Vault::open(dir.path().join("vault")).unwrap();
+    let mcp = VaultMcp::new(vault.clone());
+
+    let src_env = dir.path().join("app.env");
+    let tpl_env = dir.path().join("app.env.template");
+    std::fs::write(
+        &src_env,
+        "USERNAME=svc-user\n\
+         PASSWORD=super-secret-pass-42\n\
+         API_KEY=sk_live_primary_999\n\
+         TOKEN=tok_secondary_888\n\
+         db_password=lower-db-secret-77\n\
+         spring.datasource.password=dotted-secret-66\n",
+    )
+    .unwrap();
+
+    // Refuses overwriting the source file with its sealed template.
+    let self_overwrite = mcp
+        .secret_ingest_file(Parameters(SecretIngestFileInput {
+            path: src_env.to_string_lossy().into_owned(),
+            name: "Mixed Env".into(),
+            item: String::new(),
+            format: "auto".into(),
+            folder: String::new(),
+            description: String::new(),
+            overwrite: false,
+            seal_template_path: Some(src_env.to_string_lossy().into_owned()),
+            overwrite_template: true,
+        }))
+        .await;
+    assert_eq!(self_overwrite.is_error, Some(true));
+
+    let res = mcp
+        .secret_ingest_file(Parameters(SecretIngestFileInput {
+            path: src_env.to_string_lossy().into_owned(),
+            name: "Mixed Env".into(),
+            item: String::new(),
+            format: "auto".into(),
+            folder: String::new(),
+            description: String::new(),
+            overwrite: false,
+            seal_template_path: Some(tpl_env.to_string_lossy().into_owned()),
+            overwrite_template: false,
+        }))
+        .await;
+    assert_eq!(res.is_error, Some(false), "{res:?}");
+    let out = structured_value(&res);
+    let out_text = out.to_string();
+    for secret in [
+        "super-secret-pass-42",
+        "sk_live_primary_999",
+        "tok_secondary_888",
+        "lower-db-secret-77",
+        "dotted-secret-66",
+    ] {
+        assert!(!out_text.contains(secret), "leaked {secret}: {out_text}");
+    }
+    assert!(out["templateRemovedLines"].is_null(), "{out}");
+    assert!(out["templateRemovedKeys"].is_null(), "{out}");
+    let keys: Vec<String> = out["ingestedKeys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_owned())
+        .collect();
+    assert!(keys.contains(&"username".to_owned()), "{keys:?}");
+    assert!(keys.contains(&"password".to_owned()), "{keys:?}");
+    assert!(keys.contains(&"apiCredential".to_owned()), "{keys:?}");
+    assert!(keys.contains(&"TOKEN_secret".to_owned()), "{keys:?}");
+    assert!(keys.contains(&"db_password".to_owned()), "{keys:?}");
+    assert!(keys.contains(&"spring.datasource.password".to_owned()), "{keys:?}");
+
+    let tpl = std::fs::read_to_string(&tpl_env).unwrap();
+    assert!(tpl.contains("USERNAME={{openkeylet:username}}"), "{tpl}");
+    assert!(tpl.contains("PASSWORD={{openkeylet:password}}"), "{tpl}");
+    assert!(tpl.contains("API_KEY={{openkeylet:apiCredential}}"), "{tpl}");
+    assert!(tpl.contains("TOKEN={{openkeylet:TOKEN_secret}}"), "{tpl}");
+    assert!(tpl.contains("db_password={{openkeylet:db_password}}"), "{tpl}");
+    assert!(
+        tpl.contains("spring.datasource.password={{openkeylet:spring.datasource.password}}"),
+        "{tpl}"
+    );
+
+    let item_id = Uuid::parse_str(out["itemId"].as_str().unwrap()).unwrap();
+    let stored = vault.get_connection(item_id).unwrap();
+    assert_eq!(stored.secrets.get("password"), Some("super-secret-pass-42"));
+    assert_eq!(stored.secrets.get("apiCredential"), Some("sk_live_primary_999"));
+    assert_eq!(stored.secrets.get("TOKEN_secret"), Some("tok_secondary_888"));
+    assert_eq!(stored.secrets.get("db_password"), Some("lower-db-secret-77"));
+    assert_eq!(
+        stored.secrets.get("spring.datasource.password"),
+        Some("dotted-secret-66")
+    );
+
+    // Re-ingesting onto the same item refuses without overwrite=true, and updates with overwrite=true.
+    std::fs::write(&src_env, "PASSWORD=rotated-pass-99\nTOKEN=tok_rotated_77\n").unwrap();
+    let blocked = mcp
+        .secret_ingest_file(Parameters(SecretIngestFileInput {
+            path: src_env.to_string_lossy().into_owned(),
+            name: String::new(),
+            item: "Mixed Env".into(),
+            format: "auto".into(),
+            folder: String::new(),
+            description: String::new(),
+            overwrite: false,
+            seal_template_path: None,
+            overwrite_template: false,
+        }))
+        .await;
+    assert_eq!(blocked.is_error, Some(true));
+
+    let updated = mcp
+        .secret_ingest_file(Parameters(SecretIngestFileInput {
+            path: src_env.to_string_lossy().into_owned(),
+            name: String::new(),
+            item: "Mixed Env".into(),
+            format: "auto".into(),
+            folder: String::new(),
+            description: String::new(),
+            overwrite: true,
+            seal_template_path: None,
+            overwrite_template: false,
+        }))
+        .await;
+    assert_eq!(updated.is_error, Some(false), "{updated:?}");
+    let after = vault.get_connection(item_id).unwrap();
+    assert_eq!(after.secrets.get("password"), Some("rotated-pass-99"));
+    assert_eq!(after.secrets.get("apiCredential"), Some("tok_rotated_77"));
+}
+
+#[test]
+fn mask_browser_url_strips_userinfo_and_masks_query_and_fragment() {
+    assert_eq!(
+        mask_browser_url("https://alice:pw@example.com/cb?code=secret123&state=xyz&code=dup#access_token=abc"),
+        "https://example.com/cb?code=…&state=…#…"
+    );
+    assert_eq!(
+        mask_browser_url("https://example.com/dashboard"),
+        "https://example.com/dashboard"
+    );
+    assert_eq!(mask_browser_url(""), "");
+    assert_eq!(mask_browser_url("not a url"), "");
+}
+
+#[test]
+fn output_redactor_cache_hits_and_invalidates_on_vault_or_session_change() {
+    let dir = tempdir().unwrap();
+    let vault = Vault::open(dir.path().join("vault")).unwrap();
+    let mcp = VaultMcp::new(vault.clone());
+
+    let first = mcp.output_redactor();
+    let second = mcp.output_redactor();
+    assert!(Arc::ptr_eq(&first, &second), "unchanged vault must hit cache");
+
+    // In-process vault write immediately invalidates even within the same millisecond.
+    let mut secrets = SecretBundle::default();
+    secrets.password = Some("cache-invalidate-secret-1".into());
+    vault
+        .save_connection(ConnectionInput {
+            login_uris: Vec::new(),
+            item_type: "login".into(),
+            folder: String::new(),
+            favorite: false,
+            id: None,
+            modules: vec![ItemModule {
+                kind: "password".into(),
+                agent_visible: Some(false),
+                ..Default::default()
+            }],
+            name: "Cached Item".into(),
+            enabled: true,
+            description: String::new(),
+            http_auth_type: String::new(),
+            private_key_import_path: String::new(),
+            auth_header: String::new(),
+            auth_location: String::new(),
+            auth_prefix: String::new(),
+            api_auth_headers: Vec::new(),
+            test_path: String::new(),
+            remove_secret_names: Vec::new(),
+            secrets,
+        })
+        .unwrap();
+    let third = mcp.output_redactor();
+    assert!(!Arc::ptr_eq(&second, &third));
+    assert_eq!(
+        third.redact_string("leaked cache-invalidate-secret-1 here".into()),
+        "leaked [REDACTED] here"
+    );
+
+    // Session-remembered secret also invalidates cache immediately.
+    mcp.remember_secret("ephemeral-session-token-99");
+    let fourth = mcp.output_redactor();
+    assert!(!Arc::ptr_eq(&third, &fourth));
+    assert_eq!(
+        fourth.redact_string("out=ephemeral-session-token-99".into()),
+        "out=[REDACTED]"
+    );
+}
