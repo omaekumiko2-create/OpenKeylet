@@ -228,9 +228,23 @@ try {
     `OpenKeylet did not create its vault in the expected isolated location: ${expectedVault}`,
   );
   if (process.platform === "darwin") {
-    const keyFile = path.join(expectedVault, "master.key");
-    assert.ok(fs.existsSync(keyFile), "macOS OpenKeylet did not create its private master-key file");
+    const keyDir = path.join(
+      smokeEnv.HOME,
+      "Library",
+      "Application Support",
+      "OpenKeylet",
+    );
+    const keyFile = path.join(keyDir, "master.key");
+    assert.ok(
+      fs.existsSync(keyFile),
+      `macOS OpenKeylet did not create its separated master-key file: ${keyFile}`,
+    );
+    assert.ok(
+      !fs.existsSync(path.join(expectedVault, "master.key")),
+      "macOS default vault should keep master.key separated outside the data directory",
+    );
     assert.equal(fs.statSync(expectedVault).mode & 0o777, 0o700, "macOS vault directory is not mode 0700");
+    assert.equal(fs.statSync(keyDir).mode & 0o777, 0o700, "macOS key directory is not mode 0700");
     assert.equal(fs.statSync(keyFile).mode & 0o777, 0o600, "macOS master-key file is not mode 0600");
   }
   console.log("OpenKeylet config and MCP stdio smoke passed.");
