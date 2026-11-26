@@ -9,7 +9,12 @@
 </p>
 
 <p align="center">
-  <code>v0.20.0</code>&nbsp;·&nbsp;<code>Local-First</code>&nbsp;·&nbsp;<code>XChaCha20-Poly1305</code>&nbsp;·&nbsp;<code>26 MCP Tools</code>&nbsp;·&nbsp;<code>Windows / macOS / Linux</code>&nbsp;·&nbsp;<code>MIT License</code>
+  <a href="https://github.com/omaekumiko2-create/OpenKeylet/releases/latest"><img src="https://img.shields.io/github/v/release/omaekumiko2-create/OpenKeylet?label=Release&color=16a34a" alt="Latest Release" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-2563eb" alt="MIT License" /></a>
+  <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-24292f" alt="Windows | macOS | Linux" />
+  <img src="https://img.shields.io/badge/Crypto-XChaCha20--Poly1305-374151" alt="XChaCha20-Poly1305" />
+  <img src="https://img.shields.io/badge/MCP-26%20Tools%20%C2%B7%20stdio-0f766e" alt="26 MCP Tools" />
+  <a href="#community-feedback--long-term-maintenance"><img src="https://img.shields.io/badge/Maintained-Long--Term-16a34a" alt="Long-Term Maintained" /></a>
 </p>
 
 <p align="center">
@@ -27,6 +32,8 @@
   &nbsp;&nbsp;·&nbsp;&nbsp;
   <a href="#complete-mcp-surface-26-tools--native-cli-bridge">26 Tools</a>
   &nbsp;&nbsp;·&nbsp;&nbsp;
+  <a href="#community-feedback--long-term-maintenance">Feedback &amp; Discussions</a>
+  &nbsp;&nbsp;·&nbsp;&nbsp;
   <a href="SECURITY.md">Security Policy</a>
 </p>
 
@@ -37,7 +44,7 @@
 When an agent needs to SSH into a server, call an authenticated API, render a `.env` secret template, fill a browser login or checkout form, or sign in with a **WebAuthn Passkey**, OpenKeylet executes the credential step **locally on your machine** — making everyday agent workflows effortless while keeping hidden plaintext out of LLM context, model proxies, and chat logs.
 
 > [!NOTE]
-> **Open-Source Community Philosophy**: OpenKeylet is a free, open-source community convenience tool ([MIT](LICENSE), provided **as-is with no formal security warranty**). Its core purpose is to make AI agent credential workflows smooth, fast, and practical while preventing everyday accidental leaks — with complete honesty about what it does and does not defend against.
+> **Long-Term Maintained Open-Source Project**: OpenKeylet is a free, **actively and long-term maintained** open-source community tool ([MIT](LICENSE), provided **as-is with no formal security warranty**). Its core purpose is to make AI agent credential workflows smooth, fast, and practical while preventing everyday accidental leaks — with complete honesty about what it does and does not defend against. We warmly welcome **all kinds of feedback, bug reports, UI/UX suggestions, feature ideas, and open discussions** in [Issues](https://github.com/omaekumiko2-create/OpenKeylet/issues) and [Discussions](https://github.com/omaekumiko2-create/OpenKeylet/discussions).
 
 ---
 
@@ -406,6 +413,18 @@ node scripts/test-adversarial-e2e.mjs
 
 ---
 
+## Community, Feedback & Long-Term Maintenance
+
+**OpenKeylet is a long-term maintained project.** We continuously evolve it across Windows, macOS, and Linux — keeping up with new AI agent clients, browser autofill & Passkey quirks, third-party password vault formats, and security hardening.
+
+Every form of feedback helps shape OpenKeylet, no matter how brief or informal:
+
+- **Bug Reports & Edge Cases**: Hit a crash, site autofill quirk, OS/platform glitch, or unexpected behavior? [Open an Issue](https://github.com/omaekumiko2-create/OpenKeylet/issues/new) — even a short note or screenshot is welcome.
+- **Feature Requests, UX Suggestions & Open Discussions**: Have an idea for a new workflow, UI polish, password-manager importer, or AI agent integration — or just want to share how you use OpenKeylet? [Start or join a Discussion](https://github.com/omaekumiko2-create/OpenKeylet/discussions).
+- **Pull Requests & Contributions**: Fixes, docs improvements, localizations, and compatibility patches are always welcome.
+
+---
+
 ## License
 
-[MIT](LICENSE) — open-source, community-driven, inspectable, and run completely on your own hardware.
+[MIT](LICENSE) — open-source, long-term maintained, inspectable, and run completely on your own hardware.

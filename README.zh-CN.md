@@ -9,7 +9,12 @@
 </p>
 
 <p align="center">
-  <code>v0.20.0</code>&nbsp;·&nbsp;<code>本地优先</code>&nbsp;·&nbsp;<code>XChaCha20-Poly1305</code>&nbsp;·&nbsp;<code>26 个 MCP 工具</code>&nbsp;·&nbsp;<code>Windows / macOS / Linux</code>&nbsp;·&nbsp;<code>MIT 开源</code>
+  <a href="https://github.com/omaekumiko2-create/OpenKeylet/releases/latest"><img src="https://img.shields.io/github/v/release/omaekumiko2-create/OpenKeylet?label=Release&color=16a34a" alt="Latest Release" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-2563eb" alt="MIT License" /></a>
+  <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-24292f" alt="Windows | macOS | Linux" />
+  <img src="https://img.shields.io/badge/Crypto-XChaCha20--Poly1305-374151" alt="XChaCha20-Poly1305" />
+  <img src="https://img.shields.io/badge/MCP-26%20Tools%20%C2%B7%20stdio-0f766e" alt="26 MCP Tools" />
+  <a href="#长期维护与社区反馈"><img src="https://img.shields.io/badge/Maintained-Long--Term-16a34a" alt="长期维护项目" /></a>
 </p>
 
 <p align="center">
@@ -27,6 +32,8 @@
   &nbsp;&nbsp;·&nbsp;&nbsp;
   <a href="#完整-mcp-工具列表26-个与原生-cli-底座">26 个工具</a>
   &nbsp;&nbsp;·&nbsp;&nbsp;
+  <a href="#长期维护与社区反馈">反馈与讨论</a>
+  &nbsp;&nbsp;·&nbsp;&nbsp;
   <a href="SECURITY.zh-CN.md">安全策略</a>
 </p>
 
@@ -37,7 +44,7 @@
 当 Agent 需要登录服务器（SSH / SFTP）、调用认证 API、渲染 `.env` 密钥模板、填写网页账号与支付表单，或者完成 **WebAuthn Passkey** 无密登录时，OpenKeylet 直接在**你的本机代为完成认证动作**——既省去反复复制粘贴的麻烦，又把默认隐藏的明文秘密拦在大模型上下文、中转代理和聊天记录之外。
 
 > [!NOTE]
-> **开源公益定位与诚实声明**：OpenKeylet 是一个免费开源的社区效率工具（[MIT](LICENSE) 协议，按“现状 / AS-IS”提供，**不承诺任何形式的安全保障**）。我们的核心目标非常纯粹：**让开发者和 AI Agent 的日常凭据协作尽可能丝滑、顺手、少踩坑**，同时用扎实但克制的工程机制减少日常意外泄密，并把“保护什么、明确不防什么”摊在台面上讲清楚。
+> **长期维护的开源项目 & 诚实定位**：OpenKeylet 是一个免费开源、**长期持续维护**的社区效率工具（[MIT](LICENSE) 协议，按“现状 / AS-IS”提供，**不承诺任何形式的安全保障**）。我们的核心目标非常纯粹：**让开发者和 AI Agent 的日常凭据协作尽可能丝滑、顺手、少踩坑**，同时把“保护什么、明确不防什么”摊在台面上讲清楚。**非常欢迎各种形式的反馈、Bug 报告、交互/视觉建议、新功能想法与开放讨论**，欢迎随时前往 [Issues](https://github.com/omaekumiko2-create/OpenKeylet/issues) 或 [Discussions](https://github.com/omaekumiko2-create/OpenKeylet/discussions) 交流！
 
 ---
 
@@ -406,6 +413,18 @@ node scripts/test-adversarial-e2e.mjs
 
 ---
 
+## 长期维护与社区反馈
+
+**OpenKeylet 是一个长期维护的开源项目。** 我们会持续跟进 Windows / macOS / Linux 三端适配、主流 AI Agent 客户端接入、网页自动填充与 Passkey 兼容性、第三方密码库迁移格式以及日常安全加固。
+
+无论是一句话吐槽、截图反馈还是完整方案，我们都非常欢迎各种形式的交流与建议：
+
+- **提交 Bug 与异常场景**：遇到崩溃、特定网站填充异常、系统兼容问题或任何不顺手的地方，欢迎直接 [新建 Issue](https://github.com/omaekumiko2-create/OpenKeylet/issues/new)（哪怕只有一句话或一张截图也没关系）。
+- **功能建议、体验优化与自由讨论**：有新功能想法、界面/交互建议、希望支持的密码管理器或 Agent 客户端，或者想分享你的实战用法，欢迎前往 [Discussions 讨论区](https://github.com/omaekumiko2-create/OpenKeylet/discussions) 畅所欲言。
+- **参与贡献（PR）**：欢迎提交 Bug 修复、文档完善、多语言润色或新适配代码。
+
+---
+
 ## 许可证
 
-[MIT](LICENSE) — 开源公益、自由使用、审查代码，并完全运行在你自己的设备上。
+[MIT](LICENSE) — 长期维护、开源公益、自由使用与审查代码，并完全运行在你自己的设备上。

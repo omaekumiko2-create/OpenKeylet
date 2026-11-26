@@ -7,7 +7,7 @@
 > **本地优先的加密密码库、Passkey 管理器，以及面向 AI Agent 的零明文 `stdio` MCP 凭据中继器。**
 > *Local-first encrypted password vault, Passkey manager, and zero-plaintext `stdio` MCP credential relay for AI agents.*
 >
-> **开源公益声明 / Community Disclaimer**：OpenKeylet 以 [MIT](https://github.com/omaekumiko2-create/OpenKeylet/blob/main/LICENSE) 协议开源，按现状（AS-IS）免费提供，**不承诺任何形式的安全保障**——致力于让开发者与 AI Agent 的凭据协作更顺手、更省心，同时清晰划定能力与安全边界。
+> **长期维护 & 开源公益声明 / Long-Term Maintained Project**：OpenKeylet 是一个**长期持续维护**的开源项目（[MIT](https://github.com/omaekumiko2-create/OpenKeylet/blob/main/LICENSE) 协议，按现状 AS-IS 免费提供，**不承诺任何形式的安全保障**）。非常欢迎各种形式的反馈、Bug 报告、体验建议与功能讨论：[Issues](https://github.com/omaekumiko2-create/OpenKeylet/issues) · [Discussions](https://github.com/omaekumiko2-create/OpenKeylet/discussions)。
 
 ---
 
@@ -110,3 +110,5 @@
 | **Linux x64 Headless** | `OpenKeylet_0.20.0_linux-headless-x64.tar.gz` | 零 GUI 依赖，完整 MCP / CLI / SSH / `admin serve`，适合云端 VPS |
 
 > 覆盖升级二进制不会影响已有本地密码库；所有官方构建均附带 Ed25519 签名校验清单 `latest.json` 与 `SHA256SUMS.txt`。完整教程请参阅 [简体中文文档](https://github.com/omaekumiko2-create/OpenKeylet/blob/main/README.zh-CN.md) / [English README](https://github.com/omaekumiko2-create/OpenKeylet/blob/main/README.md)。
+>
+> **长期维护 · 欢迎反馈 / Feedback Welcome**：OpenKeylet 将持续长期维护与迭代。欢迎在 [GitHub Issues](https://github.com/omaekumiko2-create/OpenKeylet/issues) 提交 Bug 与兼容性问题，或在 [GitHub Discussions](https://github.com/omaekumiko2-create/OpenKeylet/discussions) 分享建议、想法与使用经验！

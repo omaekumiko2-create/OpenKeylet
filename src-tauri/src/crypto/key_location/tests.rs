@@ -587,8 +587,14 @@ fn windows_key_files_and_new_directories_have_owner_only_protected_dacl() {
             "expected protected DACL on {}: {sddl}",
             path.display()
         );
+        // Windows SDDL canonically abbreviates well-known user SIDs such as the
+        // built-in local Administrator account (`S-1-5-21-...-500` -> `LA`) and
+        // LocalSystem (`S-1-5-18` -> `SY`).
+        let owner_in_dacl = sddl.contains(&format!(";;;{sid})"))
+            || (sid.ends_with("-500") && sddl.contains(";;;LA)"))
+            || (sid == "S-1-5-18" && sddl.contains(";;;SY)"));
         assert!(
-            sddl.contains(sid),
+            owner_in_dacl,
             "expected current user SID {sid} in DACL on {}: {sddl}",
             path.display()
         );
