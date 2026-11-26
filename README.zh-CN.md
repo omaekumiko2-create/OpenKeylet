@@ -22,7 +22,7 @@
   &nbsp;&nbsp;·&nbsp;&nbsp;
   <a href="README.md"><strong>English</strong></a>
   &nbsp;&nbsp;·&nbsp;&nbsp;
-  <a href="#3-分钟上手最常用的-4-个核心操作">3 分钟上手</a>
+  <a href="#3-分钟上手最常用的-5-个核心操作">3 分钟上手</a>
   &nbsp;&nbsp;·&nbsp;&nbsp;
   <a href="#更多界面一览">更多界面</a>
   &nbsp;&nbsp;·&nbsp;&nbsp;
@@ -48,7 +48,7 @@
 
 ---
 
-## 3 分钟上手：最常用的 4 个核心操作
+## 3 分钟上手：最常用的 5 个核心操作
 
 ### 1 · 一键绑定你的 AI Agent
 
@@ -101,7 +101,32 @@
 
 ---
 
-### 3 · 用 Import 功能 10 秒快速保存凭据
+### 3 · 纯语言对话让 Agent 零接触存入密钥（明文绝不进对话）
+
+刚在网页后台签发一次性 API Key、刚调接口拿到新 Token、需要生成新密码 / SSH 密钥，或者要把本机 `.env` / 私钥文件入库？**全程无需你复制粘贴，也不用让大模型看到任何明文**——直接在对话框里用自然语言交代一声，OpenKeylet 会在你的本机直接完成采集、生成并加密写入密码库，返回给 Agent 的只有安全句柄：
+
+<p align="center">
+  <img src=".github/assets/demo-agent-save-secret.gif" alt="通过自然语言让 AI Agent 将浏览器一次性 API Key 零接触直存 OpenKeylet 动图演示" width="100%" />
+</p>
+
+<details open>
+  <summary><strong>零接触存密对话指令速查（直接这样跟 Agent 说）</strong></summary>
+
+| 常见存密场景 | 在 Agent 对话框里直接这样说 | OpenKeylet 本机零明文调用 |
+| --- | --- | --- |
+| **抓取网页一次性 API Key** | `把我当前打开的浏览器标签页里刚生成的一次性 API Key 直接存进 OpenKeylet，命名为「Cloud Prod API」，不要打印也不要读取明文。` | `browser_inspect` → `browser_save_key` |
+| **保存网页刚提交的新登录** | `把我刚在这个网页登录的账号密码直接存进 OpenKeylet，命名为「Vercel Prod」。` | `browser_save_login` |
+| **保存 API 接口签发的新 Token** | `用「Cloudflare DNS」调接口创建一个最小权限部署 Token，把返回的密钥直接捕获存进 OpenKeylet，别把明文输出到对话里。` | `http_send(captureSecrets / holdResponse)` → `http_save_secret` |
+| **本机随机生成高强度密码** | `在 OpenKeylet 里为「Staging Postgres」本地生成一条 32 位随机密码，并直接渲染到 .env.local，不要打印密码。` | `secret_generate` → `secret_write_file` |
+| **本机生成 Ed25519 SSH 密钥对** | `在 OpenKeylet 里给「Staging GPU Node」生成一对全新的 Ed25519 SSH 密钥，只把公钥发给我用来贴进 GitHub。` | `ssh_keygen` *（仅返回公钥与指纹，私钥永不出库）* |
+| **无接触吞入本机 `.env` / 私钥文件** | `用 secret_ingest_file 把本地 ./.env.production 加密存入 OpenKeylet 并生成密封 .env.template，不要回读原文件明文。` | `secret_ingest_file` |
+| **建好空壳草稿由你亲自粘贴** | `在 OpenKeylet 里帮我建一个「Stripe Billing」草稿，填好接口地址 https://api.stripe.com/v1，密钥栏留空我自己去桌面端贴。` | `draft_prepare` |
+
+</details>
+
+---
+
+### 4 · 用 Import 功能 10 秒快速保存凭据与老密码库迁入
 
 <table>
   <tr>
@@ -140,7 +165,7 @@
 
 ---
 
-### 4 · 把扩展放入浏览器 & 浏览器使用场景
+### 5 · 把扩展放入浏览器 & 浏览器使用场景
 
 #### 第一步：3 步把 OpenKeylet 扩展装进 Chrome / Edge / Brave
 

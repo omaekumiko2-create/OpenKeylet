@@ -22,7 +22,7 @@
   &nbsp;&nbsp;·&nbsp;&nbsp;
   <a href="README.zh-CN.md"><strong>简体中文</strong></a>
   &nbsp;&nbsp;·&nbsp;&nbsp;
-  <a href="#3-minute-quickstart-4-everyday-workflows">Quickstart</a>
+  <a href="#3-minute-quickstart-5-everyday-workflows">Quickstart</a>
   &nbsp;&nbsp;·&nbsp;&nbsp;
   <a href="#more-interfaces">Real UI</a>
   &nbsp;&nbsp;·&nbsp;&nbsp;
@@ -48,7 +48,7 @@ When an agent needs to SSH into a server, call an authenticated API, render a `.
 
 ---
 
-## 3-Minute Quickstart: 4 Everyday Workflows
+## 3-Minute Quickstart: 5 Everyday Workflows
 
 ### 1 · Bind Your AI Agent in 1 Click
 
@@ -101,7 +101,32 @@ When an agent needs to SSH into a server, call an authenticated API, render a `.
 
 ---
 
-### 3 · Save Credentials in 10 Seconds with the Offline Import Hub
+### 3 · Save Secrets Hands-Free by Talking to Your Agent (Zero-Touch)
+
+You never have to copy a freshly generated API key, password, or SSH private key into chat. Simply tell your AI agent in natural language — OpenKeylet captures, generates, or ingests the secret **directly on localhost into your encrypted vault** while keeping raw plaintext completely out of LLM context:
+
+<p align="center">
+  <img src=".github/assets/demo-agent-save-secret.gif" alt="Save a one-time API key straight from your browser into OpenKeylet via natural-language chat with zero plaintext sent to the LLM" width="100%" />
+</p>
+
+<details open>
+  <summary><strong>Zero-Touch Secret Saving Prompts (Say It Naturally — Agent Never Sees Plaintext)</strong></summary>
+
+| Scenario | What to Say in Agent Chat | Local OpenKeylet Tools |
+| --- | --- | --- |
+| **Web Console One-Time API Key** | `Save the one-time API key on my open browser tab into OpenKeylet as "Cloud Prod API" — never print or read it.` | `browser_inspect` → `browser_save_key` |
+| **Newly Submitted Web Login** | `Save the login I just signed in with on this browser tab into OpenKeylet as "Vercel Prod".` | `browser_save_login` |
+| **Token Returned by an API** | `Create a scoped deploy token via "Cloudflare DNS" and capture the returned secret straight into OpenKeylet without printing it.` | `http_send(captureSecrets / holdResponse)` → `http_save_secret` |
+| **Generate Password / Token Locally** | `Generate a 32-character secret inside OpenKeylet for "Staging Postgres" and write .env.local without displaying the password.` | `secret_generate` → `secret_write_file` |
+| **Generate Ed25519 SSH Keypair** | `Generate a fresh Ed25519 SSH keypair in OpenKeylet for "Staging GPU Node" and give me only the public key to paste into GitHub.` | `ssh_keygen` *(returns public key & fingerprint only)* |
+| **Ingest Local `.env` / PEM File** | `Ingest ./.env.production into OpenKeylet and generate a sealed .env.template — do not read the plaintext file.` | `secret_ingest_file` |
+| **Pre-Fill Draft for Manual Paste** | `Prepare an OpenKeylet item draft for "Stripe Billing" with URL https://api.stripe.com/v1 so I can paste the key myself in the GUI.` | `draft_prepare` |
+
+</details>
+
+---
+
+### 4 · Save Credentials in 10 Seconds with the Offline Import Hub & Vault Migration
 
 <table>
   <tr>
@@ -140,7 +165,7 @@ When an agent needs to SSH into a server, call an authenticated API, render a `.
 
 ---
 
-### 4 · Load the Browser Extension & Live Browser Usage
+### 5 · Load the Browser Extension & Live Browser Usage
 
 #### Step 1: Load OpenKeylet into Chrome / Edge / Brave in 3 Steps
 
