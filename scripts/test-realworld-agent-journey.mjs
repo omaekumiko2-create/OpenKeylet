@@ -503,8 +503,11 @@ try {
   const keyInspect = await mcp.callTool("browser_inspect", { tabId });
   assert.equal(JSON.stringify(keyInspect).includes(ISSUED_WEB_KEY), false, "Issued web key must be scrubbed from inspect");
   assert.ok(keyInspect.keyCandidates?.length >= 1, `Expected keyCandidates: ${JSON.stringify(keyInspect)}`);
+  // A second browser_inspect on the same unchanged page must NOT invalidate earlier handles.
+  const keyInspect2 = await mcp.callTool("browser_inspect", { tabId });
+  assert.equal(JSON.stringify(keyInspect2).includes(ISSUED_WEB_KEY), false, "Second inspect must also scrub issued key");
 
-  // Unlock and save via browser_save_key -> immediately usable with http_send!
+  // Unlock and save via browser_save_key using the FIRST inspect's handle -> immediately usable with http_send!
   await worker.evaluate(() => bridgeCall("unlock", { pin: "123456" }));
   const savedWebKey = await mcp.callTool("browser_save_key", {
     tabId,

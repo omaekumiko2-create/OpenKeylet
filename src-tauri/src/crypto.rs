@@ -252,19 +252,99 @@ fn write_private_file(path: &Path, bytes: &[u8]) -> Result<()> {
     let mut file = options
         .open(path)
         .context("Unable to create local permissions key file")?;
-    // On Windows, apply an owner-only protected NTFS DACL before writing key
-    // bytes so the key never rests on disk under inherited shared permissions.
-    #[cfg(windows)]
-    if let Err(error) = harden_private_file(path) {
+    let write_result = (|| -> Result<()> {
+        // On Windows, apply an owner-only protected NTFS DACL before writing key
+        // bytes so the key never rests on disk under inherited shared permissions.
+        #[cfg(windows)]
+        harden_private_file(path)?;
+        file.write_all(bytes)
+            .context("Unable to write local permissions key file")?;
+        file.sync_all()
+            .context("Unable to sync local permissions key file")?;
+        Ok(())
+    })();
+    if let Err(error) = write_result {
         drop(file);
         let _ = fs::remove_file(path);
         return Err(error);
     }
-    file.write_all(bytes)
-        .context("Unable to write local permissions key file")?;
-    file.sync_all()
-        .context("Unable to sync local permissions key file")?;
     Ok(())
+}
+
+/// Atomically writes a rendered secret file (`secret_write_file`) by hardening
+/// the temporary file BEFORE writing secret bytes and BEFORE replacing the
+/// destination. Returns `Ok(hardened)` indicating whether owner-only file
+/// permissions were successfully applied (best-effort on filesystems without
+/// ACL support such as FAT32/SMB).
+pub(crate) fn write_atomic_private_file(target_path: &Path, bytes: &[u8]) -> Result<bool> {
+    use std::{fs::OpenOptions, io::Write};
+    let file_name = target_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("secret");
+    let temp_path = target_path.with_file_name(format!(
+        ".{file_name}.openkeylet-{}.tmp",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let mut options = OpenOptions::new();
+    options.create_new(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(&temp_path)
+        .context("Unable to create temporary file")?;
+    // Harden permissions before writing a single secret byte to disk.
+    let hardened = harden_private_file(&temp_path).is_ok();
+    let write_result = (|| -> Result<()> {
+        file.write_all(bytes)
+            .context("Unable to write rendered file")?;
+        file.sync_all()
+            .context("Unable to sync rendered file")?;
+        Ok(())
+    })();
+    drop(file);
+    if let Err(error) = write_result {
+        let _ = fs::remove_file(&temp_path);
+        return Err(error);
+    }
+
+    #[cfg(not(windows))]
+    {
+        if let Err(error) = fs::rename(&temp_path, target_path) {
+            let _ = fs::remove_file(&temp_path);
+            return Err(error).context("Unable to save file atomically");
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        if !target_path.exists() {
+            if let Err(error) = fs::rename(&temp_path, target_path) {
+                let _ = fs::remove_file(&temp_path);
+                return Err(error).context("Unable to save file atomically");
+            }
+        } else {
+            let backup_path = target_path.with_file_name(format!(
+                ".{file_name}.openkeylet-{}.bak",
+                uuid::Uuid::new_v4().simple()
+            ));
+            if let Err(error) = fs::rename(target_path, &backup_path) {
+                let _ = fs::remove_file(&temp_path);
+                return Err(error).context("Unable to stage existing destination file");
+            }
+            if let Err(error) = fs::rename(&temp_path, target_path) {
+                let _ = fs::rename(&backup_path, target_path);
+                let _ = fs::remove_file(&temp_path);
+                return Err(error).context("Unable to save file atomically");
+            }
+            let _ = fs::remove_file(&backup_path);
+        }
+    }
+
+    Ok(hardened)
 }
 
 fn prepare_private_directory(path: &Path) -> Result<()> {

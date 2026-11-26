@@ -1048,16 +1048,19 @@ pub(super) fn interpolate_http_input(
 }
 
 /// Best-effort check for `secret_write_file`: returns `true` when `path` sits
-/// inside a Git working tree and is not ignored by `.gitignore`, so OpenKeylet
-/// can warn before someone accidentally commits a plaintext file.
+/// inside a Git working tree and is either already tracked by Git (even if listed
+/// in `.gitignore`) or not ignored by `.gitignore`, so OpenKeylet can warn before
+/// someone accidentally commits a plaintext file.
 pub(super) fn is_unignored_in_git_repo(path: &Path) -> bool {
     let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) else {
         return false;
     };
+    let Some(file_name) = path.file_name() else {
+        return false;
+    };
     let mut cursor = Some(parent);
     let mut in_git_tree = false;
-    for _ in 0..24 {
-        let Some(dir) = cursor else { break };
+    while let Some(dir) = cursor {
         if dir.join(".git").exists() {
             in_git_tree = true;
             break;
@@ -1067,20 +1070,37 @@ pub(super) fn is_unignored_in_git_repo(path: &Path) -> bool {
     if !in_git_tree {
         return false;
     }
-    let mut cmd = crate::cli::run::std_command_for_program("git");
-    cmd.arg("-C")
+    let configure = |cmd: &mut std::process::Command| {
+        cmd.stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+    };
+    // A file already tracked in the Git index will still be committed even if
+    // added to `.gitignore` later (`git check-ignore` alone misses this).
+    let mut tracked_cmd = crate::cli::run::std_command_for_program("git");
+    tracked_cmd
+        .arg("-C")
+        .arg(parent)
+        .args(["ls-files", "--error-unmatch", "--"])
+        .arg(file_name);
+    configure(&mut tracked_cmd);
+    if matches!(tracked_cmd.status().map(|s| s.code()), Ok(Some(0))) {
+        return true;
+    }
+
+    let mut ignore_cmd = crate::cli::run::std_command_for_program("git");
+    ignore_cmd
+        .arg("-C")
         .arg(parent)
         .args(["check-ignore", "-q", "--"])
-        .arg(path)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-    matches!(cmd.status().map(|s| s.code()), Ok(Some(1)))
+        .arg(file_name);
+    configure(&mut ignore_cmd);
+    matches!(ignore_cmd.status().map(|s| s.code()), Ok(Some(1)))
 }
 

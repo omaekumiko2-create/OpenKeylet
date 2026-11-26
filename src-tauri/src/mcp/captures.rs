@@ -18,9 +18,15 @@ pub(super) struct HeldResponse {
 
 #[derive(Serialize, Deserialize)]
 struct LocalResponse {
+    #[serde(default = "default_ok_status")]
+    status: u16,
     body: String,
     headers: BTreeMap<String, String>,
     truncated: bool,
+}
+
+fn default_ok_status() -> u16 {
+    200
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -127,6 +133,7 @@ impl VaultMcp {
     ) -> Result<ApiResponse> {
         let item = connection.stored.id;
         let local = LocalResponse {
+            status: raw.status,
             body: if raw.truncated {
                 String::new()
             } else {
@@ -213,7 +220,9 @@ impl VaultMcp {
         let redactor = crate::policy::Redactor::new(&crate::policy::connection_redaction_candidates(
             &connection.secrets,
         ));
-        let url = redactor.redact_string(crate::policy::replace_captured_secrets(raw.url, &pairs));
+        let url = mask_browser_url(
+            &redactor.redact_string(crate::policy::replace_captured_secrets(raw.url, &pairs)),
+        );
         let headers = raw
             .headers
             .into_iter()
@@ -296,6 +305,12 @@ impl VaultMcp {
             .vault
             .unprotect_local_state(&encrypted)
             .map_err(|_| "Cannot open held response")?;
+        if !(200..300).contains(&local.status) {
+            return Err(format!(
+                "Cannot save credentials from an HTTP {} error response",
+                local.status
+            ));
+        }
         let parsed = serde_json::from_str(&local.body).ok();
         let slots = candidates(&local, parsed.as_ref());
         let (pairs, missing) =

@@ -1636,14 +1636,7 @@ impl VaultMcp {
                             );
                         }
                         final_bytes.extend_from_slice(rendered.as_bytes());
-                        let mut writer = atomic_write_file::AtomicWriteFile::open(&target_path)
-                            .context("Unable to create temporary file")?;
-                        std::io::Write::write_all(&mut writer, &final_bytes)
-                            .context("Unable to write rendered file")?;
-                        writer
-                            .commit()
-                            .context("Unable to save file atomically")?;
-                        let _ = crate::crypto::harden_private_file(&target_path);
+                        let _ = crate::crypto::write_atomic_private_file(&target_path, &final_bytes)?;
                         Ok(rendered.len())
                     },
                 )

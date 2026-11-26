@@ -210,9 +210,22 @@ function inspectPageDom(expectedOrigin) {
     if (el.type && tag === "input") return `input[type="${el.type}"]`;
     return tag;
   };
-  // Handles live only in this document's isolated world for keyCandidates (and optional handle selectors).
-  const handles = new Map();
+  // Bounded per-document handle registry in the isolated world so repeated
+  // browser_inspect calls do not invalidate handles returned to an earlier step.
+  const handles = globalThis.openKeyletControls instanceof Map
+    ? globalThis.openKeyletControls
+    : new Map();
+  for (const [existingId, existingEl] of handles) {
+    if (!existingEl?.isConnected) handles.delete(existingId);
+  }
   const keyHandleFor = (el) => {
+    for (const [existingId, existingEl] of handles) {
+      if (existingEl === el) return existingId;
+    }
+    while (handles.size >= 128) {
+      const oldest = handles.keys().next().value;
+      handles.delete(oldest);
+    }
     const id = "keylet-control:" + crypto.getRandomValues(new Uint32Array(4)).join("-");
     handles.set(id, el);
     return id;
@@ -349,7 +362,7 @@ function inspectPageDom(expectedOrigin) {
     name: active.name || "",
     id: active.id || "",
     autocomplete: active.autocomplete || "",
-    placeholder: (active.placeholder || "").slice(0, 80),
+    placeholder: scrubSensitive((active.placeholder || "").slice(0, 80)),
     editable: Boolean(active.isContentEditable || ["input", "textarea", "select"].includes(active.tagName?.toLowerCase() || "")),
   } : null;
 
@@ -1168,7 +1181,16 @@ async function inspectPageJob(payload = {}) {
       }
     }
 
-    const scrubValues = Array.isArray(dom._scrubValues) ? dom._scrubValues : [];
+    const scrubSet = new Set();
+    for (const exec of executions) {
+      const list = exec?.result?._scrubValues;
+      if (Array.isArray(list)) {
+        for (const sv of list) {
+          if (typeof sv === "string" && sv) scrubSet.add(sv);
+        }
+      }
+    }
+    const scrubValues = Array.from(scrubSet);
     const scrubDisplay = (value) => {
       if (!value || !scrubValues.length) return value;
       let out = value;
@@ -1180,6 +1202,29 @@ async function inspectPageJob(payload = {}) {
     const scrubbedTabs = scrubValues.length
       ? tabs.map(t => ({ ...t, title: scrubDisplay(t.title), url: scrubDisplay(t.url) }))
       : tabs;
+    const scrubbedFields = scrubValues.length
+      ? mergedFields.map(f => ({
+          ...f,
+          placeholder: scrubDisplay(f.placeholder),
+          label: scrubDisplay(f.label),
+        }))
+      : mergedFields;
+    const scrubbedButtons = scrubValues.length
+      ? mergedButtons.map(b => ({
+          ...b,
+          text: scrubDisplay(b.text),
+          ariaLabel: scrubDisplay(b.ariaLabel),
+        }))
+      : mergedButtons;
+    const scrubbedAlerts = scrubValues.length
+      ? mergedAlerts.map(a => scrubDisplay(a))
+      : mergedAlerts;
+    const scrubbedFrames = scrubValues.length
+      ? frames.map(fr => ({ ...fr, url: scrubDisplay(fr.url) }))
+      : frames;
+    const scrubbedFocused = focused && scrubValues.length
+      ? { ...focused, placeholder: scrubDisplay(focused.placeholder) }
+      : focused;
 
     return {
       ok: true,
@@ -1191,14 +1236,14 @@ async function inspectPageJob(payload = {}) {
         origin: dom.origin || origin,
         title: scrubDisplay(dom.title || (tab.title || "").slice(0, 160)),
         keyCandidates: dom.keyCandidates || [],
-        focused,
+        focused: scrubbedFocused,
         loginForms: mergedLoginForms,
         otpFieldCount: totalOtp,
-        fields: mergedFields,
-        buttons: mergedButtons,
-        alerts: mergedAlerts,
-        pageTextSummary: summaryChunks.join(" | ").slice(0, 1500),
-        frames,
+        fields: scrubbedFields,
+        buttons: scrubbedButtons,
+        alerts: scrubbedAlerts,
+        pageTextSummary: scrubDisplay(summaryChunks.join(" | ").slice(0, 1500)),
+        frames: scrubbedFrames,
         tabs: scrubbedTabs,
         pendingPasskeys,
       },

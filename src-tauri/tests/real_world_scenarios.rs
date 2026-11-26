@@ -120,57 +120,66 @@ struct AdminHandle {
 
 impl AdminHandle {
     async fn start(env: &IsolatedEnv) -> Self {
-        let port = free_loopback_port();
-        let token = format!("oka1_test_admin_token_{port}_abcdefghijklmno");
-        let child = env
-            .cmd()
-            .args([
-                "admin",
-                "serve",
-                "--port",
-                &port.to_string(),
-                "--token-env",
-                "TEST_ADMIN_TOKEN",
-            ])
-            .env("TEST_ADMIN_TOKEN", &token)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("spawn openkeylet admin serve");
-        let base_url = format!("http://127.0.0.1:{port}");
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(5))
             .build()
             .expect("reqwest client");
-        let mut handle = Self {
-            child,
-            base_url,
-            token,
-            client,
-        };
-        let deadline = Instant::now() + Duration::from_secs(15);
-        loop {
-            if let Ok(resp) = handle
-                .client
-                .get(format!("{}/api/status", handle.base_url))
-                .bearer_auth(&handle.token)
-                .send()
-                .await
-                && resp.status() == StatusCode::OK
-            {
-                return handle;
+        let mut last_err = String::new();
+        for _attempt in 0..3 {
+            let port = free_loopback_port();
+            let token = format!("oka1_test_admin_token_{port}_abcdefghijklmno");
+            let child = env
+                .cmd()
+                .args([
+                    "admin",
+                    "serve",
+                    "--port",
+                    &port.to_string(),
+                    "--token-env",
+                    "TEST_ADMIN_TOKEN",
+                ])
+                .env("TEST_ADMIN_TOKEN", &token)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("spawn openkeylet admin serve");
+            let base_url = format!("http://127.0.0.1:{port}");
+            let mut handle = Self {
+                child,
+                base_url,
+                token,
+                client: client.clone(),
+            };
+            let deadline = Instant::now() + Duration::from_secs(15);
+            loop {
+                if let Ok(resp) = handle
+                    .client
+                    .get(format!("{}/api/status", handle.base_url))
+                    .bearer_auth(&handle.token)
+                    .send()
+                    .await
+                    && resp.status() == StatusCode::OK
+                {
+                    return handle;
+                }
+                if let Ok(Some(status)) = handle.child.try_wait() {
+                    let mut stderr = String::new();
+                    if let Some(mut pipe) = handle.child.stderr.take() {
+                        let _ = std::io::Read::read_to_string(&mut pipe, &mut stderr);
+                    }
+                    last_err = format!("admin server on port {port} exited with {status}: {stderr}");
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "timed out waiting for admin server at {}",
+                    handle.base_url
+                );
+                tokio::time::sleep(Duration::from_millis(80)).await;
             }
-            if let Ok(Some(status)) = handle.child.try_wait() {
-                panic!("admin server exited prematurely with {status}");
-            }
-            assert!(
-                Instant::now() < deadline,
-                "timed out waiting for admin server at {}",
-                handle.base_url
-            );
-            tokio::time::sleep(Duration::from_millis(80)).await;
         }
+        panic!("admin server failed to start after retries: {last_err}");
     }
 
     async fn save_item(&self, input: Value) -> Value {

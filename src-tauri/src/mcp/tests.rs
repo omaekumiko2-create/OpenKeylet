@@ -3417,7 +3417,112 @@ fn git_ignore_check_warns_only_for_unignored_files_inside_git_repos() {
         std::fs::write(&ignored, "K=V\n").unwrap();
         assert!(is_unignored_in_git_repo(&tracked));
         assert!(!is_unignored_in_git_repo(&ignored));
+
+        // Even if listed in `.gitignore`, a file already tracked in the Git index
+        // will still be committed on changes and must trigger the warning.
+        assert!(
+            crate::cli::run::std_command_for_program("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(["add", "-f", ".env.local"])
+                .status()
+                .is_ok_and(|s| s.success())
+        );
+        assert!(is_unignored_in_git_repo(&ignored));
     }
+}
+
+#[tokio::test]
+async fn http_send_redacts_set_cookie_on_capture_and_rejects_saving_from_error_receipt() {
+    use axum::{http::{HeaderValue, StatusCode, header}, response::IntoResponse};
+    let dual = || async {
+        (
+            StatusCode::OK,
+            [(
+                header::SET_COOKIE,
+                HeaderValue::from_static("sid=fresh_cookie_secret_999; Path=/; HttpOnly; Secure"),
+            )],
+            axum::Json(json!({
+                "access_token": "fresh_api_token_777",
+                "scope": "read:projects"
+            })),
+        )
+            .into_response()
+    };
+    let fail_issue = || async {
+        (
+            StatusCode::BAD_REQUEST,
+            axum::Json(json!({
+                "api_key": "error_payload_not_a_key_123"
+            })),
+        )
+            .into_response()
+    };
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            axum::Router::new()
+                .route("/login-dual", axum::routing::post(dual))
+                .route("/fail-issue", axum::routing::post(fail_issue)),
+        )
+        .await
+        .unwrap();
+    });
+    let directory = tempdir().unwrap();
+    let vault = Vault::open(directory.path().join("vault")).unwrap();
+    save_secret_item(
+        &vault,
+        "Dual Cred API",
+        Some(&format!("http://{address}")),
+        &[("apiCredential", "client-secret-for-dual-api")],
+    );
+    let mcp = VaultMcp::new(vault.clone());
+
+    let captured = structured_value(
+        &mcp.http_send(http_request(json!({
+            "item": "Dual Cred API",
+            "url": "/login-dual?code=fresh_query_secret_888",
+            "method": "POST",
+            "captureSecrets": { "accessToken": "$.access_token" }
+        })))
+        .await,
+    );
+    let serialized = captured.to_string();
+    assert_eq!(captured["status"], 200);
+    assert!(!serialized.contains("fresh_api_token_777"), "{serialized}");
+    assert!(!serialized.contains("fresh_cookie_secret_999"), "{serialized}");
+    assert!(!serialized.contains("fresh_query_secret_888"), "{serialized}");
+    assert!(captured["body"].as_str().unwrap().contains("read:projects"));
+    assert_eq!(
+        captured["headers"]["set-cookie"],
+        "sid=[REDACTED]; Path=/; HttpOnly; Secure"
+    );
+
+    let failed_held = structured_value(
+        &mcp.http_send(http_request(json!({
+            "item": "Dual Cred API",
+            "url": "/fail-issue",
+            "method": "POST",
+            "holdResponse": true
+        })))
+        .await,
+    );
+    assert_eq!(failed_held["status"], 400);
+    let err_receipt = failed_held["responseId"].as_str().unwrap();
+    let err_save = mcp.save_http_receipt(
+        serde_json::from_value(json!({
+            "responseId": err_receipt,
+            "captureSecrets": { "badKey": "#0" }
+        }))
+        .unwrap(),
+    );
+    assert!(
+        err_save.is_err() && err_save.unwrap_err().contains("HTTP 400"),
+        "http_save_secret must reject saving from non-2xx held responses"
+    );
+    server.abort();
 }
 
 #[test]

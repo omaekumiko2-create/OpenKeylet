@@ -122,22 +122,40 @@ pub fn strip_cross_origin_redirect_auth(
     }
 }
 
-fn login_rules_govern_origin(rules: &[crate::login_uri::LoginUri], origin: &url::Origin) -> bool {
+fn login_rules_govern_origin(
+    rules: &[crate::login_uri::LoginUri],
+    base: &Url,
+) -> bool {
+    let origin = base.origin();
+    let origin_root = format!("{}/", origin.ascii_serialization());
+    let base_host = base.host_str().map(str::to_ascii_lowercase);
     rules.iter().any(|rule| {
         if rule.match_type == "regex" {
+            if crate::login_uri::matches(rule, base.as_str())
+                || crate::login_uri::matches(rule, &origin_root)
+            {
+                return true;
+            }
+            if let Some(host) = base_host.as_deref() {
+                let unescaped = rule.uri.replace('\\', "").to_ascii_lowercase();
+                if unescaped.contains(host) {
+                    return true;
+                }
+            }
             return false;
         }
         crate::passkey::origin(&rule.uri)
             .ok()
-            .is_some_and(|parsed| parsed.origin() == *origin)
+            .is_some_and(|parsed| parsed.origin() == origin)
     })
 }
 
 /// Reports whether `target` may receive this item's secrets. An item with a saved service
 /// URL or website rules (its binding) only sends them to the service URL's origin or to a
 /// URL matching one of its rules; if website rules explicitly govern the service URL's own
-/// origin (for example `never`, `exact`, or `prefix` rules), those rules take precedence
-/// over the service URL fallback. An item with neither leaves the destination to the caller.
+/// origin (for example `never`, `exact`, `prefix`, or `regex` rules), those rules take
+/// precedence over the service URL fallback. An item with neither leaves the destination to
+/// the caller.
 pub fn api_target_allowed(stored: &StoredConnection, target: &Url) -> bool {
     let base_url = stored.base_url.trim();
     if base_url.is_empty() && stored.login_uris.is_empty() {
@@ -152,7 +170,7 @@ pub fn api_target_allowed(stored: &StoredConnection, target: &Url) -> bool {
     }
     if let Ok(base) = Url::parse(base_url)
         && base.origin() == target.origin()
-        && !login_rules_govern_origin(&stored.login_uris, &base.origin())
+        && !login_rules_govern_origin(&stored.login_uris, &base)
     {
         return true;
     }
@@ -166,7 +184,7 @@ pub fn api_target_refusal(stored: &StoredConnection) -> String {
     let mut allowed = Vec::new();
     if let Ok(base) = Url::parse(stored.base_url.trim())
         && matches!(base.scheme(), "http" | "https")
-        && !login_rules_govern_origin(&stored.login_uris, &base.origin())
+        && !login_rules_govern_origin(&stored.login_uris, &base)
     {
         allowed.push(base.origin().ascii_serialization());
     }
@@ -225,14 +243,41 @@ pub fn replace_captured_secrets(mut text: String, captured: &[(String, String)])
     text
 }
 
+/// Replaces the cookie value in a `Set-Cookie` / `Set-Cookie2` header with `[REDACTED]`
+/// while preserving the cookie name and non-secret attributes (`Path`, `HttpOnly`, etc.)
+/// so freshly issued session cookies never enter LLM context.
+fn redact_set_cookie_header(raw: &str) -> String {
+    let mut parts = raw.split(';');
+    let first = parts.next().unwrap_or("").trim();
+    let redacted_pair = match first.split_once('=') {
+        Some((name, _)) if !name.trim().is_empty() => format!("{}=[REDACTED]", name.trim()),
+        _ => "[REDACTED]".to_owned(),
+    };
+    let rest: Vec<&str> = parts
+        .map(str::trim)
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    if rest.is_empty() {
+        redacted_pair
+    } else {
+        format!("{redacted_pair}; {}", rest.join("; "))
+    }
+}
+
 pub fn visible_response_headers(headers: &HeaderMap) -> Vec<(String, String)> {
     headers
         .iter()
         .filter_map(|(name, value)| {
-            value
-                .to_str()
-                .ok()
-                .map(|value| (name.as_str().to_owned(), value.to_owned()))
+            value.to_str().ok().map(|value| {
+                let rendered = if name.as_str().eq_ignore_ascii_case("set-cookie")
+                    || name.as_str().eq_ignore_ascii_case("set-cookie2")
+                {
+                    redact_set_cookie_header(value)
+                } else {
+                    value.to_owned()
+                };
+                (name.as_str().to_owned(), rendered)
+            })
         })
         .collect()
 }
@@ -1121,7 +1166,7 @@ mod tests {
     }
 
     #[test]
-    fn response_headers_are_returned_without_classification() {
+    fn response_headers_are_returned_with_set_cookie_values_redacted() {
         let mut headers = HeaderMap::new();
         headers.insert("x-feature-state", "ready".parse().unwrap());
         headers.append("set-cookie", "session=server-secret".parse().unwrap());
@@ -1135,7 +1180,7 @@ mod tests {
         );
         assert_eq!(
             visible.get("set-cookie").map(String::as_str),
-            Some("session=server-secret")
+            Some("session=[REDACTED]")
         );
     }
 
@@ -1310,12 +1355,55 @@ mod tests {
         assert!(!api_target_allowed(&base_never, &url("https://api.example.com/v1/items")));
         assert!(api_target_refusal(&base_never).contains("(no usable destination)"));
 
+        // A regex rule narrowing the saved base_url origin must NOT fall back to whole-origin access.
+        let mut narrowed_regex = connection();
+        narrowed_regex.login_uris = vec![rule(r"^https://api\.example\.com/app-a/.*", "regex")];
+        assert!(api_target_allowed(&narrowed_regex, &url("https://api.example.com/app-a/items")));
+        assert!(!api_target_allowed(&narrowed_regex, &url("https://api.example.com/app-b/admin")));
+        let regex_refusal = api_target_refusal(&narrowed_regex);
+        assert!(regex_refusal.contains("a regex website rule"), "{regex_refusal}");
+        assert!(!regex_refusal.contains("https://api.example.com"), "{regex_refusal}");
+
+        // A regex rule targeting a different host keeps base_url origin intact.
+        let mut union_regex = connection();
+        union_regex.login_uris = vec![rule(r"^https://cdn\.other\.net/.*", "regex")];
+        assert!(api_target_allowed(&union_regex, &url("https://api.example.com/v1/items")));
+        assert!(api_target_allowed(&union_regex, &url("https://cdn.other.net/file.bin")));
+        assert!(!api_target_allowed(&union_regex, &url("https://evil.other.net/file.bin")));
+
         let refusal = api_target_refusal(&union);
         assert!(refusal.starts_with("Refused: "));
         assert!(refusal.contains("\"test\""));
         assert!(refusal.contains("https://api.example.com, https://uploads.example.net"));
         assert!(api_target_refusal(&rules_only).contains("https://example.com (domain match)"));
         assert!(api_target_refusal(&never_only).contains("(no usable destination)"));
+    }
+
+    #[test]
+    fn visible_response_headers_redacts_set_cookie_values_preserving_attributes() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            reqwest::header::SET_COOKIE,
+            reqwest::header::HeaderValue::from_static(
+                "session_id=fresh_secret_cookie_999; Path=/; HttpOnly; Secure; SameSite=Lax",
+            ),
+        );
+        headers.insert(
+            reqwest::header::CONTENT_TYPE,
+            reqwest::header::HeaderValue::from_static("application/json"),
+        );
+        let visible = visible_response_headers(&headers);
+        let cookie = visible
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("set-cookie"))
+            .map(|(_, v)| v.as_str())
+            .unwrap();
+        assert!(!cookie.contains("fresh_secret_cookie_999"), "{cookie}");
+        assert_eq!(
+            cookie,
+            "session_id=[REDACTED]; Path=/; HttpOnly; Secure; SameSite=Lax"
+        );
+        assert!(visible.iter().any(|(k, v)| k == "content-type" && v == "application/json"));
     }
 
     #[test]
