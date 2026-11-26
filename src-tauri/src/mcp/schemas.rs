@@ -334,12 +334,12 @@ pub(super) struct HttpSendInput {
     pub(super) timeout_seconds: Option<u64>,
     #[serde(default)]
     #[schemars(
-        description = "Optional in-context response-body limit in bytes. Omit or use 0 for no limit. Not used when saveResponseTo is set; very large responses may instead be streamed directly to a file."
+        description = "Optional in-context response-body limit in bytes. Omit or use 0 for no limit (capped at 1 MiB when holdResponse or captureSecrets is used). Not used when saveResponseTo is set."
     )]
     pub(super) max_response_bytes: Option<usize>,
     #[serde(default)]
     #[schemars(
-        description = "Optional local file path for streaming the complete response body without the in-context size limit. Absolute and ~/ paths are accepted; relative paths resolve from the OpenKeylet MCP process working directory. Parent directories are created automatically."
+        description = "Optional local file path for streaming the complete response body without the in-context size limit. Absolute and ~/ paths are accepted; relative paths resolve from the OpenKeylet MCP process working directory. Cannot be combined with captureSecrets or holdResponse."
     )]
     pub(super) save_response_to: Option<String>,
     #[serde(default = "default_true")]
@@ -359,9 +359,14 @@ pub(super) struct HttpSendInput {
     pub(super) follow_redirects: Option<bool>,
     #[serde(default)]
     #[schemars(
-        description = "Optional mapping from vault field name to JSON path (e.g. {\"accessToken\": \"$.access_token\"} or {\"token\": \"data.token\"}). Extracts matching values locally from a JSON response, stores them encrypted into the target item, and replaces them in the returned body with [CAPTURED:{{openkeylet:field}}]. If any path matches nothing, or the body is not JSON, the body is withheld and captureMissing and jsonPaths (key paths, no values) are returned instead."
+        description = "Optional mapping from vault field names to JSON paths (e.g. {\"accessToken\": \"$.access_token\"}), header:Name, #slot, or $ for a plain-text body. Matching values are stored encrypted into the target item and replaced in the returned body with [CAPTURED:{{openkeylet:field}}]. If any path misses, the body is withheld in a local receipt (responseId + candidates + jsonPaths) so http_save_secret can save it without repeating the request."
     )]
-    pub(super) capture_secrets: HashMap<String, String>,
+    pub(super) capture_secrets: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional. Set true when calling an endpoint that issues a new one-time API key or token whose response schema is unknown: OpenKeylet keeps the body and headers out of MCP output in an encrypted local receipt (responseId + numbered candidates) so you can save fields with http_save_secret without repeating the request. Defaults to false (returns the normal redacted response)."
+    )]
+    pub(super) hold_response: bool,
 }
 
 pub(super) fn default_http_method() -> String {
@@ -544,6 +549,43 @@ pub(super) struct BrowserFillLoginInput {
     #[serde(default)]
     #[schemars(description = "Optional URL prefix or substring to select an open browser tab.")]
     pub(super) url: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct BrowserSaveKeyInput {
+    pub(super) tab_id: u32,
+    pub(super) origin: String,
+    #[schemars(description = "Opaque selectorHint from keyCandidates on the top page. Omit to save the page selection.")]
+    pub(super) selector_hint: Option<String>,
+    #[schemars(description = "Optional HTTPS API origin on the same registrable domain, for services with a separate dashboard. Defaults to the issuing origin.")]
+    pub(super) service_origin: Option<String>,
+    #[schemars(description = "Unique non-secret name for the new API item.")]
+    pub(super) name: String,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct BrowserSaveKeyOutput {
+    pub(super) item_id: String,
+    pub(super) field: String,
+    pub(super) reference: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct BrowserSaveLoginInput {
+    #[schemars(description = "Browser tab ID. Omit to use the active tab.")]
+    pub(super) tab_id: Option<u32>,
+    #[schemars(description = "Display name for the new login. Defaults to the website hostname.")]
+    pub(super) name: Option<String>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct BrowserSaveLoginOutput {
+    pub(super) item_id: String,
+    pub(super) origin: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]

@@ -288,7 +288,7 @@ fn harden_private_directory(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn harden_private_file(path: &Path) -> Result<()> {
+pub(crate) fn harden_private_file(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

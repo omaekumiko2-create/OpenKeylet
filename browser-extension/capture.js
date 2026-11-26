@@ -1,5 +1,5 @@
 // Submitted credentials stay in this worker's memory for at most five minutes.
-// Content scripts can offer a draft, but only extension UI can read/save it.
+// Only extension UI can read a draft. Paired agent jobs can commit it without reading it.
 const loginCaptures = new Map();
 const usernameSteps = new Map();
 const CAPTURE_TTL = 5 * 60 * 1000;
@@ -130,17 +130,31 @@ async function captureContentAction(message, sender) {
   if (message.type === "openkeylet-capture-dismiss") { clearLoginCapture(draft.tabId, draft.id); return {}; }
   return { available: true };
 }
-async function captureForUi(message) {
-  let tabId = message.captureTabId;
-  if (!Number.isInteger(tabId)) tabId = (await activePage(false))?.tab.id;
-  const draft = getLoginCapture(tabId, message.captureId);
+async function checkedLoginCapture(tabId, id) {
+  const draft = getLoginCapture(tabId, id);
   if (!draft) throw new Error("待保存信息已过期，请重新填写 / The save suggestion expired");
-  const tab = await chrome.tabs.get(draft.tabId);
-  if (!tab.url || new URL(tab.url).origin !== draft.origin) {
+  const tab = await chrome.tabs.get(draft.tabId).catch(() => null);
+  if (!tab?.url || new URL(tab.url).origin !== draft.origin) {
     clearLoginCapture(draft.tabId, draft.id);
     throw new Error("来源网站已变化，请重新填写 / The source website changed");
   }
+  if (getLoginCapture(tabId, id) !== draft) throw new Error("The save suggestion changed or expired");
   return draft;
+}
+async function captureForUi(message) {
+  const tabId = Number.isInteger(message.captureTabId) ? message.captureTabId : (await activePage(false))?.tab.id;
+  return checkedLoginCapture(tabId, message.captureId);
+}
+async function saveLoginCapture(draft, fields) {
+  if (draft.saving) throw new Error("This login is already being saved");
+  draft.saving = true;
+  try {
+    const result = await bridgeCall("password.save", { ...fields, origin: draft.url });
+    clearLoginCapture(draft.tabId, draft.id);
+    return result;
+  } finally {
+    draft.saving = false;
+  }
 }
 async function captureUiAction(message) {
   const draft = await captureForUi(message);
@@ -149,18 +163,33 @@ async function captureUiAction(message) {
   if (status.locked) throw new Error("请先解锁 OpenKeylet / Unlock OpenKeylet first");
   if (message.action === "capture-read") {
     const entries = await bridgeCall("password.list", { origin: draft.url });
-    await captureForUi({ captureTabId: draft.tabId, captureId: draft.id });
+    await checkedLoginCapture(draft.tabId, draft.id);
     return { username: draft.username, password: draft.password, kind: draft.kind, warnings: [],
       capture: captureSummary(draft), entries };
   }
   if (message.action === "capture-save") {
-    await captureForUi({ captureTabId: draft.tabId, captureId: draft.id });
-    const result = await bridgeCall("password.save", { origin: draft.url, id: message.id || null,
+    await checkedLoginCapture(draft.tabId, draft.id);
+    return saveLoginCapture(draft, { id: message.id || null,
       expectedUpdatedAt: message.expectedUpdatedAt, name: message.name, username: message.username, password: message.password });
-    clearLoginCapture(draft.tabId, draft.id);
-    return result;
   }
   throw new Error("Unsupported capture action");
+}
+async function saveCapturedLoginJob(payload, expiresAt) {
+  const tabId = payload.tabId ?? (await activePage(false).catch(() => null))?.tab.id;
+  const draft = await checkedLoginCapture(tabId).catch(() => null);
+  if (!draft?.ready) return { ok: false, message: "No submitted login is pending in this tab. Enable login save suggestions and submit the form in the browser." };
+  const status = await bridgeCall("status").catch(() => null);
+  if (!status) return { ok: false, message: "OpenKeylet Browser Bridge is unavailable" };
+  if (status.locked) return { ok: false, message: "Unlock OpenKeylet in the browser extension before saving" };
+  const current = await checkedLoginCapture(tabId, draft.id).catch(() => null);
+  if (!current || Date.now() >= expiresAt) return { ok: false, message: "The login save task or suggestion expired" };
+  const result = await saveLoginCapture(draft, {
+    name: payload.name,
+    username: draft.username,
+    password: draft.password,
+  }).catch(() => null);
+  if (!result) return { ok: false, message: "Unable to save the captured login" };
+  return { ok: true, data: { itemId: result.id, origin: draft.origin } };
 }
 chrome.tabs.onRemoved.addListener(tabId => { clearLoginCapture(tabId); clearTabUsernameSteps(tabId); });
 chrome.tabs.onUpdated.addListener((tabId, change) => {

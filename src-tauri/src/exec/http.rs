@@ -85,6 +85,13 @@ pub fn describe_api_request(connection: &StoredConnection, input: &ApiRequestInp
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
+pub struct HttpCandidate {
+    pub slot: usize,
+    pub kind: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct ApiResponse {
     pub status: u16,
     pub status_text: String,
@@ -96,14 +103,24 @@ pub struct ApiResponse {
     pub saved_to: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bytes_transferred: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub candidates: Vec<HttpCandidate>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub captured_secrets: Vec<String>,
-    /// captureSecrets fields whose JSON path matched nothing; the body is withheld then.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub references: std::collections::BTreeMap<String, String>,
+    /// captureSecrets fields whose path matched nothing; the body is withheld then.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub capture_missing: Vec<String>,
     /// Key paths (no values) of a JSON body withheld because a capture failed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub json_paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub save_failed: bool,
 }
 
 pub(crate) struct RawApiResponse {
@@ -231,6 +248,7 @@ pub(crate) async fn execute_api_scoped(
     secret_sources: &[StoredConnection],
 ) -> Result<ApiResponse> {
     let raw = execute_api_raw(connection, input, secret_sources).await?;
+    let redactor = Redactor::new(&connection_redaction_candidates(&connection.secrets));
     let body = if raw.saved_to.is_some() {
         String::new()
     } else {
@@ -244,15 +262,20 @@ pub(crate) async fn execute_api_scoped(
     Ok(ApiResponse {
         status: raw.status,
         status_text: raw.status_text,
-        url: raw.url,
-        headers: raw.headers,
+        url: redactor.redact_string(raw.url),
+        headers: raw.headers.into_iter().map(|(k, v)| (k, redactor.redact_string(v))).collect(),
         body,
         truncated: raw.truncated,
         saved_to: raw.saved_to,
         bytes_transferred: raw.bytes_transferred,
+        item_id: None,
+        response_id: None,
+        candidates: Vec::new(),
         captured_secrets: Vec::new(),
+        references: std::collections::BTreeMap::new(),
         capture_missing: Vec::new(),
         json_paths: Vec::new(),
+        save_failed: false,
     })
 }
 
@@ -473,11 +496,9 @@ pub(crate) async fn execute_api_raw(
     };
 
     let status = response.status();
-    let response_url = response.url().clone();
-    let redactor = Redactor::new(&connection_redaction_candidates(&connection.secrets));
+    let response_url = response.url().to_string();
     let response_headers = visible_response_headers(response.headers())
         .into_iter()
-        .map(|(name, value)| (name, redactor.redact_string(value)))
         .collect();
     if let Some(destination) = save_response_to {
         let (saved_to, bytes_transferred) =
@@ -485,7 +506,7 @@ pub(crate) async fn execute_api_raw(
         return Ok(RawApiResponse {
             status: status.as_u16(),
             status_text: status.canonical_reason().unwrap_or_default().to_owned(),
-            url: redactor.redact_string(response_url.to_string()),
+            url: response_url,
             headers: response_headers,
             raw_body: String::new(),
             truncated: false,
@@ -518,7 +539,7 @@ pub(crate) async fn execute_api_raw(
     Ok(RawApiResponse {
         status: status.as_u16(),
         status_text: status.canonical_reason().unwrap_or_default().to_owned(),
-        url: redactor.redact_string(response_url.to_string()),
+        url: response_url,
         headers: response_headers,
         raw_body: String::from_utf8_lossy(&bytes).into_owned(),
         truncated,

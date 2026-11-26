@@ -13,7 +13,7 @@ use crate::{
 };
 use anyhow::{Context, Result, bail, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 use std::path::PathBuf;
 use std::{
     collections::{BTreeMap, HashSet},

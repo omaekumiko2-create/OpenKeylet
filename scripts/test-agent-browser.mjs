@@ -121,7 +121,23 @@ const html = `<!doctype html>
   });
 </script>`;
 
+const issuedWebKey = "new-key-from-the-test-issuer";
+const issuedApiKey = "one-time-api-response-test-key";
+let issues = 0;
 const server = http.createServer((req, res) => {
+  if (req.url === "/issue") {
+    issues++;
+    res.writeHead(req.headers.authorization === "Bearer " + issuedWebKey ? 201 : 401, {
+      "Content-Type": "application/json", "X-Test-Note": issuedApiKey,
+    });
+    res.end(JSON.stringify({ unusualEnvelope: { access_token: issuedApiKey }, [issuedApiKey]: "ignored" }));
+    return;
+  }
+  if (req.url === "/use") {
+    res.writeHead(req.headers["x-issued"] === issuedApiKey ? 200 : 401, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: true, records: ["example.com"] }));
+    return;
+  }
   res.setHeader("Content-Type", "text/html");
   res.end(html);
 });
@@ -306,7 +322,7 @@ try {
 
   const tools = await mcp.request("tools/list");
   const toolNames = tools.tools.map(t => t.name);
-  for (const required of ["browser_inspect", "browser_fill_login", "browser_fill_personal", "browser_click", "browser_passkey", "credential_fill", "secret_write_file"]) {
+  for (const required of ["browser_inspect", "browser_fill_login", "browser_save_login", "browser_fill_personal", "browser_click", "browser_passkey", "credential_fill", "secret_write_file"]) {
     assert.ok(toolNames.includes(required), `Missing MCP tool: ${required}`);
   }
 
@@ -460,9 +476,71 @@ try {
   await promptPage.close();
   console.log("6/6 browser_passkey (default-off + create + get + ECDSA verify + manual prompt isolation) verified");
 
+  await page.bringToFront();
+  const tabId = inspected.tabId;
+  await worker.evaluate(() => chrome.storage.local.set({ captureEnabled: true }));
+  await until(() => worker.evaluate(async tabId => (await chrome.scripting.executeScript({
+    target: { tabId }, func: () => captureSubmissionEnabled,
+  }))[0].result, tabId), "login save suggestions enabled");
+  const capturedPassword = "synthetic-agent-capture-password";
+  await page.locator("#username").fill("new-browser-account");
+  await page.locator("#password").fill(capturedPassword);
+  await page.locator("#login-submit").click();
+  await until(() => worker.evaluate(id => Boolean(captureSummary(getLoginCapture(id))), tabId), "submitted login captured");
+  const argumentsToSave = { tabId, name: "Agent Saved Login" };
+  const saveLogin = () => mcp.request("tools/call", { name: "browser_save_login", arguments: argumentsToSave });
+  const lockedSave = await saveLogin();
+  assert.equal(lockedSave.isError, true);
+  assert.match(JSON.stringify(lockedSave), /Unlock OpenKeylet/);
+  assert.equal(JSON.stringify(lockedSave).includes(capturedPassword), false);
+  await worker.evaluate(() => bridgeCall("unlock", { pin: "123456" }));
+  const savedLogin = await saveLogin();
+  assert.equal(savedLogin.isError ?? false, false);
+  assert.deepEqual(Object.keys(savedLogin.structuredContent).sort(), ["itemId", "origin"]);
+  assert.equal(savedLogin.structuredContent.origin, origin);
+  assert.equal(JSON.stringify(savedLogin).includes(capturedPassword), false);
+  const loginArgs = { origin, id: savedLogin.structuredContent.itemId };
+  const storedLogin = await worker.evaluate(args => bridgeCall("password.get", args), loginArgs);
+  assert.equal(storedLogin.password, capturedPassword);
+  const search = await mcp.callTool("items_search", { query: "Agent Saved Login" });
+  assert.equal(search.items.length, 1);
+  assert.equal(JSON.stringify(search).includes(capturedPassword), false);
+  assert.equal((await saveLogin()).isError, true, "A saved capture is consumed");
+
+  await page.evaluate(key => {
+    document.title = key;
+    const output = document.createElement("output");
+    output.textContent = key;
+    const heading = document.createElement("h2");
+    heading.append(output);
+    document.body.append(heading);
+    history.replaceState(null, "", "/issued/" + key + "?" + key + "=1");
+  }, issuedWebKey);
+  const keyPage = await mcp.callTool("browser_inspect", { tabId });
+  assert.ok(!JSON.stringify(keyPage).includes(issuedWebKey));
+  const saveKey = { tabId, origin, selectorHint: keyPage.keyCandidates[0].selectorHint, name: "Issued Test API" };
+  const mismatch = await mcp.request("tools/call", { name: "browser_save_key", arguments: { ...saveKey, origin: "https://other.example" } });
+  assert.equal(mismatch.isError, true);
+  await worker.evaluate(() => bridgeCall("lock"));
+  const lockedKey = await mcp.request("tools/call", { name: "browser_save_key", arguments: saveKey });
+  assert.equal(lockedKey.isError, true);
+  await worker.evaluate(() => bridgeCall("unlock", { pin: "123456" }));
+  const webKey = await mcp.callTool("browser_save_key", saveKey);
+  assert.ok(webKey.reference.includes(webKey.itemId) && !JSON.stringify(webKey).includes(issuedWebKey));
+  const receipt = await mcp.callTool("http_send", { item: webKey.itemId, url: "/issue", method: "POST", holdResponse: true });
+  assert.equal(receipt.status, 201);
+  assert.ok(!JSON.stringify(receipt).includes(issuedApiKey));
+  const token = receipt.candidates.find(candidate => candidate.kind === "accessToken");
+  const refs = await mcp.callTool("http_save_secret", { responseId: receipt.responseId, captureSecrets: { issuedKey: "#" + token.slot } });
+  assert.ok(!JSON.stringify(refs).includes(issuedApiKey));
+  const use = await mcp.callTool("http_send", { item: webKey.itemId, url: "/use", headers: { "X-Issued": refs.issuedKey } });
+  assert.equal(use.status, 200);
+  assert.ok(use.body.includes("example.com"), "Normal http_send returns readable response body");
+  assert.equal(issues, 1);
   console.log(JSON.stringify({
     ok: true,
     checks: [
+      "web and API issuance: inspect, save and use opaque references without reissuing",
       "mcp tools/list",
       "browser_inspect (zero value leakage + matchingItems)",
       "browser_fill_login (unfocused username + password + split 6-box TOTP + submit)",
@@ -473,6 +551,7 @@ try {
       "browser_passkey create (atomic arm + trigger, zero manual popup)",
       "browser_passkey get (atomic arm + trigger, ECDSA P-256 + UV/UP verified)",
       "browser_passkey refuses takeover of manual confirmation window",
+      "browser_save_login (requires unlock, consumes capture, no MCP plaintext)",
     ],
   }, null, 2));
 } finally {

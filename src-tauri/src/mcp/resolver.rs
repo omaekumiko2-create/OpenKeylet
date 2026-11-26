@@ -25,8 +25,8 @@ pub(super) fn strip_match_urls(inspected: &mut Value) {
 }
 
 /// Strips credentials in userinfo and masks query values (`?code=…`) and fragments (`#…`) on
-/// URLs returned by browser MCP tools so OAuth codes, magic-link tokens, or reset tokens never
-/// leak into agent context, even if an older browser extension sent the raw URL.
+/// URLs returned by browser MCP tools while preserving the site origin and path so the agent
+/// can tell where it navigated without leaking OAuth codes, magic-link tokens, or reset tokens.
 pub(super) fn mask_browser_url(raw: &str) -> String {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -35,6 +35,9 @@ pub(super) fn mask_browser_url(raw: &str) -> String {
     let Ok(mut parsed) = url::Url::parse(trimmed) else {
         return String::new();
     };
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return String::new();
+    }
     let has_query = parsed.query().is_some();
     let mut keys: Vec<String> = Vec::new();
     if has_query {
@@ -60,7 +63,8 @@ pub(super) fn mask_browser_url(raw: &str) -> String {
                 if idx > 0 {
                     out.push('&');
                 }
-                let encoded: String = url::form_urlencoded::byte_serialize(key.as_bytes()).collect();
+                let encoded: String =
+                    url::form_urlencoded::byte_serialize(key.as_bytes()).collect();
                 out.push_str(&encoded);
                 out.push_str("=…");
             }
@@ -234,7 +238,8 @@ pub(super) fn hidden_secret_values(connection: &DecryptedConnection, min_chars: 
 }
 
 /// Key paths of a JSON document in captureSecrets syntax, without any values, so an agent
-/// can correct a path without seeing the body. Arrays list their first element only.
+/// can correct a path or use `http_save_secret` without seeing the withheld body. Arrays
+/// list their first element only.
 pub(super) fn json_key_paths(root: &Value) -> Vec<String> {
     const MAX_PATHS: usize = 200;
     const MAX_DEPTH: usize = 8;
@@ -291,6 +296,10 @@ pub(super) fn filter_connections_by_query(
     mut connections: Vec<DecryptedConnection>,
     query: &str,
 ) -> Vec<DecryptedConnection> {
+    if let Ok(id) = Uuid::parse_str(query.trim()) {
+        connections.retain(|c| c.stored.id == id);
+        return connections;
+    }
     let normalized_query = query.trim().to_lowercase();
     let search_query = normalize_search_text(query);
     let has_literal_exact = connections
@@ -1036,5 +1045,42 @@ pub(super) fn interpolate_http_input(
         interpolate_http_value(value, replacements, &mut used)?;
     }
     Ok(used)
+}
+
+/// Best-effort check for `secret_write_file`: returns `true` when `path` sits
+/// inside a Git working tree and is not ignored by `.gitignore`, so OpenKeylet
+/// can warn before someone accidentally commits a plaintext file.
+pub(super) fn is_unignored_in_git_repo(path: &Path) -> bool {
+    let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) else {
+        return false;
+    };
+    let mut cursor = Some(parent);
+    let mut in_git_tree = false;
+    for _ in 0..24 {
+        let Some(dir) = cursor else { break };
+        if dir.join(".git").exists() {
+            in_git_tree = true;
+            break;
+        }
+        cursor = dir.parent();
+    }
+    if !in_git_tree {
+        return false;
+    }
+    let mut cmd = std::process::Command::new("git");
+    cmd.arg("-C")
+        .arg(parent)
+        .args(["check-ignore", "-q", "--"])
+        .arg(path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    matches!(cmd.status().map(|s| s.code()), Ok(Some(1)))
 }
 

@@ -2386,6 +2386,7 @@ async fn http_send_capture_secrets_and_cross_item_placeholders_never_leak_tokens
     assert!(body.contains("[CAPTURED:{{openkeylet:refreshToken}}]"));
     assert!(body.contains("[REDACTED]"));
     assert!(body.contains("3600"));
+    assert!(res["references"]["accessToken"].as_str().unwrap().ends_with("/accessToken}}"));
     assert!(!serialized.contains("minted-oauth-access-889911"));
     assert!(!serialized.contains("minted-oauth-refresh-223344"));
     assert!(!serialized.contains("secondary-cross-secret-6611"));
@@ -2948,6 +2949,7 @@ async fn rendered_secrets_are_redacted_from_later_calls_that_name_no_item() {
             .await,
     );
     assert_eq!(fetched["body"], "loaded=[REDACTED]|[REDACTED]");
+    assert!(!fetched.to_string().contains(long_secret));
 
     // A later MCP session never used the short value; hidden values of 8+ characters of any
     // enabled item are still covered.
@@ -3024,6 +3026,16 @@ async fn http_capture_withholds_the_body_when_a_path_matches_nothing() {
         wrong_path["jsonPaths"],
         json!(["$.access_token", "$.expires_in", "$.scope[0]"])
     );
+    let receipt_id = wrong_path["responseId"].as_str().unwrap();
+    let slot = wrong_path["candidates"].as_array().unwrap().iter().find(|c| c["kind"] == "accessToken").unwrap()["slot"].as_u64().unwrap();
+    let save = || serde_json::from_value::<SaveHttpInput>(json!({
+        "responseId": receipt_id, "captureSecrets": {"issuedKey": format!("#{slot}")}
+    })).unwrap();
+    assert!(VaultMcp::new(vault.clone()).save_http_receipt(save()).is_err());
+    let refs = mcp.save_http_receipt(save()).unwrap();
+    assert!(!refs["issuedKey"].contains("minted-token"));
+    let id = Uuid::parse_str(wrong_path["itemId"].as_str().unwrap()).unwrap();
+    assert_eq!(vault.get_secret_value(id, "issuedKey").unwrap().2, "minted-token-unmatched-7781");
 
     let not_json = structured_value(
         &mcp.http_send(http_request(json!({
@@ -3036,9 +3048,37 @@ async fn http_capture_withholds_the_body_when_a_path_matches_nothing() {
     );
     assert!(!not_json.to_string().contains("minted-token-plain-text-5512"));
     assert!(not_json["body"].as_str().unwrap().contains("not JSON"));
+    assert_eq!(not_json["candidates"][0]["kind"], "body");
     assert_eq!(not_json["captureMissing"], json!(["accessToken"]));
 
-    // A path that resolves still captures and shows the rest of the body.
+    let plain_refs = mcp.save_http_receipt(serde_json::from_value(json!({
+        "responseId": not_json["responseId"], "captureSecrets": {"plainKey": "$"}
+    })).unwrap()).unwrap();
+    assert!(plain_refs["plainKey"].ends_with("/plainKey}}"));
+    let truncated = structured_value(&mcp.http_send(http_request(json!({
+        "item": "Token API", "url": "/plain", "method": "POST", "maxResponseBytes": 6,
+        "captureSecrets": {"partialKey": "$"}
+    }))).await);
+    assert_eq!(truncated["truncated"], true);
+    assert_eq!(truncated["captureMissing"], json!(["partialKey"]));
+    assert!(vault.get_secret_value(id, "partialKey").is_err());
+
+    // Explicit holdResponse=true keeps the body out of MCP output and yields a receipt.
+    let held = structured_value(
+        &mcp.http_send(http_request(json!({
+            "item": "Token API",
+            "url": "/token",
+            "method": "POST",
+            "holdResponse": true
+        })))
+        .await,
+    );
+    assert_eq!(held["status"], 200);
+    assert_eq!(held["body"], "");
+    assert!(held["responseId"].is_string());
+    assert!(!held.to_string().contains("minted-token-unmatched-7781"));
+
+    // A path that resolves captures immediately and still shows the rest of the body.
     let captured = structured_value(
         &mcp.http_send(http_request(json!({
             "item": "Token API",
@@ -3051,6 +3091,7 @@ async fn http_capture_withholds_the_body_when_a_path_matches_nothing() {
     assert_eq!(captured["capturedSecrets"], json!(["accessToken"]));
     assert!(captured.get("captureMissing").is_none());
     assert!(captured["body"].as_str().unwrap().contains("3600"));
+    assert!(captured["references"]["accessToken"].as_str().unwrap().ends_with("/accessToken}}"));
     assert!(!captured.to_string().contains("minted-token-unmatched-7781"));
     server.abort();
 }
@@ -3351,6 +3392,32 @@ fn mask_browser_url_strips_userinfo_and_masks_query_and_fragment() {
     );
     assert_eq!(mask_browser_url(""), "");
     assert_eq!(mask_browser_url("not a url"), "");
+}
+
+#[test]
+fn git_ignore_check_warns_only_for_unignored_files_inside_git_repos() {
+    let dir = tempdir().unwrap();
+    let outside = dir.path().join(".env");
+    std::fs::write(&outside, "K=V\n").unwrap();
+    assert!(!is_unignored_in_git_repo(&outside));
+
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    if std::process::Command::new("git")
+        .arg("-C")
+        .arg(&repo)
+        .arg("init")
+        .status()
+        .is_ok_and(|s| s.success())
+    {
+        std::fs::write(repo.join(".gitignore"), ".env.local\n").unwrap();
+        let tracked = repo.join(".env");
+        let ignored = repo.join(".env.local");
+        std::fs::write(&tracked, "K=V\n").unwrap();
+        std::fs::write(&ignored, "K=V\n").unwrap();
+        assert!(is_unignored_in_git_repo(&tracked));
+        assert!(!is_unignored_in_git_repo(&ignored));
+    }
 }
 
 #[test]

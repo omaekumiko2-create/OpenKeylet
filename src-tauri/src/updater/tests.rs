@@ -183,6 +183,7 @@ async fn end_to_end_local_http_check_download_verify_and_stage() {
     let (keypair, pub_b64) = generate_test_keypair();
     let temp = tempdir().unwrap();
     let install_dir = temp.path().join("install");
+    #[cfg(target_os = "windows")]
     let data_dir = temp.path().join("data");
     fs::create_dir_all(&install_dir).unwrap();
     let fake_exe = if cfg!(windows) {

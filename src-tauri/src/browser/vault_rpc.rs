@@ -181,6 +181,34 @@ pub async fn handle(
             let (code, remaining_seconds, period) = crate::crypto::totp::current_totp_details(totp_secret)?;
             Ok(json!({"code": code, "remainingSeconds": remaining_seconds, "period": period}))
         }
+        "apiKey.save" => {
+            let origin = passkey::origin(text(p, "origin")?)?;
+            ensure!(origin.scheme() == "https" || matches!(origin.host_str(), Some("localhost" | "127.0.0.1" | "[::1]")), "Secure issuing origin required");
+            let site = origin.origin().ascii_serialization();
+            let service = p["serviceOrigin"].as_str().unwrap_or(&site);
+            let target = passkey::origin(service)?;
+            let site_domain = |url: &url::Url| match url.host() {
+                Some(url::Host::Domain(host)) => psl::domain_str(host).map(str::to_owned),
+                _ => None,
+            };
+            let issuer_domain = site_domain(&origin);
+            ensure!(service == target.origin().ascii_serialization()
+                && (service == site || (target.scheme() == "https" && issuer_domain.is_some()
+                    && issuer_domain == site_domain(&target))),
+                "Choose an HTTPS API origin belonging to the issuing site");
+            let value = text(p, "value")?;
+            ensure!(!value.is_empty() && value.len() <= 16384 && !value.chars().any(|c| c.is_whitespace() || c.is_control()), "Invalid issued key");
+            let input = serde_json::from_value(json!({
+                "name": text(p, "name")?, "itemType": "api", "enabled": true, "httpAuthType": "auto",
+                "modules": [
+                    {"kind":"url","value":service},
+                    {"kind":"apiCredential","agentVisible":false}
+                ],
+                "secrets": {"namedSecrets":{"apiCredential":value}}
+            }))?;
+            let saved = vault.save_connection(input)?;
+            Ok(json!({"id": saved.id}))
+        }
         "password.save" => vault.save_browser_login(p),
         _ => bail!("Unsupported browser operation"),
     }

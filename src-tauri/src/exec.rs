@@ -47,8 +47,8 @@ mod sftp;
 mod ssh;
 pub mod terminal;
 
-pub use http::{ApiRequestInput, ApiResponse, ApiUploadFile, SshResponse, SshTransferResponse, describe_api_request, execute_api};
-pub(crate) use http::{api_request_target, execute_api_raw, execute_api_scoped, sanitize_api_body};
+pub use http::{ApiRequestInput, ApiResponse, ApiUploadFile, HttpCandidate, SshResponse, SshTransferResponse, describe_api_request, execute_api};
+pub(crate) use http::{RawApiResponse, api_request_target, execute_api_raw, execute_api_scoped, sanitize_api_body};
 pub use local::execute_local;
 pub use sftp::{ssh_download, ssh_upload};
 pub use ssh::{execute_ssh, execute_ssh_redacting, test_connection};

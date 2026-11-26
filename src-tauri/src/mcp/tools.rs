@@ -833,7 +833,7 @@ impl VaultMcp {
 
     #[tool(
         name = "http_send",
-        description = "Send an HTTP request using any enabled OpenKeylet project that contains a configured secret, without returning hidden plaintext. Omit item when this MCP session already selected a compatible project or exactly one compatible project exists; otherwise pass its name or a natural phrase containing it. Built-in API/Basic authentication is injected automatically. For any other scheme, write a module directly as {{openkeylet:module}} or cross-item {{openkeylet:ItemName/module}} inside URL, header, query, JSON/text body, or form values; OpenKeylet resolves and redacts secrets from all referenced items locally. An item with a saved service URL or website rules lends its secrets only to that origin or a matching URL, otherwise the call is refused: pass a matching URL or omit url. Supports insecure=true for self-signed TLS and followRedirects=false to inspect 3xx redirects (cross-origin redirects strip auth headers and query secrets; one that would re-send a secret-bearing body elsewhere is returned unfollowed). An endpoint that mints a token (login, OAuth, key creation) returns it to you unless captureSecrets names its JSON path, which stores it in the vault instead; if a path matches nothing, the body is withheld and jsonPaths lists its keys.",
+        description = "Send an HTTP request using any enabled OpenKeylet project that contains a configured secret, without returning hidden plaintext. Omit item when this MCP session already selected a compatible project or exactly one compatible project exists; otherwise pass its name or a natural phrase containing it. Built-in API/Basic authentication is injected automatically. For any other scheme, write a module directly as {{openkeylet:module}} or cross-item {{openkeylet:ItemName/module}} inside URL, header, query, JSON/text body, or form values; OpenKeylet resolves and redacts secrets from all referenced items locally. An item with a saved service URL or website rules lends its secrets only to that origin or a matching URL, otherwise the call is refused: pass a matching URL or omit url. Supports insecure=true for self-signed TLS and followRedirects=false to inspect 3xx redirects. For an endpoint that mints a new token or API key, pass captureSecrets to save known paths immediately (if a path misses, the body is withheld in a local receipt with responseId, candidates, and jsonPaths), or pass holdResponse=true when the response schema is unknown and save via http_save_secret without repeating the request.",
         output_schema = rmcp::handler::server::tool::schema_for_type::<ApiResponse>(),
         annotations(title = "Send an authenticated API request", read_only_hint = false, destructive_hint = true, idempotent_hint = false, open_world_hint = true)
     )]
@@ -841,31 +841,19 @@ impl VaultMcp {
         let result: Result<ApiResponse, String> = async {
             let mut input = input;
             let capture_secrets = std::mem::take(&mut input.capture_secrets);
-            if !capture_secrets.is_empty() {
-                if input
+            let hold_response = input.hold_response;
+            validate_captures(&capture_secrets)?;
+            let capturing = hold_response || !capture_secrets.is_empty();
+            if capturing
+                && input
                     .save_response_to
                     .as_deref()
                     .is_some_and(|path| !path.trim().is_empty())
-                {
-                    return Err(
-                        "captureSecrets cannot be combined with saveResponseTo".to_owned(),
-                    );
-                }
-                for (field, path) in &capture_secrets {
-                    let trimmed_field = field.trim();
-                    if trimmed_field.is_empty()
-                        || trimmed_field.chars().count() > 64
-                        || trimmed_field.chars().any(char::is_control)
-                        || trimmed_field.contains('/')
-                    {
-                        return Err(format!("Invalid captureSecrets field name: {field}"));
-                    }
-                    if path.trim().is_empty() {
-                        return Err(format!(
-                            "captureSecrets JSON path cannot be empty for field: {field}"
-                        ));
-                    }
-                }
+            {
+                return Err(
+                    "saveResponseTo cannot be combined with captureSecrets or holdResponse"
+                        .to_owned(),
+                );
             }
             for module in collect_http_secret_placeholders(&input)? {
                 input
@@ -889,6 +877,17 @@ impl VaultMcp {
             let (extra_redactions, secret_sources) =
                 self.prepare_http_secret_bindings(&mut connection, &mut input)?;
             self.remember_item_secrets(&connection);
+            let max_response_bytes = if capturing {
+                Some(
+                    input
+                        .max_response_bytes
+                        .filter(|n| *n > 0)
+                        .unwrap_or(CAPTURE_LIMIT)
+                        .min(CAPTURE_LIMIT),
+                )
+            } else {
+                input.max_response_bytes
+            };
             let request = ApiRequestInput {
                 url: input.url,
                 method: input.method,
@@ -899,7 +898,7 @@ impl VaultMcp {
                 files: input.files,
                 body_base64: input.body_base64,
                 timeout_seconds: input.timeout_seconds,
-                max_response_bytes: input.max_response_bytes,
+                max_response_bytes,
                 save_response_to: input.save_response_to,
                 overwrite_response_file: input.overwrite_response_file,
                 insecure: input.insecure,
@@ -911,7 +910,7 @@ impl VaultMcp {
                     action = crate::policy::redact_values(action, &extra_redactions);
                 }
             }
-            if capture_secrets.is_empty() {
+            if !capturing {
                 self.track_with_redactions(item_id, action, &extra_redactions, async {
                     ensure_http_secret_destinations(&connection, &request, &secret_sources)?;
                     execute_api_scoped(&connection, request, &secret_sources).await
@@ -921,90 +920,12 @@ impl VaultMcp {
                 self.track_with_redactions(item_id, action, &extra_redactions, async {
                     ensure_http_secret_destinations(&connection, &request, &secret_sources)?;
                     let raw = execute_api_raw(&connection, request, &secret_sources).await?;
-                    let parsed_json = serde_json::from_str::<Value>(&raw.raw_body).ok();
-                    let mut sorted_specs: Vec<(&String, &String)> =
-                        capture_secrets.iter().collect();
-                    sorted_specs.sort_by(|left, right| left.0.cmp(right.0));
-                    let mut captured_pairs: Vec<(String, String)> = Vec::new();
-                    let mut capture_missing = Vec::new();
-                    for (field, path) in sorted_specs {
-                        match parsed_json
-                            .as_ref()
-                            .and_then(|parsed| extract_json_path(parsed, path))
-                        {
-                            Some(secret_value) => {
-                                captured_pairs.push((field.trim().to_owned(), secret_value));
-                            }
-                            None => capture_missing.push(field.trim().to_owned()),
-                        }
-                    }
-                    let captured_values: Vec<String> = captured_pairs
-                        .iter()
-                        .map(|(_, value)| value.clone())
-                        .collect();
-                    for value in &captured_values {
-                        self.remember_secret(value);
-                    }
-                    if !captured_pairs.is_empty()
-                        && let Err(save_err) =
-                            self.save_captured_http_secrets(item_id, &captured_pairs)
-                    {
-                        let redacted_err =
-                            crate::policy::redact_values(save_err, &captured_values);
-                        bail!("Captured secret storage failed: {redacted_err}");
-                    }
-                    let url = crate::policy::replace_captured_secrets(raw.url, &captured_pairs);
-                    let headers = raw
-                        .headers
-                        .into_iter()
-                        .map(|(k, v)| {
-                            (
-                                k,
-                                crate::policy::replace_captured_secrets(v, &captured_pairs),
-                            )
-                        })
-                        .collect();
-                    let captured_names: Vec<String> = captured_pairs
-                        .iter()
-                        .map(|(field, _)| field.clone())
-                        .collect();
-                    // A path that resolves nothing usually means the agent guessed the token's
-                    // location wrong, so the body still holds the token: withhold it and show
-                    // only its key paths.
-                    let (body, json_paths) = if capture_missing.is_empty() {
-                        let body_with_captures =
-                            crate::policy::replace_captured_secrets(raw.raw_body, &captured_pairs);
-                        let body = sanitize_api_body(
-                            body_with_captures,
-                            raw.truncated,
-                            &connection.stored,
-                            &connection.secrets,
-                        );
-                        (body, Vec::new())
-                    } else if let Some(parsed) = parsed_json.as_ref() {
-                        (
-                            "[WITHHELD: a captureSecrets path matched nothing, so the body may hold the token. Correct the path from jsonPaths and send again.]".to_owned(),
-                            json_key_paths(parsed),
-                        )
-                    } else {
-                        (
-                            "[WITHHELD: the response is not JSON (or was truncated), so captureSecrets could not run and the body may hold the token.]".to_owned(),
-                            Vec::new(),
-                        )
-                    };
-                    Ok(ApiResponse {
-                        status: raw.status,
-                        status_text: raw.status_text,
-                        url,
-                        headers,
-                        body,
-                        truncated: raw.truncated,
-                        saved_to: raw.saved_to,
-                        bytes_transferred: raw.bytes_transferred,
-                        captured_secrets: captured_names,
-                        capture_missing,
-                        json_paths,
-                    })
+                    self.process_captured_http_response(
+                        &connection,
+                        raw,
+                        &capture_secrets,
+                        hold_response,
+                    )
                 })
                 .await
             }
@@ -1014,8 +935,18 @@ impl VaultMcp {
     }
 
     #[tool(
+        name = "http_save_secret",
+        description = "Save fields from a held http_send response (from holdResponse=true or a withheld captureSecrets fallback) to its original enabled item. Pass responseId and captureSecrets, e.g. {\"issuedKey\":\"#0\"} or {\"accessToken\":\"$.access_token\"}. Returns reusable item-qualified placeholders only. Receipts belong to this session and expire after five minutes or eight newer responses.",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<std::collections::BTreeMap<String, String>>(),
+        annotations(title = "Save issued API credentials", read_only_hint = false, destructive_hint = true, idempotent_hint = true, open_world_hint = false)
+    )]
+    pub(super) async fn http_save_secret(&self, Parameters(input): Parameters<SaveHttpInput>) -> CallToolResult {
+        into_tool_result(self.save_http_receipt(input))
+    }
+
+    #[tool(
         name = "browser_open",
-        description = "Open an HTTP/HTTPS URL in a new browser tab or navigate an existing tab through the paired OpenKeylet browser extension, wait for page load completion, and return the loaded tabId, final url, origin, and title. Follow up with browser_inspect, browser_fill_login, browser_fill_personal, browser_passkey, or browser_click.",
+        description = "Open an HTTP/HTTPS URL in a new browser tab or navigate an existing tab through the paired OpenKeylet browser extension, wait for page load completion, and return the loaded tabId, final url (query values masked), origin, and title. Follow up with browser_inspect, browser_fill_login, browser_fill_personal, browser_passkey, or browser_click.",
         output_schema = rmcp::handler::server::tool::schema_for_type::<BrowserOpenOutput>(),
         annotations(title = "Open browser URL", read_only_hint = false, destructive_hint = false, idempotent_hint = false, open_world_hint = true)
     )]
@@ -1062,7 +993,7 @@ impl VaultMcp {
 
     #[tool(
         name = "browser_inspect",
-        description = "Inspect the active (or specified) webpage and its secure child iframes through the paired OpenKeylet browser extension without exposing any input values or secrets. Returns open web tabs, detected login/OTP forms, visible fillable fields (including checkboxes/radios and iframe metadata), clickable buttons, sanitized alerts/pageTextSummary (error banners, headings, 2FA prompts), pending WebAuthn Passkey prompts, and matching enabled OpenKeylet vault items for that website.",
+        description = "Inspect the active (or specified) webpage and its secure child iframes through the paired OpenKeylet browser extension without exposing any input values or secrets. Returns open web tabs, page title and masked URL, detected login/OTP forms, visible fillable fields (including checkboxes/radios and iframe metadata), clickable buttons, sanitized alerts and page summary, keyCandidates handles for browser_save_key, pending WebAuthn Passkey prompts, and matching enabled OpenKeylet vault items for that website.",
         annotations(title = "Inspect browser page", read_only_hint = true, destructive_hint = false, idempotent_hint = true, open_world_hint = true)
     )]
     pub(super) async fn browser_inspect(
@@ -1083,8 +1014,6 @@ impl VaultMcp {
                 Vec::new()
             };
             strip_match_urls(&mut inspected);
-            // Page text, alerts, titles and URLs come from the site and can echo a value this
-            // session filled or rendered (a token page, a settings form that prints a key).
             redact_json_strings(&mut inspected, &redactor);
             if let Some(object) = inspected.as_object_mut() {
                 object.insert("matchingItems".to_owned(), Value::Array(matching_items));
@@ -1115,7 +1044,7 @@ impl VaultMcp {
                 .ok_or_else(|| "No active HTTP/HTTPS browser tab to fill login credentials".to_owned())?
                 .to_owned();
             // Messages name the page by the masked URL the agent already saw.
-            let display_url = inspected["url"].as_str().unwrap_or_default().to_owned();
+            let display_url = mask_browser_url(&page_url);
             let page_origin = inspected["origin"]
                 .as_str()
                 .filter(|value| !value.is_empty())
@@ -1253,6 +1182,97 @@ impl VaultMcp {
     }
 
     #[tool(
+        name = "browser_save_key",
+        description = "Save one newly issued API key from an unlocked paired browser. Pass the exact tabId and origin, a unique non-secret item name, and a keyCandidates selectorHint from browser_inspect. Omit selectorHint if the owner selected the visible key. Returns the hidden apiCredential reference for use with http_send or secretEnv.",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<BrowserSaveKeyOutput>(),
+        annotations(title = "Save an issued website key", read_only_hint = false, destructive_hint = false, idempotent_hint = false, open_world_hint = false)
+    )]
+    pub(super) async fn browser_save_key(&self, Parameters(input): Parameters<BrowserSaveKeyInput>) -> CallToolResult {
+        let result: Result<BrowserSaveKeyOutput, String> = async {
+            let parsed = crate::passkey::origin(&input.origin).map_err(|_| "Invalid issuing origin")?;
+            let origin = parsed.origin().ascii_serialization();
+            if origin != input.origin || input.name.trim().is_empty() || input.name.chars().count() > 80 {
+                return Err("Provide an exact origin and a non-secret name of up to 80 characters".into());
+            }
+            let response = self.browser.execute_job("save_key", String::new(), false, json!({
+                "tabId": input.tab_id, "origin": origin, "name": input.name, "selectorHint": input.selector_hint, "serviceOrigin": input.service_origin
+            })).await.map_err(|_| "Browser bridge unavailable")?;
+            if response.status != "ok" {
+                return Err(match response.message.as_str() {
+                    "Unlock the paired extension before saving" => "Unlock the paired extension before saving",
+                    "Could not save the key. Check the lock and use a unique item name." => "Could not save the key. Check the lock and use a unique item name.",
+                    _ => "Inspect the issuing tab again or select the complete key there",
+                }.into());
+            }
+            let data = response.data.unwrap_or_default();
+            let id = data["itemId"].as_str().and_then(|s| Uuid::parse_str(s).ok()).ok_or("Missing item reference")?;
+            self.bind_active_item(id);
+            let _ = self.vault.add_activity(NewActivity {
+                status: "success".into(), source: self.activity_source(), connection_name: origin,
+                action: "Save issued browser key".into(), duration_ms: 0, error: String::new(),
+            });
+            Ok(BrowserSaveKeyOutput {
+                item_id: id.to_string(),
+                field: "apiCredential".to_owned(),
+                reference: format!("{{{{openkeylet:{id}/apiCredential}}}}"),
+            })
+        }.await;
+        into_tool_result(result)
+    }
+
+    #[tool(
+        name = "browser_save_login",
+        description = "Save the pending login from a submitted browser form as a new OpenKeylet item when the user asks to save it. Requires login save suggestions to be enabled, a live capture on the specified or active tab, and an unlocked paired extension. Pass only the tab ID and an optional display name. The response contains the saved item ID and website origin.",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<BrowserSaveLoginOutput>(),
+        annotations(title = "Save a submitted browser login", read_only_hint = false, destructive_hint = false, idempotent_hint = false, open_world_hint = false)
+    )]
+    pub(super) async fn browser_save_login(
+        &self,
+        Parameters(input): Parameters<BrowserSaveLoginInput>,
+    ) -> CallToolResult {
+        let result: Result<BrowserSaveLoginOutput, String> = async {
+            let response = self
+                .browser
+                .execute_job(
+                    "save_login",
+                    String::new(),
+                    false,
+                    json!({"tabId": input.tab_id, "name": input.name}),
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            if response.status != "ok" {
+                return Err(response.message);
+            }
+            let data = response.data.unwrap_or_default();
+            let item_id = data["itemId"]
+                .as_str()
+                .and_then(|id| Uuid::parse_str(id).ok())
+                .ok_or_else(|| "Browser extension did not return a saved item ID".to_owned())?;
+            let origin = data["origin"]
+                .as_str()
+                .and_then(|url| crate::passkey::origin(url).ok())
+                .map(|url| url.origin().ascii_serialization())
+                .ok_or_else(|| "Browser extension did not return a website origin".to_owned())?;
+            self.bind_active_item(item_id);
+            let _ = self.vault.add_activity(NewActivity {
+                status: "success".to_owned(),
+                source: self.activity_source(),
+                connection_name: origin.clone(),
+                action: "Save submitted browser login".to_owned(),
+                duration_ms: 0,
+                error: String::new(),
+            });
+            Ok(BrowserSaveLoginOutput {
+                item_id: item_id.to_string(),
+                origin,
+            })
+        }
+        .await;
+        self.redacted_session_result(result)
+    }
+
+    #[tool(
         name = "browser_fill_personal",
         description = "Autofill a saved payment card or contact/billing identity item into the active HTTPS (or localhost) browser page — including split cross-origin HTTPS payment iframes such as Stripe Elements — through the paired OpenKeylet browser extension without revealing card numbers, security codes, or personal details to the model. Government ID numbers are never autofilled.",
         output_schema = rmcp::handler::server::tool::schema_for_type::<BrowserPersonalOutput>(),
@@ -1342,8 +1362,11 @@ impl VaultMcp {
             }
             let data = response.data.unwrap_or_else(|| json!({}));
             Ok(BrowserClickOutput {
-                clicked_text: data["clickedText"].as_str().unwrap_or_default().to_owned(),
-                tag: data["tag"].as_str().unwrap_or_default().to_owned(),
+                clicked_text: input.text.unwrap_or_default(),
+                tag: match data["tag"].as_str() {
+                    Some(tag @ ("button" | "input" | "a" | "label")) => tag,
+                    _ => "control",
+                }.to_owned(),
                 url: mask_browser_url(data["url"].as_str().unwrap_or_default()),
                 origin: data["origin"].as_str().unwrap_or_default().to_owned(),
             })
@@ -1620,24 +1643,23 @@ impl VaultMcp {
                         writer
                             .commit()
                             .context("Unable to save file atomically")?;
-                        #[cfg(unix)]
-                        {
-                            use std::os::unix::fs::PermissionsExt;
-                            let _ = std::fs::set_permissions(
-                                &target_path,
-                                std::fs::Permissions::from_mode(0o600),
-                            );
-                        }
+                        let _ = crate::crypto::harden_private_file(&target_path);
                         Ok(rendered.len())
                     },
                 )
                 .await?;
+            let mut warning = RENDERED_FILE_WARNING.to_owned();
+            if is_unignored_in_git_repo(&target_path) {
+                warning.push_str(
+                    " Warning: this file is inside a Git repository and is not matched by .gitignore; add it to .gitignore so it is not accidentally committed or pushed.",
+                );
+            }
             Ok(SecretWriteFileOutput {
                 path: display_path,
                 bytes_written,
                 modules_used,
                 appended: append,
-                warning: RENDERED_FILE_WARNING.to_owned(),
+                warning,
             })
         }
         .await;

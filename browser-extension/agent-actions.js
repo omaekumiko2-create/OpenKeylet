@@ -210,10 +210,33 @@ function inspectPageDom(expectedOrigin) {
     if (el.type && tag === "input") return `input[type="${el.type}"]`;
     return tag;
   };
-  // Collect entered values from sensitive inputs so sanitized page text can never echo them.
+  // Handles live only in this document's isolated world for keyCandidates (and optional handle selectors).
+  const handles = new Map();
+  const keyHandleFor = (el) => {
+    const id = "keylet-control:" + crypto.getRandomValues(new Uint32Array(4)).join("-");
+    handles.set(id, el);
+    return id;
+  };
+  globalThis.openKeyletControls = handles;
+  // Collect entered values from sensitive inputs and visible key candidate nodes so
+  // readable page text, titles, alerts, and URLs never accidentally echo them.
   const sensitiveValues = [];
+  const pushSensitive = (raw) => {
+    const v = (raw || "").trim();
+    if (!v || sensitiveValues.length >= 64 || sensitiveValues.includes(v)) return;
+    sensitiveValues.push(v);
+  };
+  const scrubSensitive = (text) => {
+    if (!text || !sensitiveValues.length) return text;
+    let out = text;
+    for (const sv of sensitiveValues) {
+      if (sv && out.includes(sv)) out = out.split(sv).join("[REDACTED]");
+    }
+    return out;
+  };
   const allInputs = [];
   const allButtons = [];
+  const keyCandidates = [];
   const alertElements = [];
   const summaryElements = [];
   const ALERT_SELECTOR = '[role="alert"], [role="status"], [aria-live="assertive"], [aria-live="polite"], .alert, .error, .error-message, .form-error, .flash-error, .flash-warn, .flash-notice, .notification, .toast, [data-error], [data-testid*="error" i], [data-testid*="alert" i]';
@@ -224,7 +247,7 @@ function inspectPageDom(expectedOrigin) {
       if (el.matches("input, textarea") && typeof el.value === "string") {
         const v = el.value.trim();
         if ((el.type === "password" && v.length >= 3) || v.length >= 6) {
-          if (sensitiveValues.length < 40) sensitiveValues.push(v);
+          pushSensitive(v);
         }
       }
       if (allInputs.length < 200 && el.matches("input, select, textarea") && isVisible(el)) {
@@ -236,6 +259,13 @@ function inspectPageDom(expectedOrigin) {
         const text = (el.tagName === "INPUT" ? el.value : el.textContent || "").replace(/\s+/g, " ").trim();
         const aria = (el.getAttribute("aria-label") || "").trim();
         if (text || aria) allButtons.push(el);
+      }
+      if (isTopFrame && keyCandidates.length < 32 && el.matches("output, code, pre:not(:has(code)), textarea[readonly], input[readonly]:is([type=text], :not([type]))") && isVisible(el)) {
+        keyCandidates.push({ selectorHint: keyHandleFor(el), kind: el.localName });
+        const raw = (el.matches("input, textarea") ? el.value : el.innerText || "").trim();
+        if (raw.length >= 8 && raw.length <= 16384 && !/\s/.test(raw) && !/[•…]|\*{3,}|\.{3,}/.test(raw)) {
+          pushSensitive(raw);
+        }
       }
       if (alertElements.length < 24 && el.matches(ALERT_SELECTOR) && isVisible(el)) {
         alertElements.push(el);
@@ -383,8 +413,8 @@ function inspectPageDom(expectedOrigin) {
       name: (el.name || "").slice(0, 80),
       id: (el.id || "").slice(0, 80),
       autocomplete: (el.autocomplete || "").slice(0, 80),
-      placeholder: (el.placeholder || "").slice(0, 80),
-      label: labelTextFor(el),
+      placeholder: scrubSensitive((el.placeholder || "").slice(0, 80)),
+      label: scrubSensitive(labelTextFor(el)),
       selectorHint: selectorHintFor(el),
       hasValue: isCheckable ? Boolean(el.checked) : Boolean(el.value),
       focused: el === active,
@@ -398,8 +428,8 @@ function inspectPageDom(expectedOrigin) {
     index,
     tag: el.tagName.toLowerCase(),
     type: el.type || "",
-    text: ((el.tagName === "INPUT" ? el.value : el.textContent) || "").replace(/\s+/g, " ").trim().slice(0, 100),
-    ariaLabel: (el.getAttribute("aria-label") || "").slice(0, 100),
+    text: scrubSensitive(((el.tagName === "INPUT" ? el.value : el.textContent) || "").replace(/\s+/g, " ").trim().slice(0, 100)),
+    ariaLabel: scrubSensitive((el.getAttribute("aria-label") || "").slice(0, 100)),
     selectorHint: selectorHintFor(el),
     disabled: Boolean(el.disabled || el.getAttribute("aria-disabled") === "true"),
   }));
@@ -407,7 +437,9 @@ function inspectPageDom(expectedOrigin) {
   return {
     url: location.href,
     origin: location.origin,
-    title: (document.title || "").slice(0, 160),
+    title: scrubSensitive((document.title || "").slice(0, 160)),
+    keyCandidates,
+    _scrubValues: sensitiveValues,
     focused,
     loginForms,
     otpFieldCount: otpInputs.length,
@@ -675,7 +707,7 @@ function fillFieldDom(value, submit, payload, expiresAt) {
   const moduleKind = typeof payload?.moduleKind === "string" ? payload.moduleKind.trim() : "";
 
   if (selector) {
-    target = queryDeep(document, selector);
+    target = selector.startsWith("keylet-control:") ? globalThis.openKeyletControls?.get(selector) : queryDeep(document, selector);
     if (!target) return { ok: false, message: `No element matched selector: ${selector}` };
   }
 
@@ -820,7 +852,7 @@ function clickElementDom(payload, expiresAt) {
   const text = typeof payload?.text === "string" ? payload.text.trim().toLowerCase() : "";
 
   if (selector) {
-    target = queryDeep(document, selector);
+    target = selector.startsWith("keylet-control:") ? globalThis.openKeyletControls?.get(selector) : queryDeep(document, selector);
     if (!target || !isVisible(target)) {
       return { ok: false, message: `No visible clickable element matched selector: ${selector}` };
     }
@@ -1071,15 +1103,29 @@ async function inspectPageJob(payload = {}) {
       }
     }
 
+    const scrubValues = Array.isArray(dom._scrubValues) ? dom._scrubValues : [];
+    const scrubDisplay = (value) => {
+      if (!value || !scrubValues.length) return value;
+      let out = value;
+      for (const sv of scrubValues) {
+        if (sv && out.includes(sv)) out = out.split(sv).join("[REDACTED]");
+      }
+      return out;
+    };
+    const scrubbedTabs = scrubValues.length
+      ? tabs.map(t => ({ ...t, title: scrubDisplay(t.title), url: scrubDisplay(t.url) }))
+      : tabs;
+
     return {
       ok: true,
       message: `Inspected ${origin}`,
       data: {
         tabId: tab.id,
-        url: urlWithMaskedQuery(dom.url || tab.url),
+        url: scrubDisplay(urlWithMaskedQuery(dom.url || tab.url)),
         matchUrl: dom.url || tab.url,
         origin: dom.origin || origin,
-        title: dom.title || (tab.title || "").slice(0, 160),
+        title: scrubDisplay(dom.title || (tab.title || "").slice(0, 160)),
+        keyCandidates: dom.keyCandidates || [],
         focused,
         loginForms: mergedLoginForms,
         otpFieldCount: totalOtp,
@@ -1088,7 +1134,7 @@ async function inspectPageJob(payload = {}) {
         alerts: mergedAlerts,
         pageTextSummary: summaryChunks.join(" | ").slice(0, 1500),
         frames,
-        tabs,
+        tabs: scrubbedTabs,
         pendingPasskeys,
       },
     };
@@ -1307,6 +1353,46 @@ async function passkeyResolveJob(payload = {}) {
   }
 }
 
+async function saveIssuedKeyJob(payload, expiresAt) {
+  const { tabId, origin, selectorHint, name } = payload;
+  const tab = await chrome.tabs.get(tabId).catch(() => null);
+  if (!tab?.url || new URL(tab.url).origin !== origin || !isSecureOrigin(origin)) {
+    return { ok: false, message: "The issuing site changed or is unavailable" };
+  }
+  const status = await bridgeCall("status").catch(() => null);
+  if (!status || status.locked) return { ok: false, message: "Unlock the paired extension before saving" };
+  const [capture] = await chrome.scripting.executeScript({
+    target: { tabId, frameIds: [0] },
+    args: [origin, selectorHint],
+    func: (expected, handle) => {
+      if (location.origin !== expected || window.top !== window) return null;
+      let value;
+      if (handle) {
+        const el = globalThis.openKeyletControls?.get(handle);
+        if (!el?.isConnected || !el.matches("output,code,pre,textarea[readonly],input[readonly]:is([type=text],:not([type]))")
+            || !el.getClientRects().length || getComputedStyle(el).visibility !== "visible"
+            || getComputedStyle(el).opacity === "0"
+            || el.checkVisibility?.({ checkOpacity: true, checkVisibilityCSS: true }) === false) return null;
+        value = el.matches("input,textarea") ? el.value : el.innerText;
+      } else {
+        value = window.getSelection()?.toString();
+      }
+      value = value?.trim();
+      return value && value.length <= 16384 && !/\s/.test(value) && !/[•…]|\*{3,}|\.{3,}/.test(value) ? value : null;
+    },
+  });
+  if (!capture?.result) return { ok: false, message: "Choose a visible key field from browser_inspect or select the complete issued key in the page" };
+  const [current] = await chrome.scripting.executeScript({
+    target: { tabId, frameIds: [0] }, func: () => location.origin,
+  });
+  if (current?.documentId !== capture.documentId || current?.result !== origin || Date.now() >= expiresAt) {
+    return { ok: false, message: "The issuing page changed or the task expired" };
+  }
+  const result = await bridgeCall("apiKey.save", { origin, name, serviceOrigin: payload.serviceOrigin, value: capture.result }).catch(() => null);
+  if (!result) return { ok: false, message: "Could not save the key. Check the lock and use a unique item name." };
+  return { ok: true, data: { itemId: result.id } };
+}
+
 async function handleBrowserJob(job) {
   const expiresAt = jobExpiresAt(job);
   if (Number.isFinite(expiresAt) && Date.now() >= expiresAt) {
@@ -1322,6 +1408,10 @@ async function handleBrowserJob(job) {
       return inspectPageJob(job?.payload || {});
     case "fill_login":
       return fillLoginJob(job?.payload || {}, expiresAt);
+    case "save_key":
+      return saveIssuedKeyJob(job.payload, expiresAt);
+    case "save_login":
+      return saveCapturedLoginJob(job?.payload || {}, expiresAt);
     case "fill_field":
       return fillFieldJob(job?.value, Boolean(job?.submit), job?.payload || {}, expiresAt);
     case "fill_personal":

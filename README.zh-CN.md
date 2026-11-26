@@ -287,17 +287,19 @@ OpenKeylet 会在本地执行 `secret_write_file`、`http_send`、`ssh_run` 或 
 
 ---
 
-## 完整 MCP 工具列表（23 个）与原生 CLI 底座
+## 完整 MCP 工具列表（26 个）与原生 CLI 底座
 
-OpenKeylet 通过按需启动的本地 `stdio` MCP（`openkeylet mcp stdio`）提供 **23 个**带结构化 `structuredContent` 的工具：
+OpenKeylet 通过按需启动的本地 `stdio` MCP（`openkeylet mcp stdio`）提供 **26 个**带结构化 `structuredContent` 的工具：
 
 | 分类 | 工具名 | 用途 |
 | --- | --- | --- |
 | **发现与记忆** | `items_search(query?)` | 搜索已启用项目（含登录、SSH、API、银行卡、身份、安全笔记）的名称、模块、`agentNotes` 与可用动作 |
 | | `item_note` | 为项目添加/更新/删除简短非敏感上下文备注（≤200 字，自动拦截密文），帮助后续会话快速定位项目 |
 | **浏览器与 Passkey** | `browser_open` | 通过已配对扩展在浏览器打开或跳转指定 HTTP/HTTPS 页面并等待加载完成 |
-| | `browser_inspect` | 检查当前页面及安全子 iframe：地址、表单、字段（含复选框/单选框）、按钮、脱敏告警/页面状态摘要、待处理 Passkey 及匹配条目 |
+| | `browser_inspect` | 检查当前页面及安全子 iframe：脱敏地址、标题、表单、字段（含复选框/单选框）、按钮、脱敏告警/页面摘要、供 `browser_save_key` 使用的 `keyCandidates` 句柄、待处理 Passkey 及匹配条目 |
 | | `browser_fill_login` | 匹配并填写网页或受信任 SSO iframe 的账号、密码及实时 TOTP（纯 OTP 验证页自动补填 2FA） |
+| | `browser_save_key` | 将网页刚展示的一次性 API Key 直接由扩展抓入本地库，明文不进入模型上下文 |
+| | `browser_save_login` | 将扩展刚捕获的已提交网页登录账号密码直接存入本地库，明文不进入上下文 |
 | | `browser_fill_personal` | 在 HTTPS/localhost 页面填写已保存的支付卡或身份地址（支持 Stripe Elements 等跨源分拆支付 iframe） |
 | | `browser_click` | 点击页面或安全 iframe 中的可见按钮、链接、复选框、单选框或标签 |
 | | `browser_passkey` | 调用本机加密库完成 WebAuthn Passkey 登录或注册（支持直接挂载到指定/匹配的已有登录项）；**允许 Agent 使用 Passkey** 开启时无需逐次确认 |
@@ -305,8 +307,9 @@ OpenKeylet 通过按需启动的本地 `stdio` MCP（`openkeylet mcp stdio`）�
 | **SSH 与 SFTP** | `ssh_run` | 私钥优先 + 密码自动回退认证执行 SSH 命令，支持标准输入、输出截断保护与跨条目 `{{openkeylet:项目/模块}}` / `{{openkeylet-raw:...}}` 占位符；首次连接时固定服务器主机密钥，之后拒绝密钥已变更的连接 |
 | | `ssh_upload` | 通过 SFTP 递归上传本地文件或目录 |
 | | `ssh_download` | 通过 SFTP 递归下载远端文件或目录 |
-| **HTTP API** | `http_send` | 发送认证 HTTP/HTTPS 请求（自动识别服务商、Bearer/Basic、自定义认证头、流式下载、multipart、`insecure`、`followRedirects`、跨源重定向剥离认证头，以及 `captureSecrets` 零明文截留 JSON 响应新令牌入库）；已保存服务 URL 或网址规则的条目，其秘密只会发送到该 Origin 或匹配规则的地址 |
-| **密钥文件与录入** | `secret_write_file` | 本地原子渲染模板文件，支持单条目 `{{openkeylet:模块}}` 与跨条目 `{{openkeylet:项目/模块}}`（Unix `0600` 权限），用于无法读取环境变量的程序；渲染出的文件含有明文 |
+| **HTTP API** | `http_send` | 发送认证 HTTP/HTTPS 请求（自动识别服务商、Bearer/Basic、自定义认证头、流式下载、multipart、`insecure`、`followRedirects`、跨源重定向剥离认证头，支持 `captureSecrets` 直接截留新令牌入库以及可选 `holdResponse=true` 加密收据模式）；已保存服务 URL 或网址规则的条目，其秘密只会发送到该 Origin 或匹配规则的地址 |
+| | `http_save_secret` | 从 `http_send` 的加密本地收据（`holdResponse=true` 或 `captureSecrets` 未命中回退）按槽位/路径保存新签发密钥，无需重复发请求 |
+| **密钥文件与录入** | `secret_write_file` | 本地原子渲染模板文件，支持单条目 `{{openkeylet:模块}}` 与跨条目 `{{openkeylet:项目/模块}}`（Unix `0600`、Windows 仅当前用户 NTFS ACL，若位于 Git 仓库且未被 `.gitignore` 忽略会额外提示），用于无法读取环境变量的程序；渲染出的文件含有明文 |
 | | `secret_generate` | 在本地密码学生成强密码/hex/base64url 令牌并直接加密写入项目，不向模型暴露明文 |
 | | `ssh_keygen` | 在本地生成 Ed25519 SSH 密钥对，私钥直接加密入库，仅向模型返回公钥与指纹 |
 | | `secret_ingest_file` | 直接将本机 `.env` 或 PEM 私钥文件加密吸收进 Vault（可选同时生成密封模板），不经过模型上下文 |

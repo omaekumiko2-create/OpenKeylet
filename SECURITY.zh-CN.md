@@ -2,7 +2,7 @@
 
 [English](SECURITY.md) · **简体中文**
 
-OpenKeylet 是通过 stdio MCP 提供的本地凭据执行工具。它的主要目标是让 Agent 完成认证，同时避免把隐藏凭据明文放入普通 MCP 参数或响应。
+OpenKeylet 是一个按现状提供的开源公益便捷工具（不作任何形式的安全保障承诺），通过本地 stdio MCP 为 Agent 提供凭据存储与使用能力。它**不是**用于抵御恶意攻击者的严谨密码保险库，而是为了在保证 Agent 操作**无缝、快速**的前提下，尽量减少明文因低级失误出现在模型上下文、API 中转站、终端历史或公开仓库中。
 
 ## 安全目标
 
@@ -65,7 +65,7 @@ OpenKeylet 不添加策略 shell。`terminal_run` 执行普通单次本地 shell
 
 对于内置 API 凭据或 Basic 组合未覆盖的认证方式，`{{openkeylet:password}}` 或 `{{openkeylet:service token}}` 等占位符直接解析所指模块，在 URL、header、query、JSON/文本 body 或 form 值中本地替换。`http_send.secretBindings` 仅在占位符名与模块名不同时作为可选别名映射。解析值加入响应和活动脱敏，不返回给调用方；TOTP 绑定使用当前验证码，而非保存的种子。
 
-OpenKeylet 跟随 HTTP/HTTPS 重定向，直到服务停止重定向或达到调用方可选超时；`followRedirects=false` 时改为返回 3xx 响应。重定向到其他 Origin 时，OpenKeylet 会剥离它提供的凭据，且包含秘密的请求体绝不会重新发送到其他 Origin。调用方可发送普通 header、cookie、`Host` 或自己的认证值；只有 OpenKeylet 为已存凭据注入的 header 受 OpenKeylet 控制。响应头和响应体不按字段名分类，仅脱敏 OpenKeylet 已知秘密值，因此服务新返回的 cookie、凭据或其他敏感数据可能进入 Agent 上下文，除非调用方在 `captureSecrets` 中指明。只要有一个 `captureSecrets` 路径未匹配，或响应体不是 JSON，响应体就会被扣留，只返回其 JSON 键路径。活动记录包含 HTTP 方法、Origin 和不含 query 的路径，已知已存秘密在保存活动前脱敏。
+OpenKeylet 跟随 HTTP/HTTPS 重定向，直到服务停止重定向或达到调用方可选超时；`followRedirects=false` 时改为返回 3xx 响应。重定向到其他 Origin 时，OpenKeylet 会剥离它提供的凭据，且包含秘密的请求体绝不会重新发送到其他 Origin。调用方可发送普通 header、cookie、`Host` 或自己的认证值；只有 OpenKeylet 为已存凭据注入的 header 受 OpenKeylet 控制。默认情况下 `http_send` 正常返回脱敏后的响应，以保证日常 API 调用无缝快速；仅脱敏 OpenKeylet 已知秘密值，调用签发新令牌/密钥的接口时可通过 `captureSecrets` 直接存库（若返回结构未知可传 `holdResponse=true`，再通过 `http_save_secret` 从加密本地回执中提取）。只要有一个 `captureSecrets` 路径未匹配，或响应体不是 JSON，响应体和响应头会被扣留在加密本地回执中（单次最多 1 MiB，每会话保留最近 8 份 / 5 分钟），只返回 `responseId`、候选编号 `candidates` 与 `jsonPaths`，从而无需重复发请求即可完成保存。同理，`browser_save_key` 与 `browser_save_login` 允许由已配对扩展直接把网页展示的 API Key 或刚提交的登录存入本地库，明文不经过 MCP 上下文。活动记录包含 HTTP 方法、Origin 和不含 query 的路径，已知已存秘密在保存活动前脱敏。
 
 调用方提供路径时，`http_send` 可上传本地文件或把响应保存到本地。OpenKeylet 不独立判断用户请求的本地文件是否适合发送、应发送给哪个 HTTP/HTTPS 目标，或明确请求的响应应存在哪里。默认替换现有响应文件，调用方可明确关闭替换。
 

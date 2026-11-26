@@ -284,17 +284,19 @@ In **System → CLOUD / 05**, you may optionally sync an encrypted snapshot thro
 
 ---
 
-## Complete MCP Surface (23 Tools) & Native CLI Bridge
+## Complete MCP Surface (26 Tools) & Native CLI Bridge
 
-OpenKeylet runs on demand via local `stdio` MCP (`openkeylet mcp stdio`) and exposes **23 typed tools** with `structuredContent` outputs:
+OpenKeylet runs on demand via local `stdio` MCP (`openkeylet mcp stdio`) and exposes **26 typed tools** with `structuredContent` outputs:
 
 | Category | Tool | Purpose |
 | --- | --- | --- |
 | **Discovery & Memory** | `items_search(query?)` | Search enabled items (including Login, SSH, API, Card, Identity, Secure Note), module names, saved `agentNotes`, and available actions |
 | | `item_note` | Attach, update, or remove short non-secret context notes (≤200 chars, secret-guarded) so future agent sessions select the right item fast |
 | **Browser & Web** | `browser_open` | Open an HTTP/HTTPS URL in a new tab or navigate an existing tab and wait for load completion |
-| | `browser_inspect` | Inspect active tab & secure child iframes: URLs, forms, fields (incl. checkboxes/radios), buttons, sanitized alerts/page summary, pending Passkeys, and matching vault items |
+| | `browser_inspect` | Inspect active tab & secure child iframes: masked URLs, title, forms, fields (incl. checkboxes/radios), buttons, sanitized alerts/page summary, `keyCandidates` handles for `browser_save_key`, pending Passkeys, and matching vault items |
 | | `browser_fill_login` | Match and fill saved login credentials (and auto-fill TOTP on OTP-only verification steps) into a live page or matching SSO iframe |
+| | `browser_save_key` | Capture a newly displayed one-time API key directly from the paired page into the vault without exposing plaintext in model context |
+| | `browser_save_login` | Save a submitted login captured by the paired browser extension directly into the vault without exposing plaintext |
 | | `browser_fill_personal` | Fill saved cards or identity details into HTTPS/localhost pages, including split cross-origin payment iframes (e.g. Stripe Elements) |
 | | `browser_click` | Click a visible button, link, checkbox, radio, or label in the page or secure iframe |
 | | `browser_passkey` | Complete WebAuthn Passkey sign-in or registration (attaching to a specified/matching login item when available) using the local vault, with no per-request confirmation while **Agent Passkey signing** is on |
@@ -302,8 +304,9 @@ OpenKeylet runs on demand via local `stdio` MCP (`openkeylet mcp stdio`) and exp
 | **SSH & SFTP** | `ssh_run` | Run SSH commands with private-key-first + password fallback auth, stdin, bounded output cap, and cross-item `{{openkeylet:Item/module}}` / `{{openkeylet-raw:...}}` placeholders; pins the server host key on first connection and refuses a changed key |
 | | `ssh_upload` | Recursively upload local files/directories over SFTP |
 | | `ssh_download` | Recursively download remote files/directories over SFTP |
-| **HTTP APIs** | `http_send` | Send authenticated HTTP/HTTPS requests (auto-detects providers, Bearer/Basic, custom headers, streaming, multipart, `insecure`, `followRedirects`, cross-origin auth stripping, and zero-plaintext `captureSecrets` from JSON responses); secrets of an item with a saved service URL or website rules are only sent to that origin or matching rules |
-| **Files & Onboarding** | `secret_write_file` | Render a local file template replacing single-item `{{openkeylet:module}}` or cross-item `{{openkeylet:Item/module}}` placeholders atomically (`0600` on Unix) for programs that cannot read environment variables; the rendered file holds plaintext |
+| **HTTP APIs** | `http_send` | Send authenticated HTTP/HTTPS requests (auto-detects providers, Bearer/Basic, custom headers, streaming, multipart, `insecure`, `followRedirects`, cross-origin auth stripping, inline `captureSecrets`, and optional `holdResponse=true` receipt mode); secrets of an item with a saved service URL or website rules are only sent to that origin or matching rules |
+| | `http_save_secret` | Save fields from an encrypted local `http_send` receipt (`holdResponse=true` or withheld `captureSecrets` fallback) without repeating a one-time issuance request |
+| **Files & Onboarding** | `secret_write_file` | Render a local file template replacing single-item `{{openkeylet:module}}` or cross-item `{{openkeylet:Item/module}}` placeholders atomically (`0600` on Unix, owner-only NTFS ACL on Windows, plus a warning if unignored inside a Git repo) for programs that cannot read environment variables; the rendered file holds plaintext |
 | | `secret_generate` | Cryptographically generate and store a strong password/hex/base64url secret locally into an item without exposing plaintext |
 | | `ssh_keygen` | Generate an Ed25519 SSH keypair locally, store the private key encrypted, and return only the public key & fingerprint |
 | | `secret_ingest_file` | Import a local `.env` or PEM private key directly into the vault without exposing plaintext (and optionally write a sealed template) |

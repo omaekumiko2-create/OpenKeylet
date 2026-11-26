@@ -2,7 +2,7 @@
 
 use crate::vault::Vault;
 use anyhow::{Context, Result};
-#[cfg(any(target_os = "windows", target_os = "macos", test))]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 use std::path::Path;
 use std::{
     path::PathBuf,
