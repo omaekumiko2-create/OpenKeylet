@@ -296,7 +296,7 @@
     } else {
       statusText.textContent = t.locked;
     }
-    versionEl.textContent = `v${state.version || '0.16.0'}`;
+    versionEl.textContent = `v${state.version || '0.20.0'}`;
 
     // Optional update banner pill
     const updatePill = $('tray-update-pill');

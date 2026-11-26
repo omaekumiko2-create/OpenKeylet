@@ -1,6 +1,6 @@
 {
   "name": "openkeylet",
-  "version": "0.16.0",
+  "version": "0.20.0",
   "private": true,
   "description": "OpenKeylet — a local password and credential manager for AI agents.",
   "scripts": {
