@@ -1071,7 +1071,7 @@ mod tests {
             Duration::from_secs(2),
             |_, result| !result.running,
         );
-        assert_eq!(output, "xterm-256color");
+        assert_eq!(output.trim(), "xterm-256color");
         manager.close(session.session_id).unwrap();
     }
 
