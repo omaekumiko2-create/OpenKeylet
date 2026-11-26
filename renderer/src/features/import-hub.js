@@ -334,7 +334,7 @@ async function handlePasteClipboard() {
 }
 
 function isBinaryExtractable(name) {
-  return /\.(docx|xlsx|zip)$/i.test(String(name || ''));
+  return /\.(docx|xlsx|zip|1pux)$/i.test(String(name || ''));
 }
 
 async function fileToBase64(file) {
@@ -543,19 +543,31 @@ async function handleFiles(fileList) {
   let combinedFirst = true;
   for (const file of files) {
     const lower = (file.name || '').toLowerCase();
-    if (lower.endsWith('.mvault')) {
+    if (lower.endsWith('.mvault') || lower.endsWith('.kdbx')) {
       if (host.openDroppedMvault) {
         await host.openDroppedMvault(file);
       } else {
         host.toast(
           t(
-            '检测到 .mvault 加密备份，正在打开备份恢复窗口',
-            'Detected .mvault backup — opening backup restore flow'
+            '检测到加密密码库文件，正在打开解锁恢复窗口',
+            'Detected encrypted vault file — opening unlock & import flow'
           )
         );
         host.openBackupRestore?.();
       }
       continue;
+    }
+    if (lower.endsWith('.json') && file.size <= 64 * 1024 * 1024 && host.openDroppedMvault) {
+      try {
+        const jsonText = await file.text();
+        const parsed = JSON.parse(jsonText.replace(/^\uFEFF/, ''));
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && parsed.encrypted === true) {
+          await host.openDroppedMvault(file);
+          continue;
+        }
+      } catch {
+        // Fall through to standard text extraction
+      }
     }
     if (file.type?.startsWith('image/') || /\.(png|jpe?g|webp|gif|bmp)$/i.test(lower)) {
       try {
@@ -570,9 +582,10 @@ async function handleFiles(fileList) {
       }
       continue;
     }
-    if (file.size > 16 * 1024 * 1024) {
+    const maxSize = lower.endsWith('.1pux') ? 64 * 1024 * 1024 : 16 * 1024 * 1024;
+    if (file.size > maxSize) {
       host.toast(
-        t(`${file.name} 超过 16 MiB 限制，已跳过`, `${file.name} exceeds 16 MiB limit`),
+        t(`${file.name} 超过大小限制，已跳过`, `${file.name} exceeds file size limit`),
         'error'
       );
       continue;

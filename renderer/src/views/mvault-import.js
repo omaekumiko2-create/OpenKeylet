@@ -27,6 +27,10 @@ export function setGlobalMvaultDropOverlay(visible, options = '') {
         titleEl.textContent = localized('松开即可智能提取并构建项目', 'Drop files to extract & build items');
       } else if (mode === 'mixed') {
         titleEl.textContent = localized('松开即可导入备份并提取文件', 'Drop to import backup & extract files');
+      } else if (fileNames.length === 1 && /\.kdbx$/i.test(fileNames[0])) {
+        titleEl.textContent = localized('松开即可解锁 KeePass 数据库', 'Drop KeePass database to unlock');
+      } else if (fileNames.length === 1 && /\.json$/i.test(fileNames[0])) {
+        titleEl.textContent = localized('松开即可解锁 Bitwarden 加密库', 'Drop Bitwarden encrypted vault to unlock');
       } else {
         titleEl.textContent = localized('松开即可导入 .mvault 备份', 'Drop .mvault backup to import');
       }
@@ -34,8 +38,8 @@ export function setGlobalMvaultDropOverlay(visible, options = '') {
     if (subEl) {
       if (mode === 'universal') {
         subEl.textContent = localized(
-          '支持 Excel / Word / ZIP / .env / CSV / JSON / KeePass / 私钥 / 2FA 截图 / 文件夹等任意文件',
-          'Supports Excel, Word, ZIP, .env, CSV, JSON, KeePass, SSH keys, 2FA QR, folders & any text',
+          '支持 Bitwarden / 1Password .1pux / KeePass .kdbx / Excel / Word / ZIP / .env / CSV / 私钥 / 2FA 截图',
+          'Supports Bitwarden, 1Password .1pux, KeePass .kdbx, Excel, Word, ZIP, .env, CSV, SSH keys & 2FA QR',
         );
       } else if (mode === 'mixed') {
         subEl.textContent = localized(
@@ -118,12 +122,53 @@ function mvaultFilteredItems() {
   });
 }
 
+function vaultPackageMeta(packageKind) {
+  if (packageKind === 'bitwarden_encrypted') {
+    return {
+      title: localized('导入 Bitwarden 加密库', 'Import Bitwarden encrypted vault'),
+      pill: 'Bitwarden',
+      passwordLabel: localized('导出密码', 'Export password'),
+      enterPassword: localized('请输入导出密码', 'Enter the export password'),
+      unlockHelp: (name) => localized(
+        `输入「${name}」导出时设置的保护密码，解密后即可预览并勾选需要导入的项目。`,
+        `Enter the export password for "${name}" to decrypt and select items to import.`,
+      ),
+    };
+  }
+  if (packageKind === 'keepass_kdbx') {
+    return {
+      title: localized('导入 KeePass 数据库', 'Import KeePass database'),
+      pill: 'KeePass .kdbx',
+      passwordLabel: localized('主密码', 'Master password'),
+      enterPassword: localized('请输入主密码', 'Enter the master password'),
+      unlockHelp: (name) => localized(
+        `输入「${name}」的 KeePass 主密码，解密后即可预览并勾选需要导入的项目。`,
+        `Enter the KeePass master password for "${name}" to unlock and select items to import.`,
+      ),
+    };
+  }
+  return {
+    title: localized('导入 .mvault 备份', 'Import .mvault backup'),
+    pill: null,
+    passwordLabel: localized('备份密码', 'Backup password'),
+    enterPassword: localized('请输入备份密码', 'Enter the backup password'),
+    unlockHelp: (name) => localized(
+      `输入「${name}」创建时设置的备份密码，解密后即可预览并勾选需要导入的项目。`,
+      `Enter the backup password for "${name}" to preview and select items to import.`,
+    ),
+  };
+}
+
 function renderMvaultHeader() {
   if (!store.mvaultState) return;
-  $('#mvault-modal-title').textContent = localized('导入 .mvault 备份', 'Import .mvault backup');
+  const meta = vaultPackageMeta(store.mvaultState.packageKind);
+  $('#mvault-modal-title').textContent = meta.title;
   $('#mvault-file-name').textContent = store.mvaultState.fileName || 'openkeylet-backup.mvault';
   const formatPill = $('#mvault-format-pill');
-  if (store.mvaultState.preview) {
+  if (meta.pill) {
+    formatPill.textContent = meta.pill;
+    formatPill.classList.remove('hidden');
+  } else if (store.mvaultState.preview) {
     formatPill.textContent = store.mvaultState.preview.protected
       ? `v${store.mvaultState.preview.version}`
       : localized(`旧版 v${store.mvaultState.preview.version}`, `Legacy v${store.mvaultState.preview.version}`);
@@ -136,15 +181,13 @@ function renderMvaultHeader() {
 
 export function renderMvaultUnlockPanel(errorMessage = '') {
   if (!store.mvaultState) return;
+  const meta = vaultPackageMeta(store.mvaultState.packageKind);
   renderMvaultHeader();
   $('#mvault-loading-panel').classList.add('hidden');
   $('#mvault-select-panel').classList.add('hidden');
   $('#mvault-unlock-panel').classList.remove('hidden');
-  $('#mvault-unlock-help').textContent = localized(
-    `输入「${store.mvaultState.fileName}」创建时设置的备份密码，解密后即可预览并勾选需要导入的项目。`,
-    `Enter the backup password for "${store.mvaultState.fileName}" to preview and select items to import.`,
-  );
-  $('#mvault-unlock-password-label').textContent = localized('备份密码', 'Backup password');
+  $('#mvault-unlock-help').textContent = meta.unlockHelp(store.mvaultState.fileName);
+  $('#mvault-unlock-password-label').textContent = meta.passwordLabel;
   $('#mvault-unlock-cancel').textContent = localized('取消', 'Cancel');
   $('#mvault-unlock-submit').textContent = localized('解锁并预览', 'Unlock & preview');
   $('#mvault-unlock-submit').disabled = false;
@@ -306,6 +349,18 @@ function renderMvaultItemList() {
   updateMvaultSelectionChrome();
 }
 
+const packageWarningCopy = {
+  nonWebUris: ['非网页地址已保留，设为“不匹配”。', 'Non-web addresses are preserved with matching disabled.'],
+  defaultDomainMatch: ['未指定规则的网址使用主域名匹配。', 'Unspecified URL rules use base-domain matching.'],
+  unsupportedTotp: ['部分验证码密钥格式暂不支持生成，原始密钥已保留。', 'Some TOTP formats cannot generate codes yet; original keys are preserved.'],
+  passkeyCounter: ['包含旧版计数型 Passkey，导入后请仅在 OpenKeylet 使用。', 'Includes counter-based passkeys; use them only in OpenKeylet after migration.'],
+  linkedFields: ['关联字段已作为加密自定义字段保留。', 'Linked fields are preserved as encrypted custom fields.'],
+  passwordHistory: ['最近 20 条旧密码进入密码历史。', 'The latest 20 previous passwords appear in history.'],
+  reprompt: ['原逐项主密码验证不生效，本地 PIN 锁仍适用。', 'Per-item master-password reprompt is not applied; local PIN lock still applies.'],
+  attachments: ['导出包不含文件附件内容，请从原密码库单独保留附件。', 'Attachments are not imported; keep attachment files separately from the source vault.'],
+  organization: ['组织项目将转为本地个人项目。', 'Organization items become local personal items.'],
+};
+
 export function renderMvaultSelectPanel() {
   const mvaultState = store.mvaultState;
   if (!mvaultState || !mvaultState.preview) return;
@@ -323,14 +378,24 @@ export function renderMvaultSelectPanel() {
   if ((p.nameConflicts || 0) > 0) pills.push(`<span class="mvault-stat-pill is-conflict">${escapeHtml(localized(`同名另存 ${p.nameConflicts}`, `${p.nameConflicts} rename`))}</span>`);
   if ((p.duplicateSkipped || 0) > 0) pills.push(`<span class="mvault-stat-pill is-dup">${escapeHtml(localized(`已存在 ${p.duplicateSkipped}`, `${p.duplicateSkipped} existing`))}</span>`);
   if ((p.trashCount || 0) > 0) pills.push(`<span class="mvault-stat-pill">${escapeHtml(localized(`回收站 ${p.trashCount}`, `${p.trashCount} trash`))}</span>`);
+  if ((mvaultState.skippedDeleted || 0) > 0) pills.push(`<span class="mvault-stat-pill is-dup">${escapeHtml(localized(`已跳过回收站 ${mvaultState.skippedDeleted}`, `${mvaultState.skippedDeleted} deleted skipped`))}</span>`);
   statsEl.innerHTML = pills.join('');
 
   const legacyNote = $('#mvault-legacy-note');
+  const notices = [];
   if (!p.protected) {
-    legacyNote.textContent = localized(
+    notices.push(localized(
       '安全提示：此文件为旧版无密码自解锁 .mvault，文件内含解锁密钥。导入后建议删除旧文件并重新导出带密码保护的备份。',
       'Security note: This is a legacy self-unlocking .mvault containing its own unlock key. Delete the old file after importing and export a password-protected backup.',
-    );
+    ));
+  }
+  if (Array.isArray(mvaultState.warnings) && mvaultState.warnings.length > 0) {
+    for (const code of mvaultState.warnings) {
+      notices.push(packageWarningCopy[code] ? localized(...packageWarningCopy[code]) : String(code));
+    }
+  }
+  if (notices.length > 0) {
+    legacyNote.textContent = notices.join(' ');
     legacyNote.classList.remove('hidden');
   } else {
     legacyNote.textContent = '';
@@ -396,6 +461,8 @@ async function unlockAndPreviewMvault(password) {
     if (pwInput) pwInput.value = '';
     store.mvaultState.id = result.id;
     store.mvaultState.preview = result.preview;
+    store.mvaultState.warnings = Array.isArray(result.warnings) ? result.warnings : [];
+    store.mvaultState.skippedDeleted = Number(result.skippedDeleted || 0);
     const rawItems = result.preview?.items;
     if (Array.isArray(rawItems)) {
       store.mvaultState.hasItemList = true;
@@ -446,9 +513,12 @@ export async function openMvaultPreviewFlow(picked) {
   store.mvaultSequence++;
   store.mvaultState = {
     fileName: picked.fileName || 'openkeylet-backup.mvault',
+    packageKind: picked.packageKind || 'mvault',
     requiresPassword: Boolean(picked.requiresPassword),
     id: null,
     preview: null,
+    warnings: [],
+    skippedDeleted: 0,
     items: [],
     hasItemList: false,
     activeTypeFilter: 'all',
@@ -472,6 +542,17 @@ export async function openMvaultPreviewFlow(picked) {
   }
 }
 
+async function fileToBase64(file) {
+  const buf = await file.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  let binary = '';
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+
 export async function handleDroppedMvaultFile(file) {
   if (!file) return;
   await refreshOwnerLock();
@@ -484,8 +565,10 @@ export async function handleDroppedMvaultFile(file) {
     return;
   }
   try {
-    const content = await file.text();
-    const picked = await api.inspectDroppedBackupBytes(file.name || 'openkeylet-backup.mvault', content);
+    const isBinaryPackage = /\.kdbx$/i.test(file.name || '');
+    const picked = isBinaryPackage
+      ? await api.inspectDroppedBackupBytes(file.name || 'database.kdbx', await fileToBase64(file), true)
+      : await api.inspectDroppedBackupBytes(file.name || 'openkeylet-backup.mvault', await file.text());
     if (!picked) return;
     await openMvaultPreviewFlow(picked);
   } catch (error) {
@@ -513,7 +596,8 @@ export function initMvaultImportView() {
     if (!store.mvaultState) return;
     const password = $('#mvault-unlock-password')?.value || '';
     if (!password) {
-      renderMvaultUnlockPanel(localized('请输入备份密码', 'Enter the backup password'));
+      const meta = vaultPackageMeta(store.mvaultState.packageKind);
+      renderMvaultUnlockPanel(meta.enterPassword);
       return;
     }
     void unlockAndPreviewMvault(password);
@@ -607,8 +691,8 @@ export function initMvaultImportView() {
   const isFileDrag = (event) => Array.from(event.dataTransfer?.types || []).includes('Files');
   const splitTransferredFiles = (dt) => {
     const files = Array.from(dt?.files || []);
-    const mvaultFiles = files.filter((f) => /\.mvault$/i.test(f?.name || ''));
-    const otherFiles = files.filter((f) => !/\.mvault$/i.test(f?.name || ''));
+    const mvaultFiles = files.filter((f) => /\.(mvault|kdbx)$/i.test(f?.name || ''));
+    const otherFiles = files.filter((f) => !/\.(mvault|kdbx)$/i.test(f?.name || ''));
     return { files, mvaultFiles, otherFiles };
   };
 
@@ -719,6 +803,7 @@ export function initMvaultImportView() {
       await openMvaultPreviewFlow({
         fileName: payload.fileName,
         requiresPassword: Boolean(payload.requiresPassword),
+        packageKind: payload.packageKind || 'mvault',
       });
     }
   });

@@ -221,6 +221,33 @@ pub fn prepare_import_with_password(
     prepare_import_bytes_with_password(vault, &bytes, password)
 }
 
+/// Builds a selective-import preview for decrypted third-party vault packages
+/// (Bitwarden encrypted JSON, KeePass `.kdbx`) using the exact same duplicate &
+/// conflict-rename simulation as `.mvault` backups.
+pub fn preview_migration_entries(
+    vault: &Vault,
+    format_label: String,
+    entries: &[(PortableConnection, SecretBundle)],
+) -> Result<BackupPreview> {
+    let stats = vault.preview_merge_backup_entries(entries, &[])?;
+    Ok(BackupPreview {
+        format_label,
+        version: 0,
+        protected: true,
+        created_at: None,
+        total_items: stats.total_items,
+        new_items: stats.new_items,
+        duplicate_skipped: stats.duplicate_skipped,
+        name_conflicts: stats.name_conflicts,
+        passkey_count: stats.passkey_count,
+        trash_count: stats.trash_count,
+        history_entries: stats.history_entries,
+        sample_names: stats.sample_names,
+        conflict_renames: stats.conflict_renames,
+        items: stats.items,
+    })
+}
+
 pub fn commit_prepared_import(
     vault: &Vault,
     raw_payload: &[u8],

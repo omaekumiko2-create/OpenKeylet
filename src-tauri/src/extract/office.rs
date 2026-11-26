@@ -818,11 +818,16 @@ pub(super) fn extract_from_bytes_inner(
     existing: &[DecryptedConnection],
     allow_note_fallback: bool,
 ) -> Result<SmartExtractBatchResult> {
-    ensure!(
-        bytes.len() <= MAX_BATCH_TEXT_BYTES,
-        "{filename} exceeds 16 MiB limit"
-    );
     let lower = filename.to_ascii_lowercase();
+    let max_bytes = if lower.ends_with(".1pux") {
+        64 * 1024 * 1024
+    } else {
+        MAX_BATCH_TEXT_BYTES
+    };
+    ensure!(
+        bytes.len() <= max_bytes,
+        "{filename} exceeds size limit"
+    );
 
     if lower.ends_with(".docx") {
         let text = extract_docx_text(bytes)?;
@@ -848,6 +853,27 @@ pub(super) fn extract_from_bytes_inner(
             reconcile_with_vault(&mut res.candidates, existing);
         }
         return Ok(res);
+    }
+
+    if lower.ends_with(".1pux") {
+        let parsed = migration::parse(bytes, "onepassword")?;
+        let mut candidates: Vec<ExtractedCandidate> = parsed
+            .entries
+            .into_iter()
+            .map(|(p, s)| {
+                let (kind, badge, badge_zh) = classify_portable_kind(&p);
+                candidate_from_portable(p, s, kind, badge, badge_zh, filename)
+            })
+            .collect();
+        reconcile_with_vault(&mut candidates, existing);
+        return Ok(SmartExtractBatchResult {
+            detected_format: "onepassword_1pux".to_owned(),
+            detected_format_zh: "1Password 导出 (.1pux)".to_owned(),
+            candidates,
+            ignored: Vec::new(),
+            warnings: parsed.preview.warnings,
+            sealed_env_template: None,
+        });
     }
 
     if lower.ends_with(".zip") {
@@ -967,7 +993,7 @@ pub fn extract_from_paths(
             .map(str::to_ascii_lowercase)
             .unwrap_or_default();
 
-        if ext == "mvault" {
+        if ext == "mvault" || migration::is_vault_package_path(&path) {
             mvault_paths.push(path);
             continue;
         }
@@ -978,9 +1004,14 @@ pub fn extract_from_paths(
             }
             continue;
         };
-        if meta.len() > MAX_BATCH_TEXT_BYTES as u64 {
+        let max_bytes = if ext == "1pux" {
+            64 * 1024 * 1024u64
+        } else {
+            MAX_BATCH_TEXT_BYTES as u64
+        };
+        if meta.len() > max_bytes {
             if is_direct_file {
-                warnings.push(format!("{fname} exceeds 16 MiB and was skipped"));
+                warnings.push(format!("{fname} exceeds size limit and was skipped"));
             }
             continue;
         }

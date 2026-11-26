@@ -10,6 +10,8 @@ pub struct AppRuntime {
     pub(super) pending_import: Mutex<Option<PendingImport>>,
     pub(super) pending_backup_source: Mutex<Option<PendingBackupSource>>,
     pub(super) pending_backup_import: Mutex<Option<PendingBackupImport>>,
+    pub(super) backup_import_generation: AtomicU64,
+    pub(super) backup_prepare_in_flight: Arc<AtomicBool>,
     pub(super) pending_history_restore: Mutex<Option<PendingHistoryRestore>>,
     pub(super) discovered_mvault_paths: Mutex<Vec<PathBuf>>,
     pub(super) import_sources: Mutex<super::cmd_import::ImportSourceRegistry>,
@@ -31,20 +33,40 @@ pub(super) struct PendingImport {
 
 #[derive(Clone)]
 pub(super) enum PendingBackupSource {
-    Path(PathBuf),
-    Bytes(Vec<u8>),
+    Path {
+        path: PathBuf,
+        kind: crate::migration::VaultPackageKind,
+    },
+    Bytes {
+        bytes: zeroize::Zeroizing<Vec<u8>>,
+        kind: crate::migration::VaultPackageKind,
+    },
 }
 
 pub(super) fn is_mvault_path(path: &Path) -> bool {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("mvault"))
+    // Extension-only check (zero filesystem I/O) safe for synchronous UI drag-hover events.
+    crate::migration::is_vault_package_extension(path)
+}
+
+impl AppRuntime {
+    pub(super) async fn clear_pending_imports(&self) {
+        self.backup_import_generation.fetch_add(1, Ordering::AcqRel);
+        *self.pending_import.lock().await = None;
+        *self.pending_backup_source.lock().await = None;
+        *self.pending_backup_import.lock().await = None;
+        *self.pending_history_restore.lock().await = None;
+    }
+}
+
+pub(super) enum PendingBackupPayloadKind {
+    Mvault { version: u8 },
+    MigrationEntries,
 }
 
 pub(super) struct PendingBackupImport {
     pub(super) id: String,
     pub(super) created: Instant,
-    pub(super) version: u8,
+    pub(super) payload_kind: PendingBackupPayloadKind,
     pub(super) encrypted: crate::model::SecretEnvelope,
 }
 
@@ -163,10 +185,7 @@ pub(super) async fn owner_lock_state(runtime: &AppRuntime) -> Result<OwnerLockSt
         session.is_unlocked_at(Instant::now(), auto_lock_minutes);
     drop(session);
     if expired_now {
-        *runtime.pending_import.lock().await = None;
-        *runtime.pending_backup_source.lock().await = None;
-        *runtime.pending_backup_import.lock().await = None;
-        *runtime.pending_history_restore.lock().await = None;
+        runtime.clear_pending_imports().await;
     }
     Ok(OwnerLockState {
         pin_configured,

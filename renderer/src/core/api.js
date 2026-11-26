@@ -67,7 +67,11 @@ export const api = {
   extensionFolder: () => invoke('open_browser_extension_folder'),
   exportBackup: (password) => invoke('export_backup', { password }),
   pickBackupImportFile: () => invoke('pick_backup_import_file'),
-  inspectDroppedBackupBytes: (fileName, content) => invoke('inspect_dropped_backup_bytes', { fileName, content }),
+  inspectDroppedBackupBytes: (fileName, content, isBase64 = false) => invoke('inspect_dropped_backup_bytes', {
+    fileName,
+    content,
+    ...(isBase64 ? { isBase64: true } : {}),
+  }),
   prepareBackupImport: (password) => invoke('prepare_backup_import', { password }),
   commitBackupImport: (id, selectedItemIndices = null, selectedTrashIndices = null) => invoke('commit_backup_import', {
     id,

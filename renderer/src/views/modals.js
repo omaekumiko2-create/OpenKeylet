@@ -253,8 +253,22 @@ function migrationHelp() {
     );
     return;
   }
+  if (format === 'onepassword') {
+    $('#migration-help').textContent = localized(
+      '在 1Password 桌面端选择「导出 → 1Password 交换格式 (.1pux)」，自动导入登录账号、2FA、SSH 密钥、API 凭据、卡片和笔记（跳过已归档项目）。',
+      'Export as 1Password Unencrypted Export (.1pux) from 1Password desktop to import logins, 2FA, SSH keys, API credentials, cards, and notes (archived items are skipped).',
+    );
+    return;
+  }
+  if (format === 'keepass') {
+    $('#migration-help').textContent = localized(
+      '支持直接选择 KeePass / KeePassXC 的加密 .kdbx 数据库（弹窗输入主密码解锁并勾选导入），也支持 KeePass 2.x XML 导出。',
+      'Choose a KeePass / KeePassXC encrypted .kdbx database (unlock with master password and select items) or a KeePass 2.x XML export.',
+    );
+    return;
+  }
   $('#migration-help').textContent = format === 'bitwarden'
-    ? localized('在 Bitwarden 中导出未加密 JSON，然后选择文件预览。原文件不变；导入的秘密会加密存入本地库。', 'Export unencrypted JSON from Bitwarden, then choose the file to preview. The source is unchanged; imported secrets are encrypted locally.')
+    ? localized('支持 Bitwarden 未加密 JSON，以及「密码保护加密 JSON」（自动弹窗输入导出密码解密并勾选导入）；原文件不变。', 'Supports both Bitwarden unencrypted JSON and password-protected encrypted JSON (unlock & preview items before importing). Source file stays unchanged.')
     : localized('选择 Chrome 或 Edge 导出的密码 CSV。支持带引号、逗号和多行备注的文件。', 'Choose a password CSV exported by Chrome or Edge. Quoted fields, commas and multiline notes are supported.');
 }
 
@@ -399,6 +413,10 @@ export function initSecondaryModals() {
     try {
       const result = await api.prepareImport($('#migration-format').value);
       if (!result || sequence !== store.migrationSequence) return;
+      if (result.redirectVaultPackage) {
+        await openMvaultPreviewFlow(result.redirectVaultPackage);
+        return;
+      }
       store.migrationId = result.id;
       store.migrationMode = 'migration';
       const p = result.preview;

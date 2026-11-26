@@ -157,22 +157,55 @@ try {
           if (cmd === "set_edge_dock_enabled") return null;
           if (cmd === "inspect_dropped_backup_bytes") {
             window.fixture.inspectCalls.push(args);
+            if (/\.kdbx$/i.test(args.fileName || "")) {
+              window.fixture.mode = "keepass_kdbx";
+              return { fileName: args.fileName, requiresPassword: true, packageKind: "keepass_kdbx" };
+            }
             const parsed = JSON.parse(args.content);
+            if (parsed.encrypted === true && parsed.passwordProtected === true) {
+              window.fixture.mode = "bitwarden_encrypted";
+              return { fileName: args.fileName, requiresPassword: true, packageKind: "bitwarden_encrypted" };
+            }
             const requiresPassword = parsed.format === "openkeylet-password-backup";
             window.fixture.mode = requiresPassword ? "protected" : "legacy";
-            return { fileName: args.fileName, requiresPassword };
+            return { fileName: args.fileName, requiresPassword, packageKind: "mvault" };
+          }
+          if (cmd === "prepare_import") {
+            if (args.format === "bitwarden") {
+              window.fixture.mode = "bitwarden_encrypted";
+              return {
+                redirectVaultPackage: {
+                  fileName: "bitwarden_encrypted_2026.json",
+                  requiresPassword: true,
+                  packageKind: "bitwarden_encrypted",
+                },
+              };
+            }
+            return null;
           }
           if (cmd === "prepare_backup_import") {
             window.fixture.prepareCalls.push(args.password);
-            if (window.fixture.mode === "protected" && args.password !== "correct-backup-pass") {
+            const expectedPass = window.fixture.mode === "keepass_kdbx"
+              ? "keepass-master"
+              : window.fixture.mode === "bitwarden_encrypted"
+                ? "bw-export-pass"
+                : "correct-backup-pass";
+            if (window.fixture.mode !== "legacy" && args.password !== expectedPass) {
               throw new Error("Incorrect backup password or damaged backup");
             }
+            const formatLabel = window.fixture.mode === "keepass_kdbx"
+              ? "KeePass .kdbx"
+              : window.fixture.mode === "bitwarden_encrypted"
+                ? "Bitwarden Encrypted JSON"
+                : window.fixture.mode === "protected"
+                  ? "Protected .mvault (v8)"
+                  : "Legacy self-unlocking .mvault (v5)";
             return {
               id: "mvault-session-1",
               preview: {
-                formatLabel: window.fixture.mode === "protected" ? "Protected .mvault (v8)" : "Legacy self-unlocking .mvault (v5)",
-                version: window.fixture.mode === "protected" ? 8 : 5,
-                protected: window.fixture.mode === "protected",
+                formatLabel,
+                version: window.fixture.mode === "protected" ? 8 : window.fixture.mode === "legacy" ? 5 : 0,
+                protected: window.fixture.mode !== "legacy",
                 createdAt: "2026-11-24T12:00:00Z",
                 totalItems: 3,
                 newItems: 2,
@@ -310,6 +343,46 @@ try {
   assert.equal(await page.locator("#mvault-select-confirm").isDisabled(), true);
   await page.click("#mvault-select-all");
   assert.equal(await page.locator("#mvault-select-confirm").isDisabled(), false);
+  await page.click("#mvault-select-cancel");
+  await page.locator("#mvault-import-modal").waitFor({ state: "hidden" });
+
+  // 8b. HTML5 drop of binary KeePass .kdbx sends base64 and displays KeePass header/pill/master-password flow
+  await page.evaluate(() => {
+    const dt = new DataTransfer();
+    const magic = new Uint8Array([0x03, 0xd9, 0xa2, 0x9a, 0x67, 0xfb, 0x4b, 0xb5, 0x00, 0x00, 0x04, 0x00]);
+    const file = new File([magic], "work-secrets.kdbx", { type: "application/octet-stream" });
+    dt.items.add(file);
+    document.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: dt }));
+  });
+  await page.locator("#mvault-import-modal").waitFor({ state: "visible" });
+  await page.locator("#mvault-unlock-panel").waitFor({ state: "visible" });
+  assert.equal(await page.locator("#mvault-modal-title").textContent(), "导入 KeePass 数据库");
+  assert.equal(await page.locator("#mvault-format-pill").textContent(), "KeePass .kdbx");
+  assert.equal(await page.locator("#mvault-unlock-password-label").textContent(), "主密码");
+  const lastInspect = await page.evaluate(() => window.fixture.inspectCalls.at(-1));
+  assert.equal(lastInspect.isBase64, true, "Binary .kdbx drop must send base64");
+  await page.fill("#mvault-unlock-password", "keepass-master");
+  await page.click("#mvault-unlock-submit");
+  await page.locator("#mvault-select-panel").waitFor({ state: "visible" });
+  await page.click("#mvault-select-cancel");
+  await page.locator("#mvault-import-modal").waitFor({ state: "hidden" });
+
+  // 8c. SAFE migration modal lists 1Password .1pux & KeePass .kdbx and seamlessly redirects encrypted Bitwarden JSON to unlock modal
+  await page.click("#migration-open");
+  await page.locator("#migration-modal").waitFor({ state: "visible" });
+  const migrationOptions = await page.locator("#migration-format option").evaluateAll((els) => els.map((e) => e.value));
+  assert.ok(migrationOptions.includes("bitwarden") && migrationOptions.includes("onepassword") && migrationOptions.includes("keepass"));
+  await page.selectOption("#migration-format", "bitwarden");
+  await page.click("#migration-select");
+  await page.locator("#migration-modal").waitFor({ state: "hidden" });
+  await page.locator("#mvault-import-modal").waitFor({ state: "visible" });
+  await page.locator("#mvault-unlock-panel").waitFor({ state: "visible" });
+  assert.equal(await page.locator("#mvault-modal-title").textContent(), "导入 Bitwarden 加密库");
+  assert.equal(await page.locator("#mvault-format-pill").textContent(), "Bitwarden");
+  assert.equal(await page.locator("#mvault-unlock-password-label").textContent(), "导出密码");
+  await page.fill("#mvault-unlock-password", "bw-export-pass");
+  await page.click("#mvault-unlock-submit");
+  await page.locator("#mvault-select-panel").waitFor({ state: "visible" });
 
   // 9. Locking vault immediately closes modal and clears staged state
   await page.keyboard.press("Control+Shift+L");

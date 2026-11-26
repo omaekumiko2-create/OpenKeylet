@@ -12,9 +12,17 @@ use base64::{
 use p256::{ecdsa::SigningKey, pkcs8::DecodePrivateKey};
 use serde::Serialize;
 use serde_json::Value;
-use std::{collections::BTreeMap, io::Read, path::Path};
+use std::{collections::BTreeMap, path::Path};
 use uuid::Uuid;
 use zeroize::Zeroizing;
+
+pub mod packages;
+pub use packages::{
+    VaultPackageInspection, VaultPackageKind, inspect_vault_package_bytes,
+    inspect_vault_package_file, is_bitwarden_encrypted_json_bytes, is_kdbx_bytes,
+    is_vault_package_extension, is_vault_package_path, parse_package_with_password,
+    parse_with_password, read_bounded_regular_file, read_with_password,
+};
 
 const MAX_BYTES: u64 = 64 * 1024 * 1024;
 type Entry = (PortableConnection, SecretBundle);
@@ -43,15 +51,7 @@ impl Preview {
 }
 
 pub fn read(path: &Path, format: &str) -> Result<Parsed> {
-    let file = std::fs::File::open(path).context("Could not open import file")?;
-    let mut bytes = Zeroizing::new(Vec::new());
-    file.take(MAX_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .context("Could not read import file")?;
-    ensure!(
-        bytes.len() as u64 <= MAX_BYTES,
-        "Import file exceeds 64 MiB"
-    );
+    let bytes = read_bounded_regular_file(path, MAX_BYTES)?;
     if format == "ssh_config" {
         let (entries, preview) =
             crate::extract::ingest::parse_ssh_config_bytes(&bytes, path.parent())?;
@@ -87,8 +87,14 @@ pub fn parse(bytes: &[u8], format: &str) -> Result<Parsed> {
     let entries = match format {
         "bitwarden" => bitwarden(bytes, &mut preview)?,
         "chrome" => chrome_csv(bytes, &mut preview)?,
+        "onepassword" | "1password" | "1pux" => packages::parse_1password_1pux(bytes, &mut preview)?,
+        "keepass" | "keepass_xml" => packages::parse_keepass_xml(bytes, &mut preview)?,
         _ => bail!("Unsupported import format"),
     };
+    finalize_parsed(entries, preview)
+}
+
+pub(super) fn finalize_parsed(entries: Vec<Entry>, mut preview: Preview) -> Result<Parsed> {
     ensure!(
         entries.len() <= 50_000,
         "Import contains more than 50,000 items"
@@ -242,10 +248,24 @@ fn finish(entry: &mut Entry) -> Result<()> {
 fn bitwarden(bytes: &[u8], preview: &mut Preview) -> Result<Vec<Entry>> {
     let root: Value = serde_json::from_slice(bytes)
         .map_err(|e| anyhow::anyhow!("Invalid JSON at line {}, column {}", e.line(), e.column()))?;
+    if root["encrypted"] == true {
+        if root["passwordProtected"] == true {
+            bail!(
+                "This Bitwarden export is password-protected; unlock it with its export password to import."
+            );
+        }
+        bail!(
+            "This Bitwarden export is account-restricted and can only be decrypted inside Bitwarden. Re-export using 'Encrypted JSON (Password protected)' or unencrypted JSON."
+        );
+    }
     ensure!(
         root["encrypted"] == false,
-        "Choose Bitwarden's unencrypted .json export; encrypted exports are not supported"
+        "Choose Bitwarden's unencrypted .json or password-protected encrypted .json export"
     );
+    bitwarden_plain_root(&root, preview)
+}
+
+pub(super) fn bitwarden_plain_root(root: &Value, preview: &mut Preview) -> Result<Vec<Entry>> {
     let items = root["items"]
         .as_array()
         .context("Bitwarden JSON has no items array")?;
@@ -728,5 +748,552 @@ mod tests {
                 counter
             );
         }
+    }
+
+    #[test]
+    fn bitwarden_encrypted_pbkdf2_roundtrip_tamper_and_selective_preview() {
+        let pk = SigningKey::from_slice(&[9; 32]).unwrap();
+        // Real Bitwarden encrypted exports omit "encrypted": false inside the decrypted JSON payload.
+        let inner = json!({
+            "folders": [{"id": "f-work", "name": "Work"}],
+            "items": [
+                {
+                    "type": 1,
+                    "name": "GitHub Enterprise",
+                    "folderId": "f-work",
+                    "favorite": true,
+                    "notes": "primary work account",
+                    "login": {
+                        "username": "alice@corp.test",
+                        "password": "bw-secret-password-1",
+                        "totp": "JBSWY3DPEHPK3PXP",
+                        "uris": [{"uri": "https://github.com/login", "match": 0}],
+                        "fido2Credentials": [{
+                            "keyType": "public-key",
+                            "keyAlgorithm": "ECDSA",
+                            "keyCurve": "P-256",
+                            "keyValue": URL_SAFE_NO_PAD.encode(pk.to_pkcs8_der().unwrap().as_bytes()),
+                            "rpId": "github.com",
+                            "credentialId": "11223344-5566-4777-8899-aabbccddeeff",
+                            "userHandle": URL_SAFE_NO_PAD.encode([4; 16]),
+                            "userName": "alice",
+                            "discoverable": "true",
+                            "counter": "0"
+                        }]
+                    },
+                    "passwordHistory": [{"password": "old-bw-password", "lastUsedDate": "2026-01-01T00:00:00Z"}]
+                },
+                {
+                    "type": 5,
+                    "name": "Prod SSH Key",
+                    "folderId": "f-work",
+                    "sshKey": {
+                        "privateKey": "-----BEGIN OPENSSH PRIVATE KEY-----\nTESTKEY\n-----END OPENSSH PRIVATE KEY-----",
+                        "publicKey": "ssh-ed25519 AAAATEST alice@corp"
+                    }
+                },
+                {
+                    "type": 2,
+                    "name": "Deleted Note",
+                    "deletedDate": "2026-01-02T00:00:00Z",
+                    "notes": "should be skipped"
+                }
+            ]
+        });
+
+        let encrypted = packages::test_helpers::make_bitwarden_encrypted_pbkdf2(
+            &inner,
+            "ExportPass#2026!",
+        );
+        assert!(is_bitwarden_encrypted_json_bytes(&encrypted));
+        let inspected = inspect_vault_package_bytes(&encrypted, "bitwarden_export.json").unwrap();
+        assert_eq!(inspected.package_kind, VaultPackageKind::BitwardenEncrypted);
+        assert!(inspected.requires_password);
+
+        // Plain parse without password fails with password hint
+        assert!(parse(&encrypted, "bitwarden").is_err());
+
+        // Wrong password must be rejected
+        let wrong = parse_package_with_password(
+            &encrypted,
+            VaultPackageKind::BitwardenEncrypted,
+            "wrong-password",
+        );
+        assert!(wrong.is_err());
+
+        // Tampered MAC must be rejected
+        let mut tampered_val: Value = serde_json::from_slice(&encrypted).unwrap();
+        let orig_data = tampered_val["data"].as_str().unwrap().to_owned();
+        let mut chars: Vec<char> = orig_data.chars().collect();
+        let last = chars.len() - 2;
+        chars[last] = if chars[last] == 'A' { 'B' } else { 'A' };
+        tampered_val["data"] = Value::String(chars.into_iter().collect());
+        let tampered_bytes = serde_json::to_vec(&tampered_val).unwrap();
+        assert!(
+            parse_package_with_password(
+                &tampered_bytes,
+                VaultPackageKind::BitwardenEncrypted,
+                "ExportPass#2026!"
+            )
+            .is_err()
+        );
+
+        // Correct password decrypts & preserves all fields including Passkey + SSH
+        let parsed = parse_package_with_password(
+            &encrypted,
+            VaultPackageKind::BitwardenEncrypted,
+            "ExportPass#2026!",
+        )
+        .unwrap();
+        assert_eq!(parsed.preview.total, 2);
+        assert_eq!(parsed.preview.passkeys, 1);
+        assert_eq!(parsed.preview.skipped_deleted, 1);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let vault = crate::vault::Vault::open(tmp.path().into()).unwrap();
+        let preview = crate::backup::preview_migration_entries(
+            &vault,
+            VaultPackageKind::BitwardenEncrypted.format_label().to_owned(),
+            &parsed.entries,
+        )
+        .unwrap();
+        assert_eq!(preview.new_items, 2);
+        assert_eq!(preview.passkey_count, 1);
+        assert_eq!(preview.items.len(), 2);
+
+        let summary = vault.merge_connections(parsed.entries).unwrap();
+        assert_eq!(summary.added, 2);
+        let disk = std::fs::read_to_string(tmp.path().join("vault.json")).unwrap();
+        assert!(!disk.contains("bw-secret-password-1"));
+        assert!(!disk.contains("TESTKEY"));
+    }
+
+    #[test]
+    fn bitwarden_encrypted_argon2id_and_account_restricted() {
+        let inner = json!({
+            "items": [{
+                "type": 1,
+                "name": "Argon2 Login",
+                "login": {"username": "bob", "password": "argon2-secret-value", "uris": [{"uri": "https://argon2.example.com"}]}
+            }]
+        });
+        let encrypted = packages::test_helpers::make_bitwarden_encrypted_argon2id(
+            &inner,
+            "Argon2Export#99!",
+        );
+        assert!(
+            parse_with_password(&encrypted, "bitwarden", "wrong").is_err(),
+            "Argon2id wrong password must fail"
+        );
+        let parsed = parse_with_password(&encrypted, "bitwarden", "Argon2Export#99!").unwrap();
+        assert_eq!(parsed.entries.len(), 1);
+        assert_eq!(parsed.entries[0].0.name, "Argon2 Login");
+        assert_eq!(parsed.entries[0].1.get("password"), Some("argon2-secret-value"));
+
+        // Account-restricted export (encrypted: true, no passwordProtected)
+        let restricted = br#"{"encrypted":true,"encKeyValidation_MAC":"2.AA|BB|CC","items":[]}"#;
+        let err = inspect_vault_package_bytes(restricted, "bw-account.json")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("account-restricted"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn onepassword_1pux_imports_all_categories_and_skips_archived() {
+        let export_data = json!({
+            "accounts": [{
+                "attrs": {"name": "Alice", "email": "alice@example.com"},
+                "vaults": [{
+                    "attrs": {"uuid": "v1", "name": "Engineering", "type": "P"},
+                    "items": [
+                        {
+                            "uuid": "i1",
+                            "favIndex": 1,
+                            "createdAt": 1700000000,
+                            "updatedAt": 1700000100,
+                            "state": "active",
+                            "categoryUuid": "001",
+                            "overview": {
+                                "title": "Linear App",
+                                "url": "https://linear.app/login",
+                                "urls": [{"label": "website", "url": "https://linear.app/login"}]
+                            },
+                            "details": {
+                                "loginFields": [
+                                    {"value": "alice@linear.test", "name": "email", "fieldType": "T", "designation": "username"},
+                                    {"value": "1pux-login-pass", "name": "password", "fieldType": "P", "designation": "password"}
+                                ],
+                                "notesPlain": "SSO backup",
+                                "sections": [{
+                                    "title": "2FA",
+                                    "fields": [{
+                                        "title": "one-time password",
+                                        "id": "TOTP_1",
+                                        "value": {"totp": "otpauth://totp/Linear:alice?secret=JBSWY3DPEHPK3PXP&issuer=Linear"}
+                                    }]
+                                }],
+                                "passwordHistory": [{"value": "older-1pux-pass", "time": 1690000000}]
+                            }
+                        },
+                        {
+                            "uuid": "i2",
+                            "state": "active",
+                            "categoryUuid": "114",
+                            "overview": {"title": "Deploy Ed25519"},
+                            "details": {
+                                "sections": [{
+                                    "title": "",
+                                    "fields": [{
+                                        "title": "private key",
+                                        "id": "private_key",
+                                        "value": {
+                                            "sshKey": {
+                                                "privateKey": "-----BEGIN OPENSSH PRIVATE KEY-----\n1PUXSSH\n-----END OPENSSH PRIVATE KEY-----",
+                                                "metadata": {"publicKey": "ssh-ed25519 AAAA1PUX", "fingerprint": "SHA256:abc"}
+                                            }
+                                        }
+                                    }]
+                                }]
+                            }
+                        },
+                        {
+                            "uuid": "i3",
+                            "state": "active",
+                            "categoryUuid": "112",
+                            "overview": {"title": "Stripe Live"},
+                            "details": {
+                                "sections": [{
+                                    "title": "API",
+                                    "fields": [
+                                        {"title": "credential", "id": "credential", "value": {"concealed": "sk_live_1pux_token_999"}},
+                                        {"title": "hostname", "id": "hostname", "value": {"url": "https://api.stripe.com"}}
+                                    ]
+                                }]
+                            }
+                        },
+                        {
+                            "uuid": "i4",
+                            "state": "active",
+                            "categoryUuid": "002",
+                            "overview": {"title": "Corp Visa"},
+                            "details": {
+                                "sections": [{
+                                    "title": "Card",
+                                    "fields": [
+                                        {"title": "cardholder", "id": "cardholder", "value": {"string": "Alice Dev"}},
+                                        {"title": "number", "id": "ccnum", "value": {"creditCardNumber": "4242424242424242"}},
+                                        {"title": "cvv", "id": "cvv", "value": {"concealed": "789"}},
+                                        {"title": "expiry", "id": "expiry", "value": {"monthYear": 202912}}
+                                    ]
+                                }]
+                            }
+                        },
+                        {
+                            "uuid": "i5",
+                            "state": "active",
+                            "categoryUuid": "004",
+                            "overview": {"title": "Alice Identity"},
+                            "details": {
+                                "sections": [{
+                                    "title": "Personal",
+                                    "fields": [
+                                        {"title": "first name", "id": "firstname", "value": {"string": "Alice"}},
+                                        {"title": "email", "id": "email", "value": {"email": "alice@example.com"}},
+                                        {"title": "address", "id": "address", "value": {"address": {"street": "1 Main St", "city": "SF", "zip": "94105"}}}
+                                    ]
+                                }]
+                            }
+                        },
+                        {
+                            "uuid": "i6",
+                            "state": "archived",
+                            "categoryUuid": "003",
+                            "overview": {"title": "Archived Note"},
+                            "details": {"notesPlain": "skip me"}
+                        }
+                    ]
+                }]
+            }]
+        });
+
+        let mut zip_buf = Vec::new();
+        {
+            let mut zw = zip::ZipWriter::new(std::io::Cursor::new(&mut zip_buf));
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file("export.data", opts).unwrap();
+            std::io::Write::write_all(&mut zw, &serde_json::to_vec(&export_data).unwrap()).unwrap();
+            zw.finish().unwrap();
+        }
+
+        let parsed = parse(&zip_buf, "onepassword").unwrap();
+        assert_eq!(parsed.preview.total, 5);
+        assert_eq!(parsed.preview.skipped_deleted, 1);
+        assert_eq!(parsed.entries[0].0.folder, "Engineering");
+        assert!(parsed.entries[0].0.favorite);
+        assert_eq!(parsed.entries[0].1.get("password"), Some("1pux-login-pass"));
+        assert!(parsed.entries[0].1.get("totp").unwrap().contains("JBSWY3DPEHPK3PXP"));
+        assert_eq!(parsed.entries[0].1.password_history.len(), 1);
+        assert_eq!(parsed.entries[1].0.item_type, "ssh");
+        assert!(parsed.entries[1].1.private_key.as_deref().unwrap().contains("1PUXSSH"));
+        assert_eq!(parsed.entries[2].0.item_type, "api");
+        assert_eq!(parsed.entries[2].1.get("apiCredential"), Some("sk_live_1pux_token_999"));
+        assert_eq!(parsed.entries[3].0.item_type, "card");
+        assert_eq!(parsed.entries[3].1.get("cardExpYear"), Some("2029"));
+        assert_eq!(parsed.entries[3].1.get("cardExpMonth"), Some("12"));
+        assert_eq!(parsed.entries[4].0.item_type, "identity");
+        assert_eq!(parsed.entries[4].1.get("city"), Some("SF"));
+
+        // Verify vault commit encrypts all secrets
+        let tmp = tempfile::tempdir().unwrap();
+        let vault = crate::vault::Vault::open(tmp.path().into()).unwrap();
+        assert_eq!(vault.merge_connections(parsed.entries).unwrap().added, 5);
+        let disk = std::fs::read_to_string(tmp.path().join("vault.json")).unwrap();
+        assert!(!disk.contains("1pux-login-pass"));
+        assert!(!disk.contains("sk_live_1pux_token_999"));
+
+        // Verify Import Hub binary extraction handles .1pux directly
+        let extracted = crate::extract::extract_from_bytes(&zip_buf, "1Password.1pux", &[]).unwrap();
+        assert_eq!(extracted.detected_format, "onepassword_1pux");
+        assert_eq!(extracted.candidates.len(), 5);
+    }
+
+    #[test]
+    fn keepass_kdbx4_roundtrip_folders_totp_ssh_and_recycle_bin() {
+        use keepass::{Database, DatabaseKey, db::fields};
+
+        let mut db = Database::new();
+        {
+            let mut root = db.root_mut();
+            root.name = "Root".into();
+
+            let mut work = root.add_group();
+            work.name = "Work".into();
+            let mut cloud = work.add_group();
+            cloud.name = "Cloud".into();
+            let mut entry = cloud.add_entry();
+            entry.set_unprotected(fields::TITLE, "AWS Console");
+            entry.set_unprotected(fields::USERNAME, "admin@corp.test");
+            entry.set_protected(fields::PASSWORD, "kdbx-aws-secret-1");
+            entry.set_unprotected(fields::URL, "https://console.aws.amazon.com");
+            entry.set_protected("otp", "otpauth://totp/AWS:admin?secret=JBSWY3DPEHPK3PXP");
+            entry.set_unprotected("AccountId", "123456789012");
+        }
+        {
+            let mut root = db.root_mut();
+            let mut totp_entry = root.add_entry();
+            totp_entry.set_unprotected(fields::TITLE, "Native KeePass TOTP");
+            totp_entry.set_unprotected(fields::USERNAME, "bob");
+            totp_entry.set_protected(fields::PASSWORD, "kdbx-totp-pass");
+            totp_entry.set_protected("TimeOtp-Secret-Base32", "JBSWY3DPEHPK3PXP");
+            totp_entry.set_unprotected("TimeOtp-Period", "30");
+
+            let mut ssh_entry = root.add_entry();
+            ssh_entry.set_unprotected(fields::TITLE, "Bastion Host");
+            ssh_entry.set_unprotected(fields::USERNAME, "ops");
+            ssh_entry.set_unprotected(fields::URL, "ssh://ops@10.0.0.8:2222");
+            ssh_entry.set_protected(
+                fields::NOTES,
+                "-----BEGIN OPENSSH PRIVATE KEY-----\nKDBXSSH\n-----END OPENSSH PRIVATE KEY-----",
+            );
+        }
+        let recycle_uuid = {
+            let mut root = db.root_mut();
+            let mut bin = root.add_group();
+            bin.name = "Trash Bin Custom".into();
+            let id = bin.id().uuid();
+            let mut del = bin.add_entry();
+            del.set_unprotected(fields::TITLE, "Deleted Item");
+            del.set_protected(fields::PASSWORD, "must-not-import");
+            id
+        };
+        db.meta.recyclebin_enabled = Some(true);
+        db.meta.recyclebin_uuid = Some(recycle_uuid);
+
+        let mut kdbx_bytes = Vec::new();
+        db.save(&mut kdbx_bytes, DatabaseKey::new().with_password("KeePass#Master99"))
+            .unwrap();
+
+        assert!(is_kdbx_bytes(&kdbx_bytes));
+        let inspected = inspect_vault_package_bytes(&kdbx_bytes, "passwords.kdbx").unwrap();
+        assert_eq!(inspected.package_kind, VaultPackageKind::KeepassKdbx);
+        assert!(inspected.requires_password);
+
+        // Wrong password fails with crisp message
+        let err = parse_package_with_password(
+            &kdbx_bytes,
+            VaultPackageKind::KeepassKdbx,
+            "wrong-master",
+        )
+        .err()
+        .expect("wrong KeePass password must fail")
+        .to_string();
+        assert!(err.contains("Incorrect KeePass master password"), "unexpected error: {err}");
+
+        // Plain keepass format rejects KDBX without password
+        assert!(parse(&kdbx_bytes, "keepass").is_err());
+
+        // Correct password decrypts 3 entries and skips Recycle Bin
+        let parsed = parse_package_with_password(
+            &kdbx_bytes,
+            VaultPackageKind::KeepassKdbx,
+            "KeePass#Master99",
+        )
+        .unwrap();
+        assert_eq!(parsed.preview.total, 3);
+        assert_eq!(parsed.preview.skipped_deleted, 1);
+
+        let aws = parsed.entries.iter().find(|(p, _)| p.name == "AWS Console").unwrap();
+        assert_eq!(aws.0.folder, "Work / Cloud");
+        assert_eq!(aws.1.get("password"), Some("kdbx-aws-secret-1"));
+        assert!(aws.1.get("totp").unwrap().contains("JBSWY3DPEHPK3PXP"));
+        assert_eq!(aws.1.get("Imported · AccountId"), Some("123456789012"));
+
+        let native_otp = parsed
+            .entries
+            .iter()
+            .find(|(p, _)| p.name == "Native KeePass TOTP")
+            .unwrap();
+        assert_eq!(native_otp.1.get("totp"), Some("JBSWY3DPEHPK3PXP"));
+
+        let ssh = parsed.entries.iter().find(|(p, _)| p.name == "Bastion Host").unwrap();
+        assert_eq!(ssh.0.item_type, "ssh");
+        assert!(ssh.0.modules.iter().any(|m| m.kind == "host" && m.value == "10.0.0.8"));
+        assert!(ssh.0.modules.iter().any(|m| m.kind == "port" && m.value == "2222"));
+        assert!(ssh.1.private_key.as_deref().unwrap().contains("KDBXSSH"));
+
+        // Verify selective preview + encrypted vault storage
+        let tmp = tempfile::tempdir().unwrap();
+        let vault = crate::vault::Vault::open(tmp.path().into()).unwrap();
+        let preview = crate::backup::preview_migration_entries(
+            &vault,
+            VaultPackageKind::KeepassKdbx.format_label().to_owned(),
+            &parsed.entries,
+        )
+        .unwrap();
+        assert_eq!(preview.new_items, 3);
+        assert_eq!(vault.merge_connections(parsed.entries).unwrap().added, 3);
+        let disk = std::fs::read_to_string(tmp.path().join("vault.json")).unwrap();
+        assert!(!disk.contains("kdbx-aws-secret-1"));
+        assert!(!disk.contains("KDBXSSH"));
+        assert!(!disk.contains("must-not-import"));
+    }
+
+    #[test]
+    fn keepass_xml_migration_parses_entries() {
+        let xml = br#"<?xml version="1.0" encoding="utf-8"?>
+        <KeePassFile><Root><Group><Name>Root</Name><Group><Name>Dev</Name><Entry>
+            <String><Key>Title</Key><Value>GitLab &amp; CI</Value></String>
+            <String><Key>UserName</Key><Value>dev</Value></String>
+            <String><Key>Password</Key><Value>p&#39;a&#x26;s<![CDATA[<>]]>s</Value></String>
+            <String><Key>URL</Key><Value>https://gitlab.example.com</Value></String>
+            <String><Key>otp</Key><Value>JBSWY3DPEHPK3PXP</Value></String>
+            <History><Entry><String><Key>Password</Key><Value>old-history-pass</Value></String></Entry></History>
+        </Entry></Group></Group></Root></KeePassFile>"#;
+        let parsed = parse(xml, "keepass").unwrap();
+        assert_eq!(parsed.entries.len(), 1);
+        assert_eq!(parsed.entries[0].0.name, "GitLab & CI");
+        assert_eq!(parsed.entries[0].0.folder, "Dev");
+        assert_eq!(parsed.entries[0].1.get("password"), Some("p'a&s<>s"));
+        assert_eq!(parsed.entries[0].1.get("totp"), Some("JBSWY3DPEHPK3PXP"));
+
+        // Protected="True" XML values must be rejected rather than imported as plaintext
+        let protected_xml = br#"<KeePassFile><Root><Group><Name>Root</Name><Entry>
+            <String><Key>Password</Key><Value Protected="True">AAECAw==</Value></String>
+        </Entry></Group></Root></KeePassFile>"#;
+        assert!(parse(protected_xml, "keepass").is_err());
+    }
+
+    #[test]
+    fn audit_regression_bitwarden_reordered_bom_cost_and_1pux_keepass_edge_cases() {
+        // 1. Bitwarden encrypted JSON with UTF-8 BOM and "encrypted": true AFTER byte 4096
+        let padding = "x".repeat(5000);
+        let reordered = format!(
+            "\u{feff}{{\"padding\":\"{padding}\",\"data\":\"2.AA|BB|CC\",\"kdfType\":1,\"kdfMemory\":1024,\"kdfIterations\":20,\"kdfParallelism\":4,\"salt\":\"s\",\"passwordProtected\":true,\"encrypted\":true}}"
+        );
+        assert!(is_bitwarden_encrypted_json_bytes(reordered.as_bytes()));
+        let insp = inspect_vault_package_bytes(reordered.as_bytes(), "reordered.json").unwrap();
+        assert_eq!(insp.package_kind, VaultPackageKind::BitwardenEncrypted);
+        // Excessive Argon2id cost (1024 MiB x 20 > 2048 MiB*passes) rejected with cost error
+        let cost_err = parse_package_with_password(
+            reordered.as_bytes(),
+            VaultPackageKind::BitwardenEncrypted,
+            "any-pass",
+        )
+        .err()
+        .unwrap()
+        .to_string();
+        assert!(cost_err.contains("Unsupported KDF cost"), "unexpected: {cost_err}");
+
+        // 2. KDBX 2 pre-release signature (0x66) rejected upfront
+        let kdbx2 = [0x03, 0xD9, 0xA2, 0x9A, 0x66, 0xFB, 0x4B, 0xB5, 0, 0, 2, 0];
+        assert!(!is_kdbx_bytes(&kdbx2));
+        let kdbx2_err = inspect_vault_package_bytes(&kdbx2, "old.kdbx").unwrap_err().to_string();
+        assert!(kdbx2_err.contains("pre-release"), "unexpected: {kdbx2_err}");
+
+        // 3. 1Password loginFields: undesignated text field before designated username must NOT steal username
+        let op_data = json!({
+            "accounts": [{
+                "vaults": [{
+                    "attrs": {"name": "Corp"},
+                    "items": [{
+                        "state": "active",
+                        "categoryUuid": "001",
+                        "overview": {"title": "SSO Portal", "url": "https://sso.corp.test"},
+                        "details": {
+                            "loginFields": [
+                                {"name": "tenant", "fieldType": "T", "value": "ACME-CORP"},
+                                {"name": "email", "fieldType": "E", "designation": "username", "value": "real-user@corp.test"},
+                                {"name": "pwd", "fieldType": "P", "designation": "password", "value": "real-pass"}
+                            ]
+                        }
+                    }]
+                }]
+            }]
+        });
+        let mut zip_buf = Vec::new();
+        {
+            let mut zw = zip::ZipWriter::new(std::io::Cursor::new(&mut zip_buf));
+            zw.start_file("export.data", zip::write::SimpleFileOptions::default()).unwrap();
+            std::io::Write::write_all(&mut zw, &serde_json::to_vec(&op_data).unwrap()).unwrap();
+            zw.finish().unwrap();
+        }
+        let op_parsed = parse(&zip_buf, "onepassword").unwrap();
+        assert_eq!(op_parsed.entries[0].1.get("username"), Some("real-user@corp.test"));
+        assert_eq!(op_parsed.entries[0].1.get("Imported · tenant"), Some("ACME-CORP"));
+
+        // 4. KeePass: user folder named "Recycle Bin" preserved when recyclebin_uuid points elsewhere,
+        //    and ssh://deploy@[::1]:2222 preserves username + IPv6 host + port.
+        use keepass::{Database, DatabaseKey, db::fields};
+        let mut db = Database::new();
+        {
+            let mut root = db.root_mut();
+            let mut fake_bin = root.add_group();
+            fake_bin.name = "Recycle Bin".into();
+            let mut keep_entry = fake_bin.add_entry();
+            keep_entry.set_unprotected(fields::TITLE, "IPv6 SSH Node");
+            keep_entry.set_unprotected(fields::URL, "ssh://deploy@[::1]:2222");
+            keep_entry.set_protected(fields::PASSWORD, "ipv6-pass");
+        }
+        let real_bin_uuid = {
+            let mut root = db.root_mut();
+            let mut real_bin = root.add_group();
+            real_bin.name = "Actual Trash".into();
+            let id = real_bin.id().uuid();
+            let mut del = real_bin.add_entry();
+            del.set_unprotected(fields::TITLE, "Really Deleted");
+            id
+        };
+        db.meta.recyclebin_enabled = Some(true);
+        db.meta.recyclebin_uuid = Some(real_bin_uuid);
+        let mut kdbx_buf = Vec::new();
+        db.save(&mut kdbx_buf, DatabaseKey::new().with_password("pass1234")).unwrap();
+
+        let kp_parsed = parse_package_with_password(&kdbx_buf, VaultPackageKind::KeepassKdbx, "pass1234").unwrap();
+        assert_eq!(kp_parsed.preview.total, 1);
+        assert_eq!(kp_parsed.preview.skipped_deleted, 1);
+        assert_eq!(kp_parsed.entries[0].0.folder, "Recycle Bin");
+        assert_eq!(kp_parsed.entries[0].1.get("username"), Some("deploy"));
+        assert!(kp_parsed.entries[0].0.modules.iter().any(|m| m.kind == "host" && m.value == "[::1]"));
+        assert!(kp_parsed.entries[0].0.modules.iter().any(|m| m.kind == "port" && m.value == "2222"));
     }
 }

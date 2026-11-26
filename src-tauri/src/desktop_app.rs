@@ -273,6 +273,8 @@ pub fn run_gui() -> Result<()> {
                 pending_import: Mutex::new(None),
                 pending_backup_source: Mutex::new(None),
                 pending_backup_import: Mutex::new(None),
+                backup_import_generation: AtomicU64::new(0),
+                backup_prepare_in_flight: Arc::new(AtomicBool::new(false)),
                 pending_history_restore: Mutex::new(None),
                 discovered_mvault_paths: Mutex::new(Vec::new()),
                 import_sources: Mutex::new(Default::default()),
@@ -459,8 +461,21 @@ pub fn run_gui() -> Result<()> {
                                     }
                                 };
 
-                                let mut outcome =
-                                    crate::extract::extract_from_paths(&dropped_paths, &existing);
+                                let paths_for_extract = dropped_paths.clone();
+                                let mut outcome = match tokio::task::spawn_blocking(move || {
+                                    crate::extract::extract_from_paths(&paths_for_extract, &existing)
+                                })
+                                .await
+                                {
+                                    Ok(o) => o,
+                                    Err(error) => {
+                                        let _ = handle.emit(
+                                            "native-files-dropped",
+                                            serde_json::json!({ "error": error.to_string() }),
+                                        );
+                                        return;
+                                    }
+                                };
                                 cmd_import::remember_import_sources(
                                     &runtime,
                                     &mut outcome.batch,
@@ -490,17 +505,31 @@ pub fn run_gui() -> Result<()> {
                                         .and_then(|name| name.to_str())
                                         .unwrap_or("openkeylet-backup.mvault")
                                         .to_owned();
-                                    match backup::inspect_file_requires_password(mvault_path) {
-                                        Ok(requires_password) => {
+                                    let path_for_inspect = mvault_path.clone();
+                                    let inspect_res = tokio::task::spawn_blocking(move || {
+                                        crate::migration::inspect_vault_package_file(&path_for_inspect)
+                                    })
+                                    .await
+                                    .map_err(|e| anyhow::anyhow!("{e}"))
+                                    .and_then(|r| r);
+                                    match inspect_res {
+                                        Ok(info) => {
+                                            runtime
+                                                .backup_import_generation
+                                                .fetch_add(1, Ordering::AcqRel);
                                             *runtime.pending_backup_import.lock().await = None;
                                             *runtime.pending_backup_source.lock().await =
-                                                Some(PendingBackupSource::Path(mvault_path.clone()));
+                                                Some(PendingBackupSource::Path {
+                                                    path: mvault_path.clone(),
+                                                    kind: info.package_kind,
+                                                });
                                             let _ = win.set_focus();
                                             let _ = handle.emit(
                                                 "mvault-file-dropped",
                                                 serde_json::json!({
-                                                    "fileName": file_name,
-                                                    "requiresPassword": requires_password,
+                                                    "fileName": info.file_name,
+                                                    "requiresPassword": info.requires_password,
+                                                    "packageKind": info.package_kind.as_str(),
                                                 }),
                                             );
                                         }

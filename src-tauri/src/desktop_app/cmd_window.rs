@@ -332,10 +332,7 @@ pub(crate) async fn execute_tray_action(app: &AppHandle, action: &str) -> Result
                 return Ok(TrayActionResult::done());
             }
             runtime.owner_session.lock().await.lock();
-            *runtime.pending_import.lock().await = None;
-            *runtime.pending_backup_source.lock().await = None;
-            *runtime.pending_backup_import.lock().await = None;
-            *runtime.pending_history_restore.lock().await = None;
+            runtime.clear_pending_imports().await;
             runtime.discovered_mvault_paths.lock().await.clear();
             clipboard::clear_if_unchanged(app, &runtime.clipboard, None);
             tray_menu::hide_tray_menu(app, &runtime.tray_menu, false);

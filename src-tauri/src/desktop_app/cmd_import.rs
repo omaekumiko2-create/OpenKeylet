@@ -95,17 +95,38 @@ pub(crate) async fn export_backup(
 }
 
 
+const MAX_PACKAGE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_EXTRACT_BINARY_BYTES: usize = 16 * 1024 * 1024;
+
+fn max_base64_len(max_decoded_bytes: usize) -> usize {
+    max_decoded_bytes.div_ceil(3) * 4 + 64
+}
+
+struct InFlightGuard(Arc<AtomicBool>);
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
 #[tauri::command]
 pub(crate) async fn pick_backup_import_file(
     app: AppHandle,
     runtime: State<'_, AppRuntime>,
 ) -> Result<Option<serde_json::Value>, String> {
     require_owner_unlocked(&runtime).await?;
+    runtime
+        .backup_import_generation
+        .fetch_add(1, Ordering::AcqRel);
     *runtime.pending_backup_source.lock().await = None;
     *runtime.pending_backup_import.lock().await = None;
     let selected = app
         .dialog()
         .file()
+        .add_filter(
+            "Vault packages (.mvault, .kdbx, Bitwarden .json)",
+            &["mvault", "kdbx", "json"],
+        )
         .add_filter("OpenKeylet backup", &["mvault"])
         .blocking_pick_file();
     let Some(path) = selected else {
@@ -113,17 +134,24 @@ pub(crate) async fn pick_backup_import_file(
     };
     require_owner_unlocked(&runtime).await?;
     let path = path.into_path().map_err(command_error)?;
-    let requires_password =
-        backup::inspect_file_requires_password(&path).map_err(command_error)?;
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("backup.mvault")
-        .to_owned();
-    *runtime.pending_backup_source.lock().await = Some(PendingBackupSource::Path(path));
+    let path_for_inspect = path.clone();
+    let info = tokio::task::spawn_blocking(move || {
+        crate::migration::inspect_vault_package_file(&path_for_inspect)
+    })
+    .await
+    .map_err(command_error)?
+    .map_err(command_error)?;
+    runtime
+        .backup_import_generation
+        .fetch_add(1, Ordering::AcqRel);
+    *runtime.pending_backup_source.lock().await = Some(PendingBackupSource::Path {
+        path,
+        kind: info.package_kind,
+    });
     Ok(Some(serde_json::json!({
-        "fileName": file_name,
-        "requiresPassword": requires_password,
+        "fileName": info.file_name,
+        "requiresPassword": info.requires_password,
+        "packageKind": info.package_kind.as_str(),
     })))
 }
 
@@ -132,23 +160,49 @@ pub(crate) async fn inspect_dropped_backup_bytes(
     runtime: State<'_, AppRuntime>,
     file_name: String,
     content: String,
+    is_base64: Option<bool>,
 ) -> Result<serde_json::Value, String> {
     require_owner_unlocked(&runtime).await?;
+    runtime
+        .backup_import_generation
+        .fetch_add(1, Ordering::AcqRel);
     *runtime.pending_backup_source.lock().await = None;
     *runtime.pending_backup_import.lock().await = None;
-    let bytes = content.into_bytes();
-    let requires_password =
-        backup::inspect_bytes_requires_password(&bytes).map_err(command_error)?;
-    let display_name = Path::new(&file_name)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .filter(|name| !name.trim().is_empty())
-        .unwrap_or("openkeylet-backup.mvault")
-        .to_owned();
-    *runtime.pending_backup_source.lock().await = Some(PendingBackupSource::Bytes(bytes));
+    let decode_b64 = is_base64.unwrap_or(false);
+    let max_raw = if decode_b64 {
+        max_base64_len(MAX_PACKAGE_BYTES)
+    } else {
+        MAX_PACKAGE_BYTES
+    };
+    if content.len() > max_raw {
+        return Err("Vault package exceeds 64 MiB limit".into());
+    }
+    let bytes = if decode_b64 {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        zeroize::Zeroizing::new(
+            STANDARD
+                .decode(content.trim())
+                .map_err(|e| format!("Invalid vault package encoding: {e}"))?,
+        )
+    } else {
+        zeroize::Zeroizing::new(content.into_bytes())
+    };
+    if bytes.len() > MAX_PACKAGE_BYTES {
+        return Err("Vault package exceeds 64 MiB limit".into());
+    }
+    let info = crate::migration::inspect_vault_package_bytes(&bytes, &file_name)
+        .map_err(command_error)?;
+    runtime
+        .backup_import_generation
+        .fetch_add(1, Ordering::AcqRel);
+    *runtime.pending_backup_source.lock().await = Some(PendingBackupSource::Bytes {
+        bytes,
+        kind: info.package_kind,
+    });
     Ok(serde_json::json!({
-        "fileName": display_name,
-        "requiresPassword": requires_password,
+        "fileName": info.file_name,
+        "requiresPassword": info.requires_password,
+        "packageKind": info.package_kind.as_str(),
     }))
 }
 
@@ -158,39 +212,158 @@ pub(crate) async fn prepare_backup_import(
     password: String,
 ) -> Result<serde_json::Value, String> {
     require_owner_unlocked(&runtime).await?;
+    if runtime
+        .backup_prepare_in_flight
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return Err("Another vault package decryption is already in progress".into());
+    }
+    let _in_flight = InFlightGuard(Arc::clone(&runtime.backup_prepare_in_flight));
+
     let password = zeroize::Zeroizing::new(password);
+    let generation = runtime.backup_import_generation.load(Ordering::Acquire);
     let source = runtime
         .pending_backup_source
         .lock()
         .await
         .clone()
-        .ok_or_else(|| "Choose a .mvault backup file first".to_owned())?;
-    let prepared = match &source {
-        PendingBackupSource::Path(path) => {
-            backup::prepare_import_with_password(&runtime.vault, path, &password)
+        .ok_or_else(|| "Choose a vault backup or package file first".to_owned())?;
+    let vault = runtime.vault.clone();
+    let id = Uuid::new_v4().to_string();
+    let id_for_worker = id.clone();
+
+    enum WorkerResult {
+        Mvault {
+            result: serde_json::Value,
+            version: u8,
+            encrypted: crate::model::SecretEnvelope,
+        },
+        Migration {
+            result: serde_json::Value,
+            encrypted: crate::model::SecretEnvelope,
+        },
+    }
+
+    let worker = tokio::task::spawn_blocking(move || -> anyhow::Result<WorkerResult> {
+        match source {
+            PendingBackupSource::Path {
+                path,
+                kind: crate::migration::VaultPackageKind::Mvault,
+            } => {
+                let bytes = crate::migration::read_bounded_regular_file(
+                    &path,
+                    MAX_PACKAGE_BYTES as u64,
+                )?;
+                let prepared =
+                    backup::prepare_import_bytes_with_password(&vault, &bytes, &password)?;
+                let encrypted = vault.protect_local_state(&*prepared.raw_payload)?;
+                let result = serde_json::json!({
+                    "id": id_for_worker,
+                    "preview": prepared.preview,
+                });
+                Ok(WorkerResult::Mvault {
+                    result,
+                    version: prepared.version,
+                    encrypted,
+                })
+            }
+            PendingBackupSource::Bytes {
+                bytes,
+                kind: crate::migration::VaultPackageKind::Mvault,
+            } => {
+                let prepared =
+                    backup::prepare_import_bytes_with_password(&vault, &bytes, &password)?;
+                let encrypted = vault.protect_local_state(&*prepared.raw_payload)?;
+                let result = serde_json::json!({
+                    "id": id_for_worker,
+                    "preview": prepared.preview,
+                });
+                Ok(WorkerResult::Mvault {
+                    result,
+                    version: prepared.version,
+                    encrypted,
+                })
+            }
+            PendingBackupSource::Path { path, kind } => {
+                let bytes = crate::migration::read_bounded_regular_file(
+                    &path,
+                    MAX_PACKAGE_BYTES as u64,
+                )?;
+                let parsed = crate::migration::parse_package_with_password(&bytes, kind, &password)?;
+                let preview = backup::preview_migration_entries(
+                    &vault,
+                    kind.format_label().to_owned(),
+                    &parsed.entries,
+                )?;
+                let encrypted = vault.protect_local_state(&parsed.entries)?;
+                let result = serde_json::json!({
+                    "id": id_for_worker,
+                    "preview": preview,
+                    "packageKind": kind.as_str(),
+                    "warnings": parsed.preview.warnings,
+                    "skippedDeleted": parsed.preview.skipped_deleted,
+                });
+                Ok(WorkerResult::Migration { result, encrypted })
+            }
+            PendingBackupSource::Bytes { bytes, kind } => {
+                let parsed =
+                    crate::migration::parse_package_with_password(&bytes, kind, &password)?;
+                let preview = backup::preview_migration_entries(
+                    &vault,
+                    kind.format_label().to_owned(),
+                    &parsed.entries,
+                )?;
+                let encrypted = vault.protect_local_state(&parsed.entries)?;
+                let result = serde_json::json!({
+                    "id": id_for_worker,
+                    "preview": preview,
+                    "packageKind": kind.as_str(),
+                    "warnings": parsed.preview.warnings,
+                    "skippedDeleted": parsed.preview.skipped_deleted,
+                });
+                Ok(WorkerResult::Migration { result, encrypted })
+            }
         }
-        PendingBackupSource::Bytes(bytes) => {
-            backup::prepare_import_bytes_with_password(&runtime.vault, bytes, &password)
+    })
+    .await
+    .map_err(command_error)?
+    .map_err(command_error)?;
+
+    // Re-validate lock state and generation before publishing so a concurrent lock, cancel,
+    // or new file drop can never be overwritten by a delayed background decryption.
+    require_owner_unlocked(&runtime).await?;
+    let mut source_slot = runtime.pending_backup_source.lock().await;
+    let mut import_slot = runtime.pending_backup_import.lock().await;
+    if runtime.backup_import_generation.load(Ordering::Acquire) != generation {
+        return Err("Backup import was cancelled or replaced; choose the file again".into());
+    }
+    match worker {
+        WorkerResult::Mvault {
+            result,
+            version,
+            encrypted,
+        } => {
+            *source_slot = None;
+            *import_slot = Some(PendingBackupImport {
+                id,
+                created: Instant::now(),
+                payload_kind: PendingBackupPayloadKind::Mvault { version },
+                encrypted,
+            });
+            Ok(result)
+        }
+        WorkerResult::Migration { result, encrypted } => {
+            *source_slot = None;
+            *import_slot = Some(PendingBackupImport {
+                id,
+                created: Instant::now(),
+                payload_kind: PendingBackupPayloadKind::MigrationEntries,
+                encrypted,
+            });
+            Ok(result)
         }
     }
-    .map_err(command_error)?;
-    let id = Uuid::new_v4().to_string();
-    let encrypted = runtime
-        .vault
-        .protect_local_state(&*prepared.raw_payload)
-        .map_err(command_error)?;
-    let result = serde_json::json!({
-        "id": id,
-        "preview": prepared.preview,
-    });
-    *runtime.pending_backup_source.lock().await = None;
-    *runtime.pending_backup_import.lock().await = Some(PendingBackupImport {
-        id,
-        created: Instant::now(),
-        version: prepared.version,
-        encrypted,
-    });
-    Ok(result)
 }
 
 #[tauri::command]
@@ -203,7 +376,9 @@ pub(crate) async fn commit_backup_import(
 ) -> Result<ImportSummary, String> {
     require_owner_unlocked(&runtime).await?;
     let mut slot = runtime.pending_backup_import.lock().await;
-    let pending = slot.as_ref().ok_or("Choose a .mvault backup file first")?;
+    let pending = slot
+        .as_ref()
+        .ok_or("Choose a vault backup or package file first")?;
     if pending.id != id {
         return Err("Backup preview changed; choose the file again".into());
     }
@@ -211,19 +386,56 @@ pub(crate) async fn commit_backup_import(
         *slot = None;
         return Err("Backup preview expired; choose the file again".into());
     }
-    let raw_payload: Vec<u8> = runtime
-        .vault
-        .unprotect_local_state(&pending.encrypted)
-        .map_err(command_error)?;
-    let raw_payload = zeroize::Zeroizing::new(raw_payload);
-    let summary = backup::commit_prepared_import_selected(
-        &runtime.vault,
-        &raw_payload,
-        pending.version,
-        selected_item_indices.as_deref(),
-        selected_trash_indices.as_deref(),
-    )
-    .map_err(command_error)?;
+    let summary = match pending.payload_kind {
+        PendingBackupPayloadKind::Mvault { version } => {
+            let raw_payload: Vec<u8> = runtime
+                .vault
+                .unprotect_local_state(&pending.encrypted)
+                .map_err(command_error)?;
+            let raw_payload = zeroize::Zeroizing::new(raw_payload);
+            backup::commit_prepared_import_selected(
+                &runtime.vault,
+                &raw_payload,
+                version,
+                selected_item_indices.as_deref(),
+                selected_trash_indices.as_deref(),
+            )
+            .map_err(command_error)?
+        }
+        PendingBackupPayloadKind::MigrationEntries => {
+            let entries: Vec<(crate::model::PortableConnection, crate::model::SecretBundle)> =
+                runtime
+                    .vault
+                    .unprotect_local_state(&pending.encrypted)
+                    .map_err(command_error)?;
+            let selected = match selected_item_indices {
+                Some(indices) => {
+                    let len = entries.len();
+                    if indices.iter().any(|&idx| idx >= len) {
+                        return Err("Selected item index is out of range; reopen the import preview".into());
+                    }
+                    let allow: std::collections::HashSet<usize> = indices.into_iter().collect();
+                    entries
+                        .into_iter()
+                        .enumerate()
+                        .filter_map(|(idx, entry)| allow.contains(&idx).then_some(entry))
+                        .collect()
+                }
+                None => entries,
+            };
+            if selected.is_empty() {
+                ImportSummary {
+                    added: 0,
+                    merged: 0,
+                }
+            } else {
+                runtime
+                    .vault
+                    .merge_connections(selected)
+                    .map_err(command_error)?
+            }
+        }
+    };
     *slot = None;
     emit_changed(&app);
     if summary.added > 0 {
@@ -234,6 +446,9 @@ pub(crate) async fn commit_backup_import(
 
 #[tauri::command]
 pub(crate) async fn cancel_backup_import(runtime: State<'_, AppRuntime>) -> Result<(), String> {
+    runtime
+        .backup_import_generation
+        .fetch_add(1, Ordering::AcqRel);
     *runtime.pending_backup_source.lock().await = None;
     *runtime.pending_backup_import.lock().await = None;
     Ok(())
@@ -253,6 +468,16 @@ pub(crate) async fn prepare_import(
             .file()
             .add_filter("Bitwarden JSON", &["json"])
             .blocking_pick_file(),
+        "onepassword" => app
+            .dialog()
+            .file()
+            .add_filter("1Password Export (.1pux)", &["1pux"])
+            .blocking_pick_file(),
+        "keepass" => app
+            .dialog()
+            .file()
+            .add_filter("KeePass (.kdbx / .xml)", &["kdbx", "xml"])
+            .blocking_pick_file(),
         "chrome" => app
             .dialog()
             .file()
@@ -265,7 +490,47 @@ pub(crate) async fn prepare_import(
         return Ok(None);
     };
     require_owner_unlocked(&runtime).await?;
-    let parsed = crate::migration::read(&path.into_path().map_err(command_error)?, &format)
+    let path = path.into_path().map_err(command_error)?;
+
+    // Seamless redirect: if the chosen Bitwarden JSON or KeePass file is password-protected,
+    // hand off to the unified unlock & selective preview modal instead of failing.
+    let path_check = path.clone();
+    let is_pkg = if format == "bitwarden" || format == "keepass" {
+        tokio::task::spawn_blocking(move || crate::migration::is_vault_package_path(&path_check))
+            .await
+            .map_err(command_error)?
+    } else {
+        false
+    };
+    if is_pkg {
+        let path_inspect = path.clone();
+        let info = tokio::task::spawn_blocking(move || {
+            crate::migration::inspect_vault_package_file(&path_inspect)
+        })
+        .await
+        .map_err(command_error)?
+        .map_err(command_error)?;
+        runtime
+            .backup_import_generation
+            .fetch_add(1, Ordering::AcqRel);
+        *runtime.pending_backup_import.lock().await = None;
+        *runtime.pending_backup_source.lock().await = Some(PendingBackupSource::Path {
+            path,
+            kind: info.package_kind,
+        });
+        return Ok(Some(serde_json::json!({
+            "redirectVaultPackage": {
+                "fileName": info.file_name,
+                "requiresPassword": info.requires_password,
+                "packageKind": info.package_kind.as_str(),
+            }
+        })));
+    }
+
+    let format_for_read = format.clone();
+    let parsed = tokio::task::spawn_blocking(move || crate::migration::read(&path, &format_for_read))
+        .await
+        .map_err(command_error)?
         .map_err(command_error)?;
     let id = Uuid::new_v4().to_string();
     let encrypted = runtime
@@ -381,14 +646,27 @@ pub(crate) async fn smart_pick_and_extract_files(
             .and_then(|s| s.to_str())
             .unwrap_or("openkeylet-backup.mvault")
             .to_owned();
-        match backup::inspect_file_requires_password(mvault_path) {
-            Ok(requires_password) => {
+        let path_for_inspect = mvault_path.clone();
+        let inspect_res = tokio::task::spawn_blocking(move || {
+            crate::migration::inspect_vault_package_file(&path_for_inspect)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))
+        .and_then(|r| r);
+        match inspect_res {
+            Ok(info) => {
+                runtime
+                    .backup_import_generation
+                    .fetch_add(1, Ordering::AcqRel);
                 *runtime.pending_backup_import.lock().await = None;
-                *runtime.pending_backup_source.lock().await =
-                    Some(PendingBackupSource::Path(mvault_path.clone()));
+                *runtime.pending_backup_source.lock().await = Some(PendingBackupSource::Path {
+                    path: mvault_path.clone(),
+                    kind: info.package_kind,
+                });
                 mvault_file = Some(serde_json::json!({
-                    "fileName": file_name,
-                    "requiresPassword": requires_password,
+                    "fileName": info.file_name,
+                    "requiresPassword": info.requires_password,
+                    "packageKind": info.package_kind.as_str(),
                 }));
             }
             Err(error) => {
@@ -421,21 +699,39 @@ pub(crate) async fn smart_extract_dropped_binary(
     data_base64: String,
 ) -> Result<crate::extract::SmartExtractBatchResult, String> {
     require_owner_unlocked(&runtime).await?;
-    use base64::{Engine, engine::general_purpose::STANDARD};
-    let bytes = STANDARD
-        .decode(data_base64.trim())
-        .map_err(|e| format!("Invalid file encoding: {e}"))?;
     let display_name = Path::new(&file_name)
         .file_name()
         .and_then(|s| s.to_str())
         .filter(|s| !s.trim().is_empty())
-        .unwrap_or("file");
+        .unwrap_or("file")
+        .to_owned();
+    let max_decoded = if display_name.to_ascii_lowercase().ends_with(".1pux") {
+        MAX_PACKAGE_BYTES
+    } else {
+        MAX_EXTRACT_BINARY_BYTES
+    };
+    if data_base64.len() > max_base64_len(max_decoded) {
+        return Err(format!("{display_name} exceeds file size limit"));
+    }
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    let bytes = zeroize::Zeroizing::new(
+        STANDARD
+            .decode(data_base64.trim())
+            .map_err(|e| format!("Invalid file encoding: {e}"))?,
+    );
+    if bytes.len() > max_decoded {
+        return Err(format!("{display_name} exceeds file size limit"));
+    }
     let existing = runtime
         .vault
         .list_decrypted_connections()
         .map_err(command_error)?;
-    crate::extract::extract_from_bytes(&bytes, display_name, &existing)
-        .map_err(command_error)
+    tokio::task::spawn_blocking(move || {
+        crate::extract::extract_from_bytes(&bytes, &display_name, &existing)
+    })
+    .await
+    .map_err(command_error)?
+    .map_err(command_error)
 }
 
 #[tauri::command]
@@ -519,18 +815,25 @@ pub(crate) async fn open_discovered_mvault(
         .get(index)
         .cloned()
         .ok_or_else(|| "Discovered .mvault backup is no longer available; scan again".to_owned())?;
-    let requires_password =
-        backup::inspect_file_requires_password(&path).map_err(command_error)?;
-    let file_name = path
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("openkeylet-backup.mvault")
-        .to_owned();
+    let path_for_inspect = path.clone();
+    let info = tokio::task::spawn_blocking(move || {
+        crate::migration::inspect_vault_package_file(&path_for_inspect)
+    })
+    .await
+    .map_err(command_error)?
+    .map_err(command_error)?;
+    runtime
+        .backup_import_generation
+        .fetch_add(1, Ordering::AcqRel);
     *runtime.pending_backup_import.lock().await = None;
-    *runtime.pending_backup_source.lock().await = Some(PendingBackupSource::Path(path));
+    *runtime.pending_backup_source.lock().await = Some(PendingBackupSource::Path {
+        path,
+        kind: info.package_kind,
+    });
     Ok(serde_json::json!({
-        "fileName": file_name,
-        "requiresPassword": requires_password,
+        "fileName": info.file_name,
+        "requiresPassword": info.requires_password,
+        "packageKind": info.package_kind.as_str(),
     }))
 }
 
