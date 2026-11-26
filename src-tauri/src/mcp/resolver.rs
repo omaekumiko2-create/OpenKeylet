@@ -1067,7 +1067,7 @@ pub(super) fn is_unignored_in_git_repo(path: &Path) -> bool {
     if !in_git_tree {
         return false;
     }
-    let mut cmd = std::process::Command::new("git");
+    let mut cmd = crate::cli::run::std_command_for_program("git");
     cmd.arg("-C")
         .arg(parent)
         .args(["check-ignore", "-q", "--"])

@@ -3403,7 +3403,7 @@ fn git_ignore_check_warns_only_for_unignored_files_inside_git_repos() {
 
     let repo = dir.path().join("repo");
     std::fs::create_dir_all(&repo).unwrap();
-    if std::process::Command::new("git")
+    if crate::cli::run::std_command_for_program("git")
         .arg("-C")
         .arg(&repo)
         .arg("init")

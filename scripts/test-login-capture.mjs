@@ -29,7 +29,7 @@ server.listen(0, "127.0.0.1"); await once(server, "listening");
 const origin = `http://localhost:${server.address().port}`;
 const portProbe = net.createServer(); portProbe.listen(0, "127.0.0.1"); await once(portProbe, "listening");
 const port = portProbe.address().port; await new Promise(resolve => portProbe.close(resolve));
-await fs.cp(path.join(repo, "browser-extension"), extension, { recursive: true });
+await fs.cp(path.join(repo, "browser-extension"), extension, { recursive: true, dereference: true });
 const swPath = path.join(extension, "service-worker.js");
 await fs.writeFile(swPath, (await fs.readFile(swPath, "utf8")).replaceAll("39272", String(port)));
 const child = spawn(fixture, [root, String(port), origin], { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });

@@ -888,6 +888,40 @@ function clickElementDom(payload, expiresAt) {
   };
 }
 
+function waitForTabSettle(tabId, waitMs = 1500, requireNonBlank = false) {
+  if (!tabId || waitMs <= 0) return Promise.resolve();
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      chrome.tabs.onRemoved.removeListener(onRemoved);
+      resolve();
+    };
+    const onUpdated = (updatedId, changeInfo) => {
+      if (updatedId === tabId && changeInfo.status === "complete") done();
+    };
+    const onRemoved = (removedId) => {
+      if (removedId === tabId) done();
+    };
+    const timer = setTimeout(done, waitMs);
+    chrome.tabs.onUpdated.addListener(onUpdated);
+    chrome.tabs.onRemoved.addListener(onRemoved);
+    chrome.tabs.get(tabId).then((latest) => {
+      if (latest?.status === "complete" && (!requireNonBlank || (latest.url && latest.url !== "about:blank"))) {
+        done();
+      }
+    }).catch(done);
+  });
+}
+
+function isTransientNavigationError(error) {
+  const msg = String(error?.message || error || "");
+  return /frame.*was removed|frame.*removed|document.*unloaded|back\/forward cache|cannot access contents of url|frame.*not found/i.test(msg);
+}
+
 async function openTabJob(payload = {}, expiresAt) {
   if (Number.isFinite(expiresAt) && Date.now() >= expiresAt) {
     return { ok: false, message: "The open tab task has expired" };
@@ -938,31 +972,7 @@ async function openTabJob(payload = {}, expiresAt) {
   const waitMs = Math.min(Math.max(requestedWait, 0), maxRemaining, 25000);
 
   if (waitMs > 0) {
-    await new Promise((resolve) => {
-      let settled = false;
-      const done = () => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        chrome.tabs.onUpdated.removeListener(onUpdated);
-        chrome.tabs.onRemoved.removeListener(onRemoved);
-        resolve();
-      };
-      const onUpdated = (updatedId, changeInfo) => {
-        if (updatedId === tab.id && changeInfo.status === "complete") done();
-      };
-      const onRemoved = (removedId) => {
-        if (removedId === tab.id) done();
-      };
-      const timer = setTimeout(done, waitMs);
-      chrome.tabs.onUpdated.addListener(onUpdated);
-      chrome.tabs.onRemoved.addListener(onRemoved);
-      chrome.tabs.get(tab.id).then((latest) => {
-        if (latest?.status === "complete" && latest.url && latest.url !== "about:blank") {
-          done();
-        }
-      }).catch(done);
-    });
+    await waitForTabSettle(tab.id, waitMs, true);
   }
 
   const finalTab = await chrome.tabs.get(tab.id).catch(() => tab);
@@ -982,9 +992,14 @@ async function openTabJob(payload = {}, expiresAt) {
 }
 
 async function inspectPageJob(payload = {}) {
-  const tabs = await listHttpTabs();
+  let tabs = await listHttpTabs();
   const pendingPasskeys = listPendingCredentialRequests();
-  const tab = await resolveTargetTab(payload).catch(() => null);
+  let tab = await resolveTargetTab(payload).catch(() => null);
+  if (tab?.id && tab.status === "loading") {
+    await waitForTabSettle(tab.id, 1500, false);
+    tab = await chrome.tabs.get(tab.id).catch(() => tab);
+    tabs = await listHttpTabs();
+  }
   if (!tab?.id || !/^https?:\/\//.test(tab.url || "")) {
     return {
       ok: true,
@@ -1007,13 +1022,63 @@ async function inspectPageJob(payload = {}) {
       },
     };
   }
-  const origin = new URL(tab.url).origin;
   try {
-    const executions = await chrome.scripting.executeScript({
-      target: { tabId: tab.id, allFrames: true },
-      func: inspectPageDom,
-      args: [origin],
-    });
+    let executions = null;
+    let origin = new URL(tab.url).origin;
+    let lastError = null;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      if (attempt > 0) {
+        await waitForTabSettle(tab.id, 1200, false);
+        await new Promise((r) => setTimeout(r, 120));
+        const refreshed = await chrome.tabs.get(tab.id).catch(() => null);
+        if (!refreshed?.id || !/^https?:\/\//.test(refreshed.url || "")) {
+          break;
+        }
+        tab = refreshed;
+        origin = new URL(tab.url).origin;
+        tabs = await listHttpTabs();
+      }
+      try {
+        executions = await chrome.scripting.executeScript({
+          target: { tabId: tab.id, allFrames: true },
+          func: inspectPageDom,
+          args: [origin],
+        });
+        lastError = null;
+        break;
+      } catch (error) {
+        lastError = error;
+        const latestTab = await chrome.tabs.get(tab.id).catch(() => null);
+        if (!latestTab?.id) throw error;
+        if (!isTransientNavigationError(error) && latestTab.status !== "loading") {
+          throw error;
+        }
+        tab = latestTab;
+      }
+    }
+    if (lastError) throw lastError;
+    if (!executions) {
+      return {
+        ok: true,
+        message: "No active HTTP/HTTPS page",
+        data: {
+          tabId: tab?.id ?? null,
+          url: urlWithMaskedQuery(tab?.url || ""),
+          origin: "",
+          title: tab?.title || "",
+          tabs,
+          focused: null,
+          loginForms: [],
+          otpFieldCount: 0,
+          fields: [],
+          buttons: [],
+          alerts: [],
+          pageTextSummary: "",
+          frames: [],
+          pendingPasskeys,
+        },
+      };
+    }
     const topExec = executions.find(e => e.frameId === 0);
     const dom = topExec?.result || {
       url: tab.url,

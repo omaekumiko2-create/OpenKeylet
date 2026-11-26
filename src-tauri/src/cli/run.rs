@@ -119,10 +119,18 @@ pub fn parse_run_args(args: &[String]) -> Result<RunOptions> {
     })
 }
 
+/// Accepts POSIX environment names as well as dotted/hyphenated config keys
+/// emitted by `openkeylet import-env --seal` (e.g. `aws.secret`, `spring.datasource.password`).
+/// Both Unix `execve` and Windows `CreateProcessW` pass these names natively to child processes.
 pub fn is_valid_env_var_name(name: &str) -> bool {
     let mut chars = name.chars();
-    matches!(chars.next(), Some('_' | 'a'..='z' | 'A'..='Z'))
-        && chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    matches!(first, '_' | 'a'..='z' | 'A'..='Z')
+        && name.len() <= 128
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | '-'))
+        && !name.ends_with(['.', '-'])
 }
 
 /// Parse a `.env` template file into ordered `(KEY, RAW_VALUE)` pairs.
@@ -811,6 +819,19 @@ where
     Ok(())
 }
 
+/// Builds a `std::process::Command` that transparently invokes Windows `.cmd`/`.bat`
+/// shims (e.g. Scoop/Chocolatey/portable `git.cmd`) via `cmd.exe /d /s /c call` while
+/// executing native executables directly.
+pub(crate) fn std_command_for_program(program: &str) -> std::process::Command {
+    #[cfg(windows)]
+    if let Some((cmd_exe, prefix_args)) = resolve_windows_batch_wrapper(program) {
+        let mut cmd = std::process::Command::new(cmd_exe);
+        cmd.args(prefix_args);
+        return cmd;
+    }
+    std::process::Command::new(program)
+}
+
 fn build_child_command(plan: &ResolvedRunPlan) -> tokio::process::Command {
     #[cfg(windows)]
     if let Some((cmd_exe, prefix_args)) = resolve_windows_batch_wrapper(&plan.command) {
@@ -1192,6 +1213,25 @@ mod tests {
             )
         );
         assert_eq!(parsed[4], ("EMPTY_VAL".into(), String::new()));
+    }
+
+    #[test]
+    fn parse_env_template_accepts_dotted_and_hyphenated_keys_matching_import_env() {
+        let tpl = "aws.secret={{openkeylet:aws.secret}}\n\
+                   spring.datasource.password={{openkeylet:spring.datasource.password}}\n\
+                   my-service-token={{openkeylet:my-service-token}}\n";
+        let parsed = parse_env_template(tpl).unwrap();
+        assert_eq!(parsed.len(), 3);
+        assert_eq!(parsed[0].0, "aws.secret");
+        assert_eq!(parsed[1].0, "spring.datasource.password");
+        assert_eq!(parsed[2].0, "my-service-token");
+
+        assert!(!is_valid_env_var_name(""));
+        assert!(!is_valid_env_var_name("123_BAD"));
+        assert!(!is_valid_env_var_name("BAD NAME"));
+        assert!(!is_valid_env_var_name("trailing."));
+        assert!(!is_valid_env_var_name("trailing-"));
+        assert!(!is_valid_env_var_name("bad=name"));
     }
 
     #[test]

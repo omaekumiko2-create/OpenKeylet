@@ -151,7 +151,7 @@ await once(portProbe, "listening");
 const port = portProbe.address().port;
 await new Promise(r => portProbe.close(r));
 
-await fs.cp(path.join(repo, "browser-extension"), extension, { recursive: true });
+await fs.cp(path.join(repo, "browser-extension"), extension, { recursive: true, dereference: true });
 const swPath = path.join(extension, "service-worker.js");
 await fs.writeFile(swPath, (await fs.readFile(swPath, "utf8")).replaceAll("39272", String(port)));
 

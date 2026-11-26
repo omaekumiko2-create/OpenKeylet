@@ -49,7 +49,7 @@ server.listen(0, "127.0.0.1"); await once(server, "listening");
 const origin = `http://localhost:${server.address().port}`;
 const probe = net.createServer(); probe.listen(0, "127.0.0.1"); await once(probe, "listening");
 const port = probe.address().port; await new Promise(resolve => probe.close(resolve));
-await fs.cp(path.join(repo, "browser-extension"), extension, { recursive: true });
+await fs.cp(path.join(repo, "browser-extension"), extension, { recursive: true, dereference: true });
 const sw = path.join(extension, "service-worker.js");
 await fs.writeFile(sw, (await fs.readFile(sw, "utf8")).replaceAll("39272", String(port)));
 const executable = path.join(process.env.CARGO_TARGET_DIR, "debug/examples", process.platform === "win32" ? "browser_fixture.exe" : "browser_fixture");
