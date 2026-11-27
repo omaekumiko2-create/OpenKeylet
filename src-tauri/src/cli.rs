@@ -17,7 +17,7 @@ use std::net::IpAddr;
 #[command(
     name = "openkeylet",
     version,
-    about = "Local-first encrypted password vault and zero-plaintext credential relay for AI agents"
+    about = "Local-first autonomous secret vault for AI agents — auto-capture, local execution, and zero-plaintext MCP"
 )]
 pub struct Cli {
     #[command(subcommand)]

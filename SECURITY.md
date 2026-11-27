@@ -2,7 +2,7 @@
 
 **English** · [简体中文](SECURITY.zh-CN.md)
 
-OpenKeylet is an open-source, community convenience tool exposed through local stdio MCP and provided as-is without security warranties. It is **not** a hardened password vault designed to stop a determined local attacker; its goal is to let Agents store and use credentials quickly and seamlessly while reducing accidental plaintext leaks into model context, API relays, shell history, and public repositories.
+OpenKeylet is an open-source, local-first autonomous secret vault exposed through local stdio MCP and provided as-is without security warranties. It is **not** a hardened password vault designed to stop a determined local attacker; its goal is to let Agents store, generate, and use credentials automatically and seamlessly while reducing accidental plaintext leaks into model context, API relays, shell history, and public repositories.
 
 ## Security goals
 

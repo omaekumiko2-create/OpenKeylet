@@ -170,7 +170,7 @@ fn create_windows_shortcut(path: &Path, executable: &Path) -> Result<()> {
         let executable_text = HSTRING::from(windows_shell_path(&executable));
         let working_text = HSTRING::from(windows_shell_path(working_directory));
         let arguments = HSTRING::from("gui");
-        let description = HSTRING::from("OpenKeylet — local credential relay for AI agents");
+        let description = HSTRING::from("OpenKeylet — local-first autonomous secret vault for AI agents");
         unsafe {
             shell_link.SetPath(&executable_text).context("SetPath")?;
             shell_link
@@ -321,7 +321,7 @@ fn set_entry(path: &Path, executable: &Path, enabled: bool, _kind: EntryKind) ->
     let try_exec = desktop_entry_value(&executable_path);
     let icon = desktop_entry_value(icon_path.to_string_lossy().as_ref());
     let content = format!(
-        "[Desktop Entry]\nType=Application\nVersion=1.0\nName=OpenKeylet\nComment=Local credential relay for AI agents\nExec=env GDK_BACKEND=wayland,x11 {command} gui\nTryExec={try_exec}\nIcon={icon}\nStartupWMClass=openkeylet\nTerminal=false\nCategories=Utility;Security;\n"
+        "[Desktop Entry]\nType=Application\nVersion=1.0\nName=OpenKeylet\nComment=Local-first autonomous secret vault for AI agents\nExec=env GDK_BACKEND=wayland,x11 {command} gui\nTryExec={try_exec}\nIcon={icon}\nStartupWMClass=openkeylet\nTerminal=false\nCategories=Utility;Security;\n"
     );
     write_if_changed(path, content.as_bytes())
         .with_context(|| format!("Could not write system entry:{}", path.display()))?;

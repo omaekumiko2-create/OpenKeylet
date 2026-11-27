@@ -1,11 +1,12 @@
 <p align="center">
-  <img src=".github/assets/openkeylet-banner.jpg" alt="OpenKeylet — Zero-Plaintext Credential Vault & MCP Relay for AI Agents" width="100%" />
+  <img src=".github/assets/openkeylet-banner.jpg" alt="OpenKeylet — 面向 AI Agent 的本地全自动密钥仓库" width="100%" />
 </p>
 
 <h1 align="center">OpenKeylet</h1>
 
 <p align="center">
-  <strong>本地优先的加密密码库、Passkey 管理器，以及面向 AI Agent 的零明文 <code>stdio</code> MCP 凭据中继器。</strong>
+  <strong>面向 AI Agent 的本地全自动密钥仓库。</strong><br />
+  <sub>自动安装、自动存密、自动代执行、自动脱敏、自动同步——账号密码、API Key、SSH、2FA 与 Passkey 全程留在本机，明文不进大模型对话。</sub>
 </p>
 
 <p align="center">
@@ -20,7 +21,7 @@
 <p align="center">
   <a href="#安装与更新"><strong>快速安装（推荐 CLI）</strong></a>
   &nbsp;&nbsp;·&nbsp;&nbsp;
-  <a href="../../releases/latest"><strong>下载最新版</strong></a>
+  <a href="#为什么是全自动密钥仓库"><strong>为什么是全自动</strong></a>
   &nbsp;&nbsp;·&nbsp;&nbsp;
   <a href="README.md"><strong>English</strong></a>
   &nbsp;&nbsp;·&nbsp;&nbsp;
@@ -41,9 +42,9 @@
 
 ---
 
-**OpenKeylet** 把你本机的个人加密密码管理器与现代 AI 编程 / 终端 Agent 无缝打通——原生一键接入 **Antigravity、Claude Code、Codex、Cursor、DeepSeek Harness 与 OpenCode**。
+传统密码管理器是**被动保险箱**——只负责存，用的时候还得靠人一次次点开、复制、粘贴、抄验证码、维护 `.env`。
 
-当 Agent 需要登录服务器（SSH / SFTP）、调用认证 API、渲染 `.env` 密钥模板、填写网页账号与支付表单，或者完成 **WebAuthn Passkey** 无密登录时，OpenKeylet 直接在**你的本机代为完成认证动作**——既省去反复复制粘贴的麻烦，又把默认隐藏的明文秘密拦在大模型上下文、中转代理和聊天记录之外。
+**OpenKeylet** 是为 AI Agent 时代打造的**本地全自动密钥仓库**——原生自动接入 **Antigravity、Claude Code、Codex、Cursor、DeepSeek Harness 与 OpenCode**。从一条命令自动安装接入，到网页/接口新密钥零接触自动入库，再到 SSH / API / 终端 / 浏览器登录、2FA 与 Passkey 本地自动代执行、回显自动脱敏、双仓库自动加密同步与 Ed25519 签名自更新，OpenKeylet 把密钥全生命周期的繁琐环节全自动化，同时把**唯一的一粒绿色授权总闸留给你**。
 
 ---
 
@@ -93,8 +94,22 @@ openkeylet update install
 
 如果你更习惯手动解压部署，可以直接前往 [GitHub Releases](../../releases/latest) 下载 Windows、macOS、Linux GUI 或 Linux 无头版便携包。
 
+---
+
+## 为什么是「全自动密钥仓库」？
+
+无需再在网页控制台、终端、`.env` 和 AI 对话框之间来回复制粘贴——OpenKeylet 在本机打通密钥全生命周期的 **5 步自动闭环**，同时把开关控制权牢牢留给你：
+
+| 密钥生命周期 | 传统被动密码管理器 | OpenKeylet（本地全自动密钥仓库） |
+| --- | --- | --- |
+| **1. 自动装 & 自更新** | 手动下载解压、手动配 MCP JSON | 一条 CLI / 一句话校验 Ed25519 + SHA-256、自动绑定 6 大 AI Agent，并支持原地签名自更新 |
+| **2. 自动存（零接触入库）** | 网页新签发的 Key 和账号靠手抄 | Agent 直接抓取网页一次性 API Key、已提交登录与 API 新令牌入库；本机直生强密码与 Ed25519 SSH 密钥；支持全机扫描或拖入 Bitwarden / 1Password / KeePass 密码库 |
+| **3. 自动用（本地代执行）** | 手动复制密码、2FA 验证码和 `.env` | 本机自动代跑 SSH/SFTP、认证 API、PTY 终端、`.env` 注入（`openkeylet run` / `secret_write_file`）、`ssh-agent`、`git-credential` 与真实浏览器登录 / 2FA / 填卡 / Passkey |
+| **4. 自动护（实时脱敏）** | 明文易泄露进对话、终端和剪贴板 | 回显中的原值及 base64/hex/URL/JSON 编码、实时 2FA、`Set-Cookie` 与 URL 令牌自动打码 `[REDACTED]`；跨源重定向剥离认证头；SSH 主机密钥 TOFU 固定；剪贴板 30 秒自动清空 |
+| **5. 自动同步 & 一灯控权** | 绑定厂商云服务或手动导出备份 | 可选私有双仓库自动双向加密同步（密文仓与密钥仓物理分离）与版本回滚；**每个条目左侧一粒绿色启用灯即你的最高授权总闸** |
+
 > [!NOTE]
-> **长期维护的开源项目 & 诚实定位**：OpenKeylet 是一个免费开源、**长期持续维护**的社区效率工具（[MIT](LICENSE) 协议，按“现状 / AS-IS”提供，**不承诺任何形式的安全保障**）。我们的核心目标非常纯粹：**让开发者和 AI Agent 的日常凭据协作尽可能丝滑、顺手、少踩坑**，同时把“保护什么、明确不防什么”摊在台面上讲清楚。**非常欢迎各种形式的反馈、Bug 报告、交互/视觉建议、新功能想法与开放讨论**，欢迎随时前往 [Issues](https://github.com/omaekumiko2-create/OpenKeylet/issues) 或 [Discussions](https://github.com/omaekumiko2-create/OpenKeylet/discussions) 交流！
+> **长期维护的开源项目 & 诚实定位**：OpenKeylet 是一个免费开源、**长期持续维护**的社区效率工具（[MIT](LICENSE) 协议，按“现状 / AS-IS”提供，**不承诺任何形式的安全保障**）。我们的核心目标非常纯粹：**把开发者和 AI Agent 的日常密钥协作彻底自动化、丝滑少踩坑**，同时把“保护什么、明确不防什么”摊在台面上讲清楚。**非常欢迎各种形式的反馈、Bug 报告、交互/视觉建议、新功能想法与开放讨论**，欢迎随时前往 [Issues](https://github.com/omaekumiko2-create/OpenKeylet/issues) 或 [Discussions](https://github.com/omaekumiko2-create/OpenKeylet/discussions) 交流！
 
 ---
 

@@ -1,5 +1,7 @@
 # OpenKeylet — AI Agent Install & Update Runbook
 
+**OpenKeylet** is the local-first autonomous secret vault for AI agents — auto-capture, local execution, automatic redaction, and encrypted sync for passwords, API keys, SSH, 2FA, and Passkeys.
+
 > **Instructions for AI Agents (Claude Code, Antigravity, Codex, Cursor, OpenCode, DeepSeek Harness)**
 >
 > Follow this runbook strictly when the user asks you to **install** or **update** OpenKeylet.

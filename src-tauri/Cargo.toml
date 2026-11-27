@@ -1,7 +1,7 @@
 [package]
 name = "openkeylet"
 version = "0.20.0"
-description = "Local password and credential manager for AI agents"
+description = "Local-first autonomous secret vault for AI agents"
 authors = ["OpenKeylet contributors"]
 license = "MIT"
 edition = "2024"

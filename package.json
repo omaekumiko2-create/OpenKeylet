@@ -2,7 +2,7 @@
   "name": "openkeylet",
   "version": "0.20.0",
   "private": true,
-  "description": "OpenKeylet — a local password and credential manager for AI agents.",
+  "description": "OpenKeylet — the local-first autonomous secret vault for AI agents.",
   "scripts": {
     "dev": "tauri dev",
     "build": "tauri build",
