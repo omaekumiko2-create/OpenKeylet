@@ -6,6 +6,7 @@ use super::{
 };
 use crate::{
     admin::{self, AdminServerConfig, DEFAULT_ADMIN_PORT},
+    agents::AgentRegistry,
     backup,
     browser::BrowserBridge,
     model::SettingsPatch,
@@ -18,43 +19,160 @@ use anyhow::{Context, Result};
 use std::{
     env,
     io::IsTerminal,
+    path::Path,
     time::{Duration, Instant},
 };
 use tokio::time::sleep;
 use zeroize::Zeroizing;
 
 pub async fn run_update(vault: &Vault, action: UpdateCommand) -> Result<()> {
-    let install = matches!(action, UpdateCommand::Install);
     let executable = platform::launcher_executable()?;
     updater::cleanup_previous_update_artifacts(&executable, vault.data_dir());
-    let manager = updater::UpdateManager::new(vault.clone(), executable);
+    let manager = updater::UpdateManager::new(vault.clone(), executable.clone());
     let outcome = manager.check_for_updates(true, |_| {}).await?;
-    if !install {
+
+    let UpdateCommand::Install {
+        json,
+        relaunch,
+        no_sync_agents,
+    } = action
+    else {
         println!("{}", serde_json::to_string_pretty(&outcome.status)?);
         return Ok(());
-    }
+    };
+
+    let previous_version = outcome.status.current_version.clone();
     if !outcome.update_available {
-        println!(
-            "OpenKeylet {} is already up to date.",
-            outcome.status.current_version
-        );
+        let mut agent_sync = None;
+        let mut restart_required = false;
+        if !no_sync_agents
+            && let Ok(registry) = AgentRegistry::new(executable.clone())
+        {
+            let synced = registry.sync_detected(false).await;
+            restart_required = synced.iter().any(|item| item.ok && item.client.restart_required);
+            agent_sync = Some(serde_json::to_value(&synced)?);
+        }
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "updated": false,
+                    "alreadyUpToDate": true,
+                    "previousVersion": previous_version,
+                    "currentVersion": outcome.status.current_version,
+                    "latestVersion": outcome.status.latest_version,
+                    "platform": outcome.status.platform,
+                    "executable": executable.to_string_lossy(),
+                    "signatureVerified": outcome.status.signature_verified,
+                    "relaunchRequested": false,
+                    "agentSync": agent_sync,
+                    "restartRequired": restart_required,
+                }))?
+            );
+        } else {
+            println!(
+                "OpenKeylet {} is already up to date.",
+                outcome.status.current_version
+            );
+            if restart_required {
+                println!(
+                    "Managed agent rules were refreshed; restart your AI agent session to load them."
+                );
+            }
+        }
         return Ok(());
     }
+
     let target_version = outcome
         .status
         .latest_version
         .clone()
         .unwrap_or_else(|| "latest".to_owned());
-    eprintln!(
-        "Downloading and verifying OpenKeylet {} ({})...",
-        target_version, outcome.status.platform
-    );
+    if !json {
+        eprintln!(
+            "Downloading and verifying OpenKeylet {} ({})...",
+            target_version, outcome.status.platform
+        );
+    }
     manager.download_and_stage(|_| {}).await?;
-    manager.apply_and_relaunch(false, |_| {}).await?;
-    println!(
-        "OpenKeylet updated to {target_version}. Restart any running OpenKeylet processes to use the new version."
-    );
+    let effective_relaunch = relaunch && cfg!(feature = "gui");
+    manager
+        .apply_and_relaunch(effective_relaunch, |_| {})
+        .await?;
+
+    let (agent_sync, sync_restart_required, agent_sync_warning) = if no_sync_agents {
+        (None, false, None)
+    } else {
+        sync_agents_with_updated_binary(&executable).await
+    };
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "updated": true,
+                "alreadyUpToDate": false,
+                "previousVersion": previous_version,
+                "newVersion": target_version,
+                "platform": outcome.status.platform,
+                "executable": executable.to_string_lossy(),
+                "releaseUrl": outcome.status.release_url,
+                "signatureVerified": outcome.status.signature_verified,
+                "relaunchRequested": effective_relaunch,
+                "agentSync": agent_sync,
+                "agentSyncWarning": agent_sync_warning,
+                "restartRequired": true,
+                "agentRulesRefreshed": sync_restart_required,
+            }))?
+        );
+    } else {
+        println!(
+            "OpenKeylet updated from {previous_version} to {target_version}. Restart any running OpenKeylet processes and AI agent sessions to use the new version."
+        );
+        if let Some(warning) = agent_sync_warning {
+            eprintln!("Note: post-update agent sync skipped ({warning}).");
+        }
+    }
     Ok(())
+}
+
+/// Invoke the newly installed executable on disk so any updated managed agent
+/// instructions from the new release are synced immediately without failing the update.
+async fn sync_agents_with_updated_binary(
+    executable: &Path,
+) -> (Option<serde_json::Value>, bool, Option<String>) {
+    let future = tokio::process::Command::new(executable)
+        .args(["agent", "sync", "--json"])
+        .stdin(std::process::Stdio::null())
+        .output();
+    let output = match tokio::time::timeout(Duration::from_secs(15), future).await {
+        Ok(Ok(output)) => output,
+        Ok(Err(error)) => return (None, false, Some(error.to_string())),
+        Err(_) => return (None, false, Some("timed out after 15s".to_owned())),
+    };
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        let detail = if stderr.is_empty() {
+            format!("exited with {}", output.status)
+        } else {
+            stderr
+        };
+        return (None, false, Some(detail));
+    }
+    match serde_json::from_slice::<serde_json::Value>(&output.stdout) {
+        Ok(value) => {
+            let restart = value
+                .get("restartRequired")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            (Some(value), restart, None)
+        }
+        Err(error) => (
+            None,
+            false,
+            Some(format!("invalid JSON output from updated binary: {error}")),
+        ),
+    }
 }
 
 pub async fn run_browser(vault: &Vault, action: BrowserCommand) -> Result<()> {

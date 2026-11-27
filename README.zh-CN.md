@@ -18,6 +18,8 @@
 </p>
 
 <p align="center">
+  <a href="#安装与更新"><strong>快速安装（推荐 CLI）</strong></a>
+  &nbsp;&nbsp;·&nbsp;&nbsp;
   <a href="../../releases/latest"><strong>下载最新版</strong></a>
   &nbsp;&nbsp;·&nbsp;&nbsp;
   <a href="README.md"><strong>English</strong></a>
@@ -43,6 +45,54 @@
 
 当 Agent 需要登录服务器（SSH / SFTP）、调用认证 API、渲染 `.env` 密钥模板、填写网页账号与支付表单，或者完成 **WebAuthn Passkey** 无密登录时，OpenKeylet 直接在**你的本机代为完成认证动作**——既省去反复复制粘贴的麻烦，又把默认隐藏的明文秘密拦在大模型上下文、中转代理和聊天记录之外。
 
+---
+
+## 安装与更新
+
+### 1 · CLI 一键安装（最推荐）
+
+使用官方 CLI 安装脚本是最快、最稳、最省心的安装方式：自动校验官方 **Ed25519 发布签名**（本机有 Node.js 时）与 **SHA-256 哈希**、安装到固定且兼容内置自更新的用户目录、自动配置 `PATH`，并执行 `openkeylet setup` 一步接好本机已安装的 AI Agent。
+
+**macOS & Linux** *（自动识别桌面 GUI 或无头 Linux 服务器，也可显式加 `--headless` / `--gui`）*：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/omaekumiko2-create/OpenKeylet/main/scripts/install.sh -o /tmp/openkeylet-install.sh \
+  && bash /tmp/openkeylet-install.sh \
+  && rm -f /tmp/openkeylet-install.sh
+```
+
+**Windows（PowerShell）**：
+
+```powershell
+$s = Join-Path $env:TEMP "openkeylet-install.ps1"
+Invoke-WebRequest "https://raw.githubusercontent.com/omaekumiko2-create/OpenKeylet/main/scripts/install.ps1" -OutFile $s -UseBasicParsing
+powershell -NoProfile -ExecutionPolicy Bypass -File $s -Shortcut
+Remove-Item $s -Force
+```
+
+**CLI 一键原地更新** *（调用内置 Ed25519 签名更新器，自动复用桌面端后台已预下载的更新包、不与 GUI 自动更新冲突，并同步刷新 Agent 受管规则）*：
+
+```bash
+openkeylet update install
+```
+
+### 2 · 一句话让 AI Agent 帮你安装或更新
+
+直接在 **Claude Code、Antigravity、Codex、Cursor、OpenCode 或 DeepSeek Harness** 对话框里发送下面任意一句话，Agent 会按公开可审计的 [INSTALL.md](INSTALL.md) 流程调用上述 CLI 安装与更新命令：
+
+- **一句话安装：**
+  ```text
+  请阅读 https://raw.githubusercontent.com/omaekumiko2-create/OpenKeylet/main/INSTALL.md，帮我把 OpenKeylet 安装到本机并连接到当前 Agent。
+  ```
+- **一句话原地更新：**
+  ```text
+  请按 https://raw.githubusercontent.com/omaekumiko2-create/OpenKeylet/main/INSTALL.md 用 OpenKeylet 内置签名更新器把本机 OpenKeylet 原地更新到最新版。
+  ```
+
+### 3 · 手动下载便携包
+
+如果你更习惯手动解压部署，可以直接前往 [GitHub Releases](../../releases/latest) 下载 Windows、macOS、Linux GUI 或 Linux 无头版便携包。
+
 > [!NOTE]
 > **长期维护的开源项目 & 诚实定位**：OpenKeylet 是一个免费开源、**长期持续维护**的社区效率工具（[MIT](LICENSE) 协议，按“现状 / AS-IS”提供，**不承诺任何形式的安全保障**）。我们的核心目标非常纯粹：**让开发者和 AI Agent 的日常凭据协作尽可能丝滑、顺手、少踩坑**，同时把“保护什么、明确不防什么”摊在台面上讲清楚。**非常欢迎各种形式的反馈、Bug 报告、交互/视觉建议、新功能想法与开放讨论**，欢迎随时前往 [Issues](https://github.com/omaekumiko2-create/OpenKeylet/issues) 或 [Discussions](https://github.com/omaekumiko2-create/OpenKeylet/discussions) 交流！
 
@@ -50,7 +100,7 @@
 
 ## 3 分钟上手：最常用的 5 个核心操作
 
-### 1 · 一键绑定你的 AI Agent
+### 1 · 一键绑定你的 AI Agent（桌面端或 CLI）
 
 <table>
   <tr>
@@ -339,6 +389,12 @@ OpenKeylet 通过按需启动的本地 `stdio` MCP（`openkeylet mcp stdio`）�
 ### 原生 CLI 与协议层底座（适合 Claude Code / Codex / Antigravity 原生终端）
 
 ```bash
+# 通过 CLI 自动接入 / 同步 AI Agent MCP 配置与受管规则（桌面端与无头版通用）
+openkeylet setup --json
+openkeylet agent list
+openkeylet agent connect --detected
+openkeylet update install --json
+
 # 为任意原生命令注入多条目环境变量并做实时跨块 stdout/stderr 脱敏
 openkeylet run --item "OpenAI" --env-file .env.template --env DB_PASS="Prod DB/password" -- npm run dev
 

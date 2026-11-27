@@ -17,7 +17,6 @@ gui = [
     "dep:drag",
     "dep:glib",
     "desktop-fill",
-    "dep:jsonc-parser",
     "dep:objc2-app-kit",
     "dep:objc2-foundation",
     "dep:objc2-quartz-core",
@@ -26,7 +25,6 @@ gui = [
     "dep:tauri-plugin-clipboard-manager",
     "dep:tauri-plugin-dialog",
     "dep:tauri-plugin-opener",
-    "dep:toml_edit",
 ]
 desktop-fill = ["dep:enigo", "dep:windows"]
 
@@ -78,7 +76,7 @@ sha2 = "0.10"
 sha1 = "0.10"
 subtle = "2.6"
 tar = "0.4"
-toml_edit = { version = "0.25.13", optional = true }
+toml_edit = "0.25.13"
 tauri = { version = "2.11.5", features = ["tray-icon", "macos-private-api"], optional = true }
 tauri-plugin-clipboard-manager = { version = "2", optional = true }
 tauri-plugin-dialog = { version = "2", optional = true }
@@ -90,7 +88,7 @@ url = "2.5"
 uuid = { version = "1", features = ["v4", "serde"] }
 zeroize = { version = "1.8", features = ["derive"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
-jsonc-parser = { version = "0.33.1", features = ["cst", "serde"], optional = true }
+jsonc-parser = { version = "0.33.1", features = ["cst", "serde"] }
 enigo = { version = "0.6.1", optional = true }
 
 [target.'cfg(windows)'.dependencies]

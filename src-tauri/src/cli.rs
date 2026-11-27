@@ -1,6 +1,7 @@
 //! Structured `clap`-powered CLI entrypoint for OpenKeylet (GUI, MCP stdio,
 //! zero-plaintext `run`, `ssh-agent`, `git-credential`, headless admin, and vault ops).
 
+mod agent_cmd;
 mod ops_cmd;
 mod prompt;
 pub mod run;
@@ -73,6 +74,13 @@ pub enum Command {
         #[command(subcommand)]
         action: AdminCommand,
     },
+    /// Inspect, connect, repair, sync, or remove supported AI agent MCP integrations.
+    Agent {
+        #[command(subcommand)]
+        action: AgentCommand,
+    },
+    /// Run one-shot post-install setup (initialize vault, clean old update artifacts, connect agents).
+    Setup(SetupArgs),
     /// Check for or install signed GitHub Releases updates.
     Update {
         #[command(subcommand)]
@@ -214,9 +222,97 @@ pub enum AdminCommand {
 }
 
 #[derive(Debug, Subcommand)]
+pub enum AgentCommand {
+    /// List supported AI agent clients and their OpenKeylet connection status.
+    List {
+        /// Output machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Connect OpenKeylet MCP and managed rules to detected or specified AI agent clients.
+    Connect {
+        /// Specific client IDs (codex, claude-code, cursor, opencode, antigravity, deepseek-harness).
+        clients: Vec<String>,
+        /// Auto-detect and connect all installed supported clients (default when no clients are named).
+        #[arg(long)]
+        detected: bool,
+        /// Alias for --detected.
+        #[arg(long)]
+        all: bool,
+        /// Output machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Repair stale or conflicting OpenKeylet MCP configurations.
+    Repair {
+        /// Specific client IDs to repair (defaults to all detected repairable clients).
+        clients: Vec<String>,
+        /// Repair all detected clients that need repair.
+        #[arg(long)]
+        all: bool,
+        /// Output machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Disconnect OpenKeylet MCP and remove managed rules from specified AI agent clients.
+    Remove {
+        /// Client IDs to disconnect.
+        #[arg(required = true)]
+        clients: Vec<String>,
+        /// Output machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Refresh managed rules and repair stale paths for already-connected AI agents only.
+    Sync {
+        /// Output machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Args)]
+pub struct SetupArgs {
+    /// Specific AI agent client IDs to connect (defaults to all detected clients).
+    #[arg(long = "client")]
+    pub clients: Vec<String>,
+    /// Skip connecting AI agent clients.
+    #[arg(long = "no-connect-agents")]
+    pub no_connect_agents: bool,
+    /// Create a desktop shortcut (Windows and Linux GUI).
+    #[arg(long)]
+    pub shortcut: bool,
+    /// Enable launch at login (desktop builds).
+    #[arg(long)]
+    pub autostart: bool,
+    /// Launch the desktop GUI after setup finishes (desktop builds).
+    #[arg(long)]
+    pub launch: bool,
+    /// Output machine-readable JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Subcommand)]
 pub enum UpdateCommand {
-    Check,
-    Install,
+    /// Check GitHub Releases for a signed OpenKeylet update.
+    Check {
+        /// Output machine-readable JSON (default).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Download, verify (Ed25519 + SHA-256), and install the latest signed update in place.
+    Install {
+        /// Output a machine-readable JSON summary.
+        #[arg(long)]
+        json: bool,
+        /// Relaunch the desktop GUI after applying the update (desktop builds).
+        #[arg(long)]
+        relaunch: bool,
+        /// Skip syncing already-connected AI agent rules after updating.
+        #[arg(long = "no-sync-agents")]
+        no_sync_agents: bool,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -309,6 +405,7 @@ pub async fn dispatch(cli: Cli) -> Result<i32> {
             ssh_cmd::run_ssh(app_data_dir()?, action)?;
             Ok(0)
         }
+        Some(Command::Agent { action }) => agent_cmd::run_agent(action).await,
         Some(cmd) => {
             let vault = Vault::open(app_data_dir()?)?;
             match cmd {
@@ -347,6 +444,7 @@ pub async fn dispatch(cli: Cli) -> Result<i32> {
                     ops_cmd::run_admin(vault, action).await?;
                     Ok(0)
                 }
+                Command::Setup(args) => agent_cmd::run_setup(&vault, args).await,
                 Command::Update { action } => {
                     ops_cmd::run_update(&vault, action).await?;
                     Ok(0)
@@ -367,7 +465,7 @@ pub async fn dispatch(cli: Cli) -> Result<i32> {
                     vault_cmd::run_keygen(&vault, args)?;
                     Ok(0)
                 }
-                Command::Gui | Command::Ssh { .. } => unreachable!(),
+                Command::Gui | Command::Ssh { .. } | Command::Agent { .. } => unreachable!(),
                 #[cfg(target_os = "macos")]
                 Command::Key { .. } => unreachable!(),
             }
@@ -675,5 +773,211 @@ mod tests {
         )
         .unwrap();
         assert_eq!(vault.list_connections().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn cli_agent_setup_and_update_flags_parse_cleanly() {
+        let parsed = Cli::try_parse_from([
+            "openkeylet",
+            "agent",
+            "connect",
+            "claude",
+            "codex",
+            "--json",
+        ])
+        .unwrap();
+        let Some(Command::Agent {
+            action: AgentCommand::Connect { clients, json, .. },
+        }) = parsed.command
+        else {
+            panic!("expected agent connect command");
+        };
+        assert_eq!(clients, vec!["claude".to_owned(), "codex".to_owned()]);
+        assert!(json);
+
+        let parsed = Cli::try_parse_from([
+            "openkeylet",
+            "setup",
+            "--client",
+            "agy",
+            "--shortcut",
+            "--launch",
+            "--json",
+        ])
+        .unwrap();
+        let Some(Command::Setup(args)) = parsed.command else {
+            panic!("expected setup command");
+        };
+        assert_eq!(args.clients, vec!["agy".to_owned()]);
+        assert!(args.shortcut);
+        assert!(args.launch);
+        assert!(args.json);
+        assert!(!args.no_connect_agents);
+
+        let parsed = Cli::try_parse_from([
+            "openkeylet",
+            "update",
+            "install",
+            "--json",
+            "--relaunch",
+            "--no-sync-agents",
+        ])
+        .unwrap();
+        let Some(Command::Update {
+            action:
+                UpdateCommand::Install {
+                    json,
+                    relaunch,
+                    no_sync_agents,
+                },
+        }) = parsed.command
+        else {
+            panic!("expected update install command");
+        };
+        assert!(json);
+        assert!(relaunch);
+        assert!(no_sync_agents);
+
+        let parsed = Cli::try_parse_from(["openkeylet", "update", "check"]).unwrap();
+        assert!(matches!(
+            parsed.command,
+            Some(Command::Update {
+                action: UpdateCommand::Check { json: false }
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn cli_agent_connect_sync_and_setup_are_idempotent_and_safe() {
+        use crate::agents::AgentRegistry;
+
+        let dir = tempdir().unwrap();
+        let exe = dir.path().join(if cfg!(windows) {
+            "openkeylet.exe"
+        } else {
+            "openkeylet"
+        });
+        std::fs::write(&exe, b"bin").unwrap();
+        let ext_dir = dir.path().join("browser-extension");
+        std::fs::create_dir_all(&ext_dir).unwrap();
+        std::fs::write(ext_dir.join("manifest.json"), "{}").unwrap();
+
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        // 1) Available claude-code config, 2) Stale legacy KRU codex config, 3) Conflicting cursor config.
+        std::fs::write(home.join(".claude.json"), "{}\n").unwrap();
+        std::fs::create_dir_all(home.join(".codex")).unwrap();
+        std::fs::write(
+            home.join(".codex/config.toml"),
+            "[mcp_servers.kru]\ncommand = \"/old/kru\"\nargs = [\"mcp\", \"stdio\"]\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(home.join(".cursor")).unwrap();
+        std::fs::write(
+            home.join(".cursor/mcp.json"),
+            r#"{"mcpServers":{"openkeylet":{"command":"/custom/other-tool","args":["serve"]}}}"#,
+        )
+        .unwrap();
+
+        let registry = AgentRegistry::isolated(exe.clone(), home.clone(), vec![]);
+
+        // `agent sync` only refreshes stale/connected agents and leaves available claude-code untouched.
+        let sync_code = agent_cmd::run_agent_with_registry(&registry, AgentCommand::Sync { json: true })
+            .await
+            .unwrap();
+        assert_eq!(sync_code, 0);
+        let statuses = registry.list().await;
+        assert_eq!(
+            statuses.iter().find(|s| s.client_id == "codex").unwrap().state,
+            "registered"
+        );
+        assert_eq!(
+            statuses
+                .iter()
+                .find(|s| s.client_id == "claude-code")
+                .unwrap()
+                .state,
+            "available"
+        );
+        // Unrelated conflict in cursor was NOT overwritten by sync.
+        assert_eq!(
+            statuses.iter().find(|s| s.client_id == "cursor").unwrap().state,
+            "conflict"
+        );
+
+        // `setup` cleans obsolete pending-update marker & connects available claude-code without touching cursor conflict.
+        let vault_dir = dir.path().join("vault");
+        let vault = Vault::open(vault_dir.clone()).unwrap();
+        let updates_dir = vault_dir.join("updates");
+        std::fs::create_dir_all(&updates_dir).unwrap();
+        let obsolete_marker = updates_dir.join("pending-update.json");
+        std::fs::write(
+            &obsolete_marker,
+            format!(
+                r#"{{"version":"0.0.1","tag":"v0.0.1","platform":"{}","archiveSha256":"{}","stagedRoot":"{}","signatureVerified":true,"preparedAt":"2026-01-01T00:00:00Z"}}"#,
+                crate::updater::current_platform_key(),
+                "a".repeat(64),
+                dir.path().display().to_string().replace('\\', "\\\\"),
+            ),
+        )
+        .unwrap();
+        assert!(obsolete_marker.is_file());
+
+        let setup_code = agent_cmd::run_setup_with_registry(
+            &vault,
+            &exe,
+            &registry,
+            SetupArgs {
+                clients: vec![],
+                no_connect_agents: false,
+                shortcut: false,
+                autostart: false,
+                launch: false,
+                json: true,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(setup_code, 0);
+        assert!(
+            !obsolete_marker.exists(),
+            "setup must clean obsolete pending-update.json so it never conflicts with GUI updates"
+        );
+        let after_setup = registry.list().await;
+        assert_eq!(
+            after_setup
+                .iter()
+                .find(|s| s.client_id == "claude-code")
+                .unwrap()
+                .state,
+            "registered"
+        );
+        assert_eq!(
+            after_setup.iter().find(|s| s.client_id == "cursor").unwrap().state,
+            "conflict"
+        );
+        assert_eq!(
+            crate::platform::find_browser_extension_dir(&exe),
+            Some(ext_dir)
+        );
+
+        // Explicit `agent repair cursor` DOES repair the conflict.
+        let repair_code = agent_cmd::run_agent_with_registry(
+            &registry,
+            AgentCommand::Repair {
+                clients: vec!["cursor".to_owned()],
+                all: false,
+                json: true,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(repair_code, 0);
+        let after_repair = registry.list().await;
+        assert_eq!(
+            after_repair.iter().find(|s| s.client_id == "cursor").unwrap().state,
+            "registered"
+        );
     }
 }

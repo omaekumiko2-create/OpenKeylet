@@ -1,4 +1,5 @@
 pub mod admin;
+pub mod agents;
 pub mod api_catalog;
 pub mod backup;
 pub mod browser;
@@ -24,8 +25,6 @@ pub mod storage;
 pub mod updater;
 pub mod vault;
 
-#[cfg(feature = "gui")]
-pub mod agents;
 #[cfg(feature = "gui")]
 pub mod clipboard;
 #[cfg(feature = "gui")]

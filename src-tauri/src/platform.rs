@@ -2,10 +2,8 @@
 
 use crate::vault::Vault;
 use anyhow::{Context, Result};
-#[cfg(any(target_os = "windows", target_os = "macos"))]
-use std::path::Path;
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 use tokio::sync::Mutex;
@@ -71,13 +69,40 @@ pub fn strip_windows_verbatim_prefix(path: &Path) -> String {
     }
 }
 
-/// Locate the enclosing `.app` bundle directory on macOS if the executable runs inside one.
+/// Locate the enclosing `.app` bundle directory on macOS if the executable runs inside one
+/// (including when invoked through a symlink pointing into the bundle).
 #[cfg(target_os = "macos")]
 pub fn macos_app_bundle(executable: &Path) -> Option<PathBuf> {
-    executable
-        .ancestors()
-        .find(|path| path.extension().is_some_and(|ext| ext == "app"))
-        .map(Path::to_path_buf)
+    let find_bundle = |path: &Path| {
+        path.ancestors()
+            .find(|ancestor| ancestor.extension().is_some_and(|ext| ext == "app"))
+            .map(Path::to_path_buf)
+    };
+    find_bundle(executable).or_else(|| {
+        std::fs::canonicalize(executable)
+            .ok()
+            .and_then(|canonical| find_bundle(&canonical))
+    })
+}
+
+/// Locate the bundled or adjacent `browser-extension` directory for an installed executable.
+pub fn find_browser_extension_dir(executable: &Path) -> Option<PathBuf> {
+    let has_manifest = |dir: &Path| dir.join("manifest.json").is_file();
+    if let Some(adjacent) = executable
+        .parent()
+        .map(|parent| parent.join("browser-extension"))
+        .filter(|dir| has_manifest(dir))
+    {
+        return Some(adjacent);
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(bundled) = macos_app_bundle(executable)
+        .map(|bundle| bundle.join("Contents/Resources/browser-extension"))
+        .filter(|dir| has_manifest(dir))
+    {
+        return Some(bundled);
+    }
+    None
 }
 
 /// Detect whether the current Linux desktop session runs under Wayland.
@@ -187,6 +212,20 @@ pub fn launcher_executable() -> Result<PathBuf> {
     }
     let current =
         std::env::current_exe().context("Unable to determine the OpenKeylet executable path")?;
+    #[cfg(target_os = "macos")]
+    {
+        let direct_in_bundle = current
+            .ancestors()
+            .any(|ancestor| ancestor.extension().is_some_and(|ext| ext == "app"));
+        if !direct_in_bundle
+            && let Ok(canonical) = std::fs::canonicalize(&current)
+            && canonical
+                .ancestors()
+                .any(|ancestor| ancestor.extension().is_some_and(|ext| ext == "app"))
+        {
+            return Ok(stable_launcher_executable(canonical));
+        }
+    }
     Ok(stable_launcher_executable(current))
 }
 

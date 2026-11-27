@@ -8,6 +8,22 @@ This guide covers deploying the headless Linux build of OpenKeylet on a server o
 
 The headless build (`cargo build --release --no-default-features`) contains the full encrypted vault engine, `stdio` MCP server, SSH/SFTP, HTTP, managed terminal, CLI utilities, Browser Bridge, and opt-in loopback management server — with **zero GUI/WebView dependencies**.
 
+Quick install & in-place update on a headless Linux server (see also [INSTALL.md](../INSTALL.md)):
+
+```bash
+# Fresh install (automatically picks linux-x64-headless when no DISPLAY/WAYLAND_DISPLAY is set)
+curl -fsSL https://raw.githubusercontent.com/omaekumiko2-create/OpenKeylet/main/scripts/install.sh -o /tmp/openkeylet-install.sh \
+  && bash /tmp/openkeylet-install.sh --headless \
+  && rm -f /tmp/openkeylet-install.sh
+
+# Connect / sync CLI AI agents (Claude Code, Codex, OpenCode, etc.)
+openkeylet agent list
+openkeylet agent connect --detected
+
+# Conflict-free Ed25519-signed in-place update
+openkeylet update install --json
+```
+
 Important distinctions:
 - The headless build does **not** include the desktop GUI window.
 - The Chromium extension is primarily a browser credential/passkey delivery and popup vault companion; it is **not** a full replacement for the desktop GUI settings panel.

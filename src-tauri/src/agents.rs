@@ -78,6 +78,26 @@ pub struct AgentRegistry {
 }
 
 impl AgentRegistry {
+    pub fn supported_client_ids() -> &'static [&'static str] {
+        &CLIENT_IDS
+    }
+
+    pub fn normalize_client_id(raw: &str) -> Option<&'static str> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "codex" | "openai-codex" => Some("codex"),
+            "claude-code" | "claude" | "claudecode" => Some("claude-code"),
+            "cursor" => Some("cursor"),
+            "opencode" | "open-code" => Some("opencode"),
+            "antigravity" | "agy" => Some("antigravity"),
+            "deepseek-harness" | "dsh" | "deepseek" => Some("deepseek-harness"),
+            _ => None,
+        }
+    }
+
+    pub fn executable_path(&self) -> &Path {
+        &self.executable
+    }
+
     pub fn new(executable: PathBuf) -> Result<Self> {
         let home = dirs::home_dir().context("Unable to determine the user home directory")?;
         let path_dirs = env::split_paths(&env::var_os("PATH").unwrap_or_default()).collect();
@@ -137,7 +157,7 @@ impl AgentRegistry {
     }
 
     #[cfg(test)]
-    fn isolated(executable: PathBuf, home: PathBuf, path_dirs: Vec<PathBuf>) -> Self {
+    pub(crate) fn isolated(executable: PathBuf, home: PathBuf, path_dirs: Vec<PathBuf>) -> Self {
         let (opencode_config, opencode_config_explicit) =
             resolve_opencode_config(&home, None, None, None);
         Self {
@@ -183,6 +203,75 @@ impl AgentRegistry {
 
     pub async fn remove(&self, client_id: &str) -> AgentActionResult {
         self.mutate(client_id, "remove").await
+    }
+
+    /// Idempotently connect an available client or repair a stale OpenKeylet/KRU entry,
+    /// without silently overwriting unrelated non-OpenKeylet conflicts.
+    pub async fn connect_or_repair(&self, client_id: &str) -> AgentActionResult {
+        if !CLIENT_IDS.contains(&client_id) {
+            return self.error_status(client_id, "connect", "Unsupported Agent client");
+        }
+        let before = self.status(client_id).await;
+        if before.state == "registered" {
+            return AgentActionResult {
+                ok: true,
+                action: if before.restart_required {
+                    "refreshed"
+                } else {
+                    "unchanged"
+                }
+                .to_owned(),
+                client: before,
+            };
+        }
+        if before.can_register {
+            return self.mutate(client_id, "register").await;
+        }
+        if before.state == "stale" && before.can_repair {
+            return self.mutate(client_id, "repair").await;
+        }
+        AgentActionResult {
+            ok: false,
+            action: "connect".to_owned(),
+            client: before,
+        }
+    }
+
+    /// Sync all detected clients: refresh managed rules and repair stale OpenKeylet/KRU
+    /// entries, and optionally connect newly detected available clients.
+    pub async fn sync_detected(&self, connect_available: bool) -> Vec<AgentActionResult> {
+        let statuses = self.list().await;
+        let mut results = Vec::new();
+        for status in statuses {
+            if !status.detected {
+                continue;
+            }
+            match status.state.as_str() {
+                "registered" => results.push(AgentActionResult {
+                    ok: true,
+                    action: if status.restart_required {
+                        "refreshed"
+                    } else {
+                        "unchanged"
+                    }
+                    .to_owned(),
+                    client: status,
+                }),
+                "stale" if status.can_repair => {
+                    results.push(self.mutate(&status.client_id, "repair").await);
+                }
+                "available" if connect_available && status.can_register => {
+                    results.push(self.mutate(&status.client_id, "register").await);
+                }
+                "available" => {}
+                _ => results.push(AgentActionResult {
+                    ok: false,
+                    action: "skipped".to_owned(),
+                    client: status,
+                }),
+            }
+        }
+        results
     }
 
     async fn mutate(&self, client_id: &str, action: &str) -> AgentActionResult {

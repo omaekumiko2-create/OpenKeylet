@@ -18,7 +18,9 @@
 </p>
 
 <p align="center">
-  <a href="../../releases/latest"><strong>Download Latest</strong></a>
+  <a href="#install--update"><strong>Install (CLI Recommended)</strong></a>
+  &nbsp;&nbsp;·&nbsp;&nbsp;
+  <a href="../../releases/latest"><strong>Releases</strong></a>
   &nbsp;&nbsp;·&nbsp;&nbsp;
   <a href="README.zh-CN.md"><strong>简体中文</strong></a>
   &nbsp;&nbsp;·&nbsp;&nbsp;
@@ -43,6 +45,54 @@
 
 When an agent needs to SSH into a server, call an authenticated API, render a `.env` secret template, fill a browser login or checkout form, or sign in with a **WebAuthn Passkey**, OpenKeylet executes the credential step **locally on your machine** — making everyday agent workflows effortless while keeping hidden plaintext out of LLM context, model proxies, and chat logs.
 
+---
+
+## Install & Update
+
+### 1 · CLI Install (Recommended)
+
+The official CLI installer is the fastest, cleanest, and most reliable way to install OpenKeylet. It verifies the **Ed25519 release signature** (via Node.js when available) + **SHA-256** checksums, installs to a canonical user-writable directory compatible with built-in auto-updates, adds `openkeylet` to `PATH`, and automatically runs `openkeylet setup` to connect detected AI agents.
+
+**macOS & Linux** *(auto-detects Desktop GUI vs. Headless Linux server; pass `--headless` or `--gui` to override)*:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/omaekumiko2-create/OpenKeylet/main/scripts/install.sh -o /tmp/openkeylet-install.sh \
+  && bash /tmp/openkeylet-install.sh \
+  && rm -f /tmp/openkeylet-install.sh
+```
+
+**Windows (PowerShell)**:
+
+```powershell
+$s = Join-Path $env:TEMP "openkeylet-install.ps1"
+Invoke-WebRequest "https://raw.githubusercontent.com/omaekumiko2-create/OpenKeylet/main/scripts/install.ps1" -OutFile $s -UseBasicParsing
+powershell -NoProfile -ExecutionPolicy Bypass -File $s -Shortcut
+Remove-Item $s -Force
+```
+
+**Update in place via CLI** *(uses OpenKeylet's built-in Ed25519-signed updater, reuses any GUI background-staged update without conflicts, and refreshes connected agent rules)*:
+
+```bash
+openkeylet update install
+```
+
+### 2 · Let Your AI Agent Install or Update in One Sentence
+
+Paste either sentence into **Claude Code, Antigravity, Codex, Cursor, OpenCode, or DeepSeek Harness** — your agent follows the auditable [INSTALL.md](INSTALL.md) runbook using the official CLI installer and built-in updater above:
+
+- **Install:**
+  ```text
+  Read https://raw.githubusercontent.com/omaekumiko2-create/OpenKeylet/main/INSTALL.md and install OpenKeylet on this machine and connect it to this agent.
+  ```
+- **Update in place:**
+  ```text
+  Update OpenKeylet to the latest signed release in place following https://raw.githubusercontent.com/omaekumiko2-create/OpenKeylet/main/INSTALL.md.
+  ```
+
+### 3 · Manual Portable Download
+
+Prefer unzipping manually? Grab the latest portable archive for Windows, macOS, Linux GUI, or Linux Headless from [GitHub Releases](../../releases/latest).
+
 > [!NOTE]
 > **Long-Term Maintained Open-Source Project**: OpenKeylet is a free, **actively and long-term maintained** open-source community tool ([MIT](LICENSE), provided **as-is with no formal security warranty**). Its core purpose is to make AI agent credential workflows smooth, fast, and practical while preventing everyday accidental leaks — with complete honesty about what it does and does not defend against. We warmly welcome **all kinds of feedback, bug reports, UI/UX suggestions, feature ideas, and open discussions** in [Issues](https://github.com/omaekumiko2-create/OpenKeylet/issues) and [Discussions](https://github.com/omaekumiko2-create/OpenKeylet/discussions).
 
@@ -50,7 +100,7 @@ When an agent needs to SSH into a server, call an authenticated API, render a `.
 
 ## 3-Minute Quickstart: 5 Everyday Workflows
 
-### 1 · Bind Your AI Agent in 1 Click
+### 1 · Bind Your AI Agent in 1 Click (GUI or CLI)
 
 <table>
   <tr>
@@ -339,6 +389,12 @@ OpenKeylet runs on demand via local `stdio` MCP (`openkeylet mcp stdio`) and exp
 ### Native CLI & Protocol Layer (for Claude Code, Codex & Antigravity Native Shells)
 
 ```bash
+# Connect / sync AI agent MCP configs & managed rules from CLI (desktop or headless)
+openkeylet setup --json
+openkeylet agent list
+openkeylet agent connect --detected
+openkeylet update install --json
+
 # Inject secrets into any native command with real-time boundary-safe stdout/stderr redaction
 openkeylet run --item "OpenAI" --env-file .env.template --env DB_PASS="Prod DB/password" -- npm run dev
 
