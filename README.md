@@ -1,12 +1,11 @@
 <p align="center">
-  <img src=".github/assets/openkeylet-banner.jpg" alt="OpenKeylet — The Local-First Autonomous Secret Vault for AI Agents" width="100%" />
+  <img src=".github/assets/openkeylet-banner.jpg" alt="OpenKeylet — Zero-Plaintext Credential Vault & MCP Relay for AI Agents" width="100%" />
 </p>
 
 <h1 align="center">OpenKeylet</h1>
 
 <p align="center">
-  <strong>The local-first autonomous secret vault for AI agents.</strong><br />
-  <sub>Auto-install, auto-capture, auto-inject, auto-redact, and auto-sync — passwords, API keys, SSH, 2FA &amp; Passkeys run locally and stay out of LLM context.</sub>
+  <strong>Local-first encrypted password vault, Passkey manager, and zero-plaintext <code>stdio</code> MCP credential relay for AI agents.</strong>
 </p>
 
 <p align="center">
@@ -21,9 +20,11 @@
 <p align="center">
   <a href="#install--update"><strong>Install (CLI Recommended)</strong></a>
   &nbsp;&nbsp;·&nbsp;&nbsp;
-  <a href="#why-an-autonomous-secret-vault"><strong>Why Autonomous?</strong></a>
+  <a href="../../releases/latest"><strong>Releases</strong></a>
   &nbsp;&nbsp;·&nbsp;&nbsp;
   <a href="README.zh-CN.md"><strong>简体中文</strong></a>
+  &nbsp;&nbsp;·&nbsp;&nbsp;
+  <a href="README.tr.md"><strong>Türkçe</strong></a>
   &nbsp;&nbsp;·&nbsp;&nbsp;
   <a href="#3-minute-quickstart-5-everyday-workflows">Quickstart</a>
   &nbsp;&nbsp;·&nbsp;&nbsp;
@@ -35,16 +36,16 @@
   &nbsp;&nbsp;·&nbsp;&nbsp;
   <a href="#complete-mcp-surface-26-tools--native-cli-bridge">26 Tools</a>
   &nbsp;&nbsp;·&nbsp;&nbsp;
-  <a href="#community-feedback--long-term-maintenance">Feedback</a>
+  <a href="#community-feedback--long-term-maintenance">Feedback &amp; Discussions</a>
   &nbsp;&nbsp;·&nbsp;&nbsp;
   <a href="SECURITY.md">Security Policy</a>
 </p>
 
 ---
 
-Traditional password managers are **passive lockers** built for humans to click, copy, and paste.
+**OpenKeylet** bridges your personal local password manager with modern AI coding & terminal agents — offering 1-click local setup for **Antigravity, Claude Code, Codex, Cursor, DeepSeek Harness, and OpenCode**.
 
-**OpenKeylet** is a **local-first autonomous secret vault** built for the AI agent era — connecting natively to **Antigravity, Claude Code, Codex, Cursor, DeepSeek Harness, and OpenCode**. From one-command installation to zero-touch secret capture, local SSH / API / terminal / browser / 2FA / Passkey execution, real-time output redaction, dual-repo encrypted sync, and Ed25519-signed self-updates, OpenKeylet automates the entire secret lifecycle on your own machine while **leaving the single green enable switch in your hands**.
+When an agent needs to SSH into a server, call an authenticated API, render a `.env` secret template, fill a browser login or checkout form, or sign in with a **WebAuthn Passkey**, OpenKeylet executes the credential step **locally on your machine** — making everyday agent workflows effortless while keeping hidden plaintext out of LLM context, model proxies, and chat logs.
 
 ---
 
@@ -94,22 +95,8 @@ Paste either sentence into **Claude Code, Antigravity, Codex, Cursor, OpenCode, 
 
 Prefer unzipping manually? Grab the latest portable archive for Windows, macOS, Linux GUI, or Linux Headless from [GitHub Releases](../../releases/latest).
 
----
-
-## Why an Autonomous Secret Vault?
-
-Instead of making you copy-paste secrets between dashboards, terminals, `.env` files, and AI chats, OpenKeylet automates all 5 stages of the secret lifecycle locally — while keeping authorization explicit:
-
-| Lifecycle Stage | Passive Password Manager | OpenKeylet (Autonomous Secret Vault) |
-| --- | --- | --- |
-| **1. Auto-Install & Self-Update** | Manual download & hand-edited MCP JSON | One CLI command / one sentence verifies Ed25519 + SHA-256, auto-binds 6 AI agents, and self-updates in place |
-| **2. Auto-Save (Zero-Touch)** | Copy newly minted keys & logins by hand | Agents capture one-time web API keys, submitted logins & API tokens straight into the vault; generate strong passwords & Ed25519 SSH keys locally; scan PC or drop Bitwarden / 1Password / KeePass vaults |
-| **3. Auto-Execute Locally** | Copy passwords, 2FA codes & `.env` values manually | Runs SSH/SFTP, authenticated HTTP APIs, PTY terminals, `.env` injection (`openkeylet run` / `secret_write_file`), `ssh-agent`, `git-credential`, browser login/2FA/cards & Passkeys locally |
-| **4. Auto-Redact & Guard** | Plaintext leaks into chat, terminal & clipboard | Automatically scrubs echoed secrets (raw + base64/hex/URL/JSON), live TOTP, `Set-Cookie` & URL tokens into `[REDACTED]`; strips auth on cross-origin redirects; pins SSH host keys (TOFU); clears clipboard in 30s |
-| **5. Auto-Sync & Human Gate** | Vendor cloud lock-in or manual backups | Optional dual-repo encrypted two-way sync (ciphertext repo + separate key repo) with history rollback; **you keep the master kill-switch via each item's green Enable dot** |
-
 > [!NOTE]
-> **Long-Term Maintained Open-Source Project**: OpenKeylet is a free, **actively and long-term maintained** open-source community tool ([MIT](LICENSE), provided **as-is with no formal security warranty**). Its core purpose is to automate everyday AI agent credential workflows smoothly while preventing accidental plaintext leaks — with complete honesty about what it does and does not defend against. We warmly welcome **all kinds of feedback, bug reports, UI/UX suggestions, feature ideas, and open discussions** in [Issues](https://github.com/omaekumiko2-create/OpenKeylet/issues) and [Discussions](https://github.com/omaekumiko2-create/OpenKeylet/discussions).
+> **Long-Term Maintained Open-Source Project**: OpenKeylet is a free, **actively and long-term maintained** open-source community tool ([MIT](LICENSE), provided **as-is with no formal security warranty**). Its core purpose is to make AI agent credential workflows smooth, fast, and practical while preventing everyday accidental leaks — with complete honesty about what it does and does not defend against. We warmly welcome **all kinds of feedback, bug reports, UI/UX suggestions, feature ideas, and open discussions** in [Issues](https://github.com/omaekumiko2-create/OpenKeylet/issues) and [Discussions](https://github.com/omaekumiko2-create/OpenKeylet/discussions).
 
 ---
 
